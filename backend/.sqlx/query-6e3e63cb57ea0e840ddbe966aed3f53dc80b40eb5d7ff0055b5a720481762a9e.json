@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE web_citations SET message_id = $1 WHERE turn_id = $2 AND message_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6e3e63cb57ea0e840ddbe966aed3f53dc80b40eb5d7ff0055b5a720481762a9e"
+}

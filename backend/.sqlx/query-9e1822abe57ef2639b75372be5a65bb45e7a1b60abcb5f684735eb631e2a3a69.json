@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT project_knowledge_id FROM agent_project_knowledge WHERE agent_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "project_knowledge_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_project_knowledge",
+            "name": "project_knowledge_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9e1822abe57ef2639b75372be5a65bb45e7a1b60abcb5f684735eb631e2a3a69"
+}

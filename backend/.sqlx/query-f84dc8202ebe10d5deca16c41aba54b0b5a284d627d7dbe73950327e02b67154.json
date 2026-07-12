@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             count(*) FILTER (WHERE rating = 'up') AS \"up!\",\n             count(*) FILTER (WHERE rating = 'down') AS \"down!\"\n           FROM feedback WHERE message_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "up!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "down!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "f84dc8202ebe10d5deca16c41aba54b0b5a284d627d7dbe73950327e02b67154"
+}

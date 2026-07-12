@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO memory_facts (id, scope, owner_user_id, owner_project_id, content, source_ref, created_by) VALUES ($1, ($2::text)::mem_scope, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c37c00c3b73adbbdc43c2ececd577b6332eaf9d0961c0e5f670febb69ae56cba"
+}

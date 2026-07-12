@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH attached AS (\n            SELECT project_knowledge_id AS kb_id FROM agent_project_knowledge WHERE agent_id = $4\n            UNION\n            SELECT kb_id FROM project_kb_links WHERE project_id = $3\n            UNION\n            SELECT kb_id FROM chat_kb_links    WHERE chat_id    = $2\n        )\n        SELECT kb.id AS \"id!\"\n        FROM knowledge_bases kb\n        WHERE kb.id IN (SELECT kb_id FROM attached)\n          AND kb.archived_at IS NULL\n          AND kb.status = 'ready'\n          AND (\n              $5\n           OR kb.owner_id = $1\n           OR EXISTS (\n                SELECT 1 FROM kb_access_grants g WHERE g.kb_id = kb.id AND (\n                    (g.principal_type = 'user'  AND g.principal_id = $1)\n                 OR (g.principal_type = 'group' AND g.principal_id IN\n                       (SELECT group_id FROM group_members WHERE user_id = $1))\n                )\n              )\n          )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d80dc333a7f89e9c8d83e7e5a9ca031c55c02644c1fa722fb9f44d6b4272ff05"
+}

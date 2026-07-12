@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tasks SET status = 'queued', retry_count = $2, last_error = $3, next_attempt_at = $4 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "331a4ae2bfed5ded1d63d6269607b1f85e5e1408cc3688bdacfe742cb52c244b"
+}

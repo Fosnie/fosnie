@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tabular_cells SET status = 'error', error = $3, updated_at = now() WHERE review_id = $1 AND document_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6b3b12b4af2cb0c0b5c20bdf9710cd173f07f436a81dc923c6f4b1e5aee1807e"
+}

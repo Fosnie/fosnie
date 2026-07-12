@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT action_type,\n                  extract(epoch from occurred_at)::bigint AS occurred_epoch,\n                  payload\n           FROM audit_events WHERE payload->>'run_id' = $1 ORDER BY seq",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "action_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "action_type"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "occurred_epoch",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      true
+    ]
+  },
+  "hash": "4fc99c55293a6e05ee027eaf3d5462af5f2ca96797b29f2f951589a5e2a4ec82"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM group_feature_flags WHERE group_id = $1 AND feature = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a18b28e38783094cb967a63ae85f823502875eaabb20a921e92143f238d6e25d"
+}

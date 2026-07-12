@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, w_id, author::text AS \"author!\", find_text, replace_text, status::text AS \"status!\"\n           FROM document_edits\n           WHERE document_id = $1 AND ($2 = 'all' OR status::text = $2)\n           ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "document_edits",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "w_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "document_edits",
+            "name": "w_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "author!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "find_text",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "document_edits",
+            "name": "find_text"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "replace_text",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "document_edits",
+            "name": "replace_text"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "d4b850c498238719d74c40d6129e9b497c078e48a1c448921eda713173d5a38c"
+}

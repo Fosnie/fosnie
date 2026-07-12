@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users\n           SET mfa_secret_enc = $2, mfa_enabled_at = NULL, mfa_last_step = NULL\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0d1c94f85dc2f2caba8f717b43537c51b5143e34fb0876ef646fbaf2effbbc56"
+}

@@ -1,0 +1,58 @@
+# PAI Platform backend — boot config, PROFILE B: macOS Mac Studio + llama.cpp.
+# Same binary as Linux (built `--target aarch64-apple-darwin`); ONLY config differs.
+# Copy to /etc/pai/config.macos.toml; selected via PAI_CONFIG_FILE
+# (EnvironmentVariables in launchd/com.pai.backend.plist).
+
+database_url = "postgres://pai:pai@localhost:5432/pai"
+redis_url = "redis://localhost:6379"
+log_level = "info"
+
+# llama.cpp may not advertise context length; the ML service falls back to its
+# LLM_MAX_MODEL_LEN, and 0 here keeps "learn at runtime, else ML fallback".
+max_context_tokens = 0
+
+[server]
+host = "127.0.0.1"
+port = 8080
+static_dir = "/opt/pai/frontend/dist"
+public_url = "https://pai.local"
+# WebSocket Origin allow-list (anti cross-site WS hijacking). Empty/unset ⇒ the
+# origin of `public_url` is the sole allowed origin (correct when the SPA is
+# served same-origin). Set explicitly only if the SPA is served from a different
+# origin: allowed_ws_origins = ["https://pai.local"]
+
+[ml]
+base_url = "http://127.0.0.1:8090"
+
+[features]
+# No Firecracker / KVM on macOS — code-interpreter is unavailable on this host.
+code_interpreter = false
+# Voice: batch dictation + read-aloud (Qwen3-ASR + Kokoro on the ML service).
+voice = true
+# Live / streaming voice is OFF on this profile: the NVIDIA NeMo streaming STT needs
+# a CUDA GPU. To enable on macOS, run the CPU streaming engine (sherpa-onnx
+# online-websocket-server / Moonshine) and point [voice_live].stt_stream_url at it,
+# then set voice_live = true. With no streaming engine, the loop still works via the
+# per-utterance batch fallback (no live partials).
+voice_live = false
+
+[storage]
+branding_dir = "/opt/pai/data/branding"
+artefacts_dir = "/opt/pai/data/artefacts"
+documents_dir = "/opt/pai/data/documents"
+workspace_dir = "/opt/pai/data/workspace"
+skills_dir = "/opt/pai/data/skills"
+prompts_dir = "/opt/pai/data/prompts"
+exports_dir = "/opt/pai/data/exports"
+
+[keycloak]
+url = "https://auth.local"
+realm = "fosnie"
+client_id = "fosnie"
+
+# llama.cpp on unified memory is typically slower per token than a GPU+vLLM box —
+# widen the tool timeouts so RAG / document / artefact tools don't trip early.
+[tool_timeout_secs]
+rag = 240
+document_read = 120
+artefact = 240

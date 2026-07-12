@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE group_chat_members SET last_read_seq = GREATEST(last_read_seq, $3) WHERE group_chat_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1b64e1d4bbfd4e97a35630e3f69ff1b5b9a185f2409d7c716e2ed465b50bb244"
+}

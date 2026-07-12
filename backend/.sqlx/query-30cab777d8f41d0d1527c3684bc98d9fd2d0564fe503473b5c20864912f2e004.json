@@ -1,0 +1,110 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.id, m.role::text AS \"role!\", m.content, m.sequence_number, m.created_at,\n                  m.activity, m.groundedness,\n                  (m.completed_at IS NULL AND m.interrupted_at IS NULL AND m.role = 'assistant') AS \"streaming!\",\n                  mr.decision::text AS review_decision\n           FROM messages m\n           LEFT JOIN message_reviews mr ON mr.message_id = m.id\n           WHERE m.chat_id = $1 AND m.role IN ('user','assistant')\n           ORDER BY m.sequence_number DESC LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "role!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "content",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "content"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "sequence_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "activity",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "activity"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "groundedness",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "groundedness"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "streaming!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "review_decision",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false,
+      false,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "30cab777d8f41d0d1527c3684bc98d9fd2d0564fe503473b5c20864912f2e004"
+}

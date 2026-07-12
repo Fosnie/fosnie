@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n               SELECT 1 FROM projects p\n               WHERE p.archived_at IS NULL\n                 AND (p.owner_user_id = $1 OR EXISTS (\n                       SELECT 1 FROM access_grants g WHERE g.resource_type = 'project' AND g.resource_id = p.id\n                         AND ((g.principal_type = 'user'  AND g.principal_id = $1)\n                           OR (g.principal_type = 'group' AND g.principal_id IN (SELECT group_id FROM group_members WHERE user_id = $1)))))\n                 AND (p.owner_user_id = $2 OR EXISTS (\n                       SELECT 1 FROM access_grants g WHERE g.resource_type = 'project' AND g.resource_id = p.id\n                         AND ((g.principal_type = 'user'  AND g.principal_id = $2)\n                           OR (g.principal_type = 'group' AND g.principal_id IN (SELECT group_id FROM group_members WHERE user_id = $2)))))\n               UNION ALL\n               SELECT 1 FROM group_members a JOIN group_members b ON a.group_id = b.group_id\n               WHERE a.user_id = $1 AND b.user_id = $2\n           ) AS \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d89e6be8078ac95343e242bae0b6bec1d7ae567e82b8f84b2ec2611ea64802aa"
+}

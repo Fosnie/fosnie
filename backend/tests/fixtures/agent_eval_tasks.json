@@ -1,0 +1,38 @@
+[
+  {
+    "id": "general-welcome",
+    "agent": "general",
+    "prompt": "Draft a short, warm welcome note for a new starter joining the operations team. Two short paragraphs.",
+    "expect_tools": [],
+    "judge_rubric": "A concise, professional welcome note addressed to a new operations-team starter, in British English. It is an actual note, not a refusal and not a question back to the user."
+  },
+  {
+    "id": "general-list-docs",
+    "agent": "general",
+    "prompt": "Which documents are available in this project's knowledge base? Use the list_documents tool, then tell me what you found.",
+    "expect_tools": ["list_documents"],
+    "judge_rubric": "The assistant reports the documents found, or clearly states there are none in the project. Not a refusal."
+  },
+  {
+    "id": "general-temporal",
+    "agent": "general",
+    "prompt": "List the documents from the last 30 days. Use the list_documents tool with the time window — do not work out the dates yourself.",
+    "expect_tools": ["list_documents"],
+    "judge_rubric": "The assistant scoped the listing by recency and reported the result (including 'none in the last 30 days' if empty). It did not fabricate or compute a date range itself."
+  },
+  {
+    "id": "legal-clause",
+    "agent": "legal",
+    "prompt": "Draft a brief mutual confidentiality clause for a commercial services agreement. One short, self-contained clause.",
+    "expect_tools": [],
+    "judge_rubric": "A plausible mutual confidentiality / non-disclosure clause in precise legal British English: it identifies confidential information and states the obligation of confidence. Not a refusal."
+  },
+  {
+    "id": "control-wrong-tool",
+    "agent": "general",
+    "prompt": "Write a one-line greeting.",
+    "expect_tools": ["edit_document"],
+    "judge_rubric": "Any short greeting.",
+    "note": "Control: the General agent has no edit_document tool, so tool-correctness MUST fail here — proves the harness discriminates rather than passing everything."
+  }
+]

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO group_chats (id, kind, name, project_id, created_by) VALUES ($1, ($2::text)::group_chat_kind, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d80ef3cec85819ab9a24e6b152adb3b7e7b2a016e4509edb9e90ed3e2e549a8"
+}

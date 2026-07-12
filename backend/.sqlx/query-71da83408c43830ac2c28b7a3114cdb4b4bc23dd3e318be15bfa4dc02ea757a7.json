@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT created_by, columns_config FROM tabular_reviews WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular_reviews",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "columns_config",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tabular_reviews",
+            "name": "columns_config"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "71da83408c43830ac2c28b7a3114cdb4b4bc23dd3e318be15bfa4dc02ea757a7"
+}

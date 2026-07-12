@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users\n                  SET display_name = CASE WHEN display_name_custom THEN display_name ELSE $2 END,\n                      email = $3,\n                      role = CASE WHEN $4 THEN $5 ELSE role END,\n                      last_seen_at = now()\n                WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        {
+          "Custom": {
+            "name": "platform_role",
+            "kind": {
+              "Enum": [
+                "super_admin",
+                "client_admin",
+                "power_user",
+                "user"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "942fac3ade5894be3e608fc3614779491b2136f48bd820ca7d52bcc60913fe04"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM provider_configs WHERE scope = 'user' AND scope_id = $1 AND role = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2fb28633d259bf1b269f132e401ada13b51aa9e16ca5404504ba06e99b384cdc"
+}

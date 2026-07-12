@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT disk_path, mime FROM branding_assets WHERE kind = ($1::text)::branding_kind",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "disk_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branding_assets",
+            "name": "disk_path"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branding_assets",
+            "name": "mime"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a6afc52809d876ee4f2cd063aba0b977c3afa13066b6bb53185e085382fef6c6"
+}

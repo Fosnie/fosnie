@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE embedding_index SET reindex_done = $1, updated_at = now() WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dbb623b1e0ae92f640e12b6c89234189b791d529b59a1d1bd842ae73d66a4141"
+}

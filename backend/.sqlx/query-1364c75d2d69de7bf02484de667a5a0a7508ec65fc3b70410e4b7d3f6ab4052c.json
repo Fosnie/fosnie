@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET role = $2 WHERE id = $1 AND role <> 'super_admin'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "platform_role",
+            "kind": {
+              "Enum": [
+                "super_admin",
+                "client_admin",
+                "power_user",
+                "user"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1364c75d2d69de7bf02484de667a5a0a7508ec65fc3b70410e4b7d3f6ab4052c"
+}

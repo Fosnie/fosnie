@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chat_kb_links (chat_id, kb_id, attached_by) SELECT $1, kb_id, $3 FROM UNNEST($2::uuid[]) AS t(kb_id) ON CONFLICT (chat_id, kb_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b8306f0cd9c4b3293ee2e7836d32e14464028cf9ede42f6f56ed68e1ec80f6e6"
+}

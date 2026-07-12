@@ -1,0 +1,26 @@
+# PAI Platform backend — single systemd unit.
+# One process hosts BOTH the hot API/WebSocket runtime and the background
+# task/scheduler runtime — not a second unit. Linux deploy target; not used on
+# the Windows dev box.
+
+[Unit]
+Description=PAI Platform backend (fosnie-backend)
+After=network-online.target postgresql.service redis.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=pai
+Group=pai
+EnvironmentFile=/etc/pai/backend.env
+ExecStart=/usr/local/bin/fosnie-backend
+Restart=on-failure
+RestartSec=3
+# Zero-egress posture: tighten with NoNewPrivileges / ProtectSystem etc. at deploy.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pai
+
+[Install]
+WantedBy=multi-user.target

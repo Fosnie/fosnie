@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO messages (id, chat_id, role, sequence_number, content) VALUES ($1, $2, 'assistant', $3, '')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "119acb1a4ccba5d807299ab3e1fff9fd65e64d7c39cccb69bdd66391d384489e"
+}

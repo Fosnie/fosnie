@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT desired_model, desired_base_url, desired_api_key_encrypted,\n                  desired_dim, desired_collection_name\n           FROM embedding_index WHERE id = 1 AND desired_model IS NOT NULL AND desired_dim IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "desired_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "desired_model"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "desired_base_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "desired_base_url"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "desired_api_key_encrypted",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "desired_api_key_encrypted"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "desired_dim",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "desired_dim"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "desired_collection_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "desired_collection_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "0856f12241db340f5c35f9c94988986a8ff0ae75ffb4d73959ac8814de41cbe5"
+}

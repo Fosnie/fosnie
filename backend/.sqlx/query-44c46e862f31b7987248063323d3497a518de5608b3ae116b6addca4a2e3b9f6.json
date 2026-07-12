@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sequence_number AS \"seq!\", role::text AS \"role!\", content\n           FROM messages\n           WHERE chat_id = $1 AND role IN ('user', 'assistant')\n           ORDER BY sequence_number ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "role!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "content",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "content"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "44c46e862f31b7987248063323d3497a518de5608b3ae116b6addca4a2e3b9f6"
+}

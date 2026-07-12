@@ -1,0 +1,103 @@
+# PAI Platform — Prometheus alerting rules (the golden signals + platform specifics).
+# Load via prometheus.yml `rule_files:`. Tune thresholds to the deployment's SLOs.
+# `job` labels come from the scrape config (fosnie-backend / pai-ml).
+
+groups:
+  - name: fosnie
+    rules:
+      # --- Availability ---------------------------------------------------------
+      - alert: PaiBackendDown
+        expr: up{job="fosnie-backend"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "fosnie-backend is not scrapeable (process down or /metrics unreachable)"
+      - alert: PaiMlDown
+        expr: up{job="pai-ml"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "pai-ml is not scrapeable (process down)"
+
+      # --- Errors & latency (golden signals) ------------------------------------
+      - alert: PaiHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="fosnie-backend",status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total{job="fosnie-backend"}[5m])), 1) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: ">5% of backend requests are 5xx over the last 5m"
+      - alert: PaiHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="fosnie-backend"}[5m]))) > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Backend p95 request latency >2s (10m)"
+
+      # --- LLM / inference ------------------------------------------------------
+      - alert: PaiLlmSlowTtft
+        expr: histogram_quantile(0.95, sum by (le) (rate(llm_ttft_seconds_bucket[5m]))) > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "LLM time-to-first-token p95 >5s (10m) — inference saturated?"
+
+      # --- Durable task queue ---------------------------------------------------
+      - alert: PaiTaskDeadLetter
+        expr: task_queue_depth{status="dead_letter"} > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} durable task(s) dead-lettered — inspect the tasks table"
+      - alert: PaiTaskBacklog
+        expr: task_queue_depth{status="queued"} > 100
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Task queue backlog: >100 queued for 10m (scheduler keeping up?)"
+
+      # --- Datastores -----------------------------------------------------------
+      - alert: PaiDbPoolExhausted
+        expr: db_pool_connections{state="idle"} == 0 and db_pool_connections{state="size"} > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Postgres connection pool has no idle connections (5m)"
+      - alert: PaiDbSlow
+        expr: db_ping_seconds > 0.5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Postgres ping >500ms (5m) — datastore under load?"
+      - alert: PaiRedisSlow
+        expr: redis_ping_seconds > 0.5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Redis ping >500ms (5m)"
+
+      # --- Client (SPA) ---------------------------------------------------------
+      - alert: PaiClientErrorSpike
+        expr: increase(client_errors_total[10m]) > 25
+        for: 0m
+        labels: { severity: warning }
+        annotations:
+          summary: ">25 client-side errors reported in 10m — a broken SPA build/route? (POST /api/telemetry)"
+
+      # --- Security / governance ------------------------------------------------
+      - alert: PaiAuditAnomalySpike
+        expr: increase(audit_anomaly_total[15m]) > 10
+        labels: { severity: warning }
+        annotations:
+          summary: ">10 audit anomalies in 15m — review GET /api/admin/anomalies"
+
+      # --- Saturation -----------------------------------------------------------
+      - alert: PaiHighMemory
+        expr: process_resident_memory_bytes{job="fosnie-backend"} > 4e9
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Backend RSS >4GB (15m)"

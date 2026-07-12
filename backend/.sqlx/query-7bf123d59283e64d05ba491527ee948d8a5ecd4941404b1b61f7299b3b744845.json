@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.actor_user_id, u.email AS \"email?\",\n                  COALESCE(SUM((a.token_usage->>'prompt_tokens')::bigint), 0)::bigint AS \"prompt_tokens!: i64\",\n                  COALESCE(SUM((a.token_usage->>'completion_tokens')::bigint), 0)::bigint AS \"completion_tokens!: i64\",\n                  COUNT(*) AS \"count!: i64\"\n           FROM audit_events a\n           LEFT JOIN users u ON u.id = a.actor_user_id\n           WHERE a.action_type = 'chat.assistant.completed'\n             AND a.actor_user_id = ANY($1)\n           GROUP BY a.actor_user_id, u.email\n           ORDER BY COUNT(*) DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "actor_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "actor_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "email?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "prompt_tokens!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "completion_tokens!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "count!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7bf123d59283e64d05ba491527ee948d8a5ecd4941404b1b61f7299b3b744845"
+}

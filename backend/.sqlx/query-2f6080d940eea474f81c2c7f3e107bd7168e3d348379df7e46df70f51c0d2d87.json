@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT wr.trigger_event_ids,\n                  wr.run_as_user_id,\n                  w.action_type,\n                  w.action_config,\n                  w.project_id,\n                  w.owner_id,\n                  w.agent_id,\n                  w.name\n           FROM workflow_runs wr\n           JOIN workflows w ON w.id = wr.workflow_id\n           WHERE wr.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "trigger_event_ids",
+        "type_info": "UuidArray",
+        "origin": {
+          "Table": {
+            "table": "workflow_runs",
+            "name": "trigger_event_ids"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "run_as_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workflow_runs",
+            "name": "run_as_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "action_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workflows",
+            "name": "action_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "action_config",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "workflows",
+            "name": "action_config"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workflows",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "owner_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workflows",
+            "name": "owner_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workflows",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workflows",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "2f6080d940eea474f81c2c7f3e107bd7168e3d348379df7e46df70f51c0d2d87"
+}

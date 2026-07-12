@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO document_edits (id, document_id, document_version_id, w_id, author, find_text, replace_text) SELECT id, $2, $3, w_id, 'assistant', find_text, replace_text FROM UNNEST($1::uuid[], $4::text[], $5::text[], $6::text[]) AS t(id, w_id, find_text, replace_text)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "80194f02e2de425b0f7778ccc54e97c065153b0f3bb0ad2f31f9b996930705b0"
+}

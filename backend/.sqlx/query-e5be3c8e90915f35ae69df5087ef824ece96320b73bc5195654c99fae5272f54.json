@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO group_chat_members (group_chat_id, user_id, role) VALUES ($1, $2, ($3::text)::group_member_role)\n           ON CONFLICT (group_chat_id, user_id) DO UPDATE SET role = EXCLUDED.role\n           RETURNING (xmax = 0) AS \"inserted!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "inserted!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e5be3c8e90915f35ae69df5087ef824ece96320b73bc5195654c99fae5272f54"
+}

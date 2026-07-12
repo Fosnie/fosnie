@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT content FROM memory_facts\n                   WHERE NOT pinned AND ((scope = 'user' AND owner_user_id = $1)\n                                      OR (scope = 'project' AND owner_project_id = $2))\n                   ORDER BY updated_at DESC LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "content",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "memory_facts",
+            "name": "content"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7485c62bdb39e7e376dafcd067d778a7b195bbb947a6d9c3916a1edcb72e71b1"
+}

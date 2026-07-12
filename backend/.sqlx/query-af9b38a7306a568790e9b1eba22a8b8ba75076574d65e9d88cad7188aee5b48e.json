@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id,\n                  event_type,\n                  actor_type AS \"actor_type: ActorType\",\n                  actor_user_id,\n                  resource_type,\n                  resource_id,\n                  project_id,\n                  payload,\n                  trigger_chain,\n                  depth,\n                  created_at\n           FROM events\n           WHERE dispatched_at IS NULL\n           ORDER BY created_at\n           LIMIT $1\n           FOR UPDATE SKIP LOCKED",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "event_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "event_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "actor_type: ActorType",
+        "type_info": {
+          "Custom": {
+            "name": "event_actor_type",
+            "kind": {
+              "Enum": [
+                "human",
+                "agent",
+                "workflow",
+                "system"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "actor_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "actor_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "actor_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "resource_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "resource_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "trigger_chain",
+        "type_info": "UuidArray",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "trigger_chain"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "depth",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "depth"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "af9b38a7306a568790e9b1eba22a8b8ba75076574d65e9d88cad7188aee5b48e"
+}

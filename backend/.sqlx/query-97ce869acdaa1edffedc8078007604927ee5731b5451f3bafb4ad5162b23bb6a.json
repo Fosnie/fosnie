@@ -1,0 +1,107 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ar.id, ar.pending_tool, ar.pending_args, ar.automation_id, ar.chat_id,\n                  extract(epoch from ar.created_at)::bigint AS \"created_epoch!\",\n                  au.name AS \"automation_name?\", c.title AS \"chat_title?\"\n           FROM agent_runs ar\n           LEFT JOIN automations au ON au.id = ar.automation_id\n           LEFT JOIN chats c ON c.id = ar.chat_id\n           WHERE ar.acting_user_id = $1 AND ar.status = 'awaiting_approval'\n           ORDER BY ar.created_at DESC LIMIT 50",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pending_tool",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "pending_tool"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "pending_args",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "pending_args"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "automation_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "automation_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_epoch!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "automation_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "chat_title?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "97ce869acdaa1edffedc8078007604927ee5731b5451f3bafb4ad5162b23bb6a"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM workflow_coalesce WHERE workflow_id = $1 AND scope_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "44e6a72b2192da602165f8c87735949f36c0f7cc8dee50756b41e327dfaa6a04"
+}

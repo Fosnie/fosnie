@@ -1,0 +1,104 @@
+# Dev-only datastores for the PAI Platform Rust backend.
+# Brings up the Postgres + Redis that sqlx (compile-time checks, migrations)
+# and the readiness probe need. NOT a deployment artefact — production
+# datastores have their own lifecycle.
+#
+#   docker compose -f backend/deploy/docker-compose.dev.yml up -d
+#
+# Matches .env.example (host port 5433 to avoid a clash with a native
+# PostgreSQL install that may already own 5432):
+#   DATABASE_URL=postgres://pai:pai@localhost:5433/pai
+#   PAI__REDIS_URL=redis://localhost:6379
+
+name: fosnie-backend-dev
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: pai
+      POSTGRES_PASSWORD: pai
+      POSTGRES_DB: pai
+    ports:
+      - "5433:5432"
+    volumes:
+      - pai_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pai -d pai"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      # Host 6379 is inside a Windows Hyper-V reserved port range on this box;
+      # remap to 16379 (container port unchanged).
+      - "16379:6379"
+    volumes:
+      - pai_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Dev IdP. start-dev uses in-memory H2 (no external DB needed) and imports
+  # the pai realm on boot. Host port 8081 to leave 8080 for the backend.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./keycloak/import:/opt/keycloak/data/import:ro
+
+  # Dev reranker: llama.cpp server serving the Qwen3-Reranker GGUF via its
+  # /v1/rerank endpoint (Ollama cannot serve rerankers). Prod uses the
+  # Qwen3-Reranker service (Infinity) by base-URL. CPU (0.6B is small).
+  reranker:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    # -b/-ub raised to the context size: reranking scores a whole (query+doc)
+    # sequence in ONE physical batch, so the default -ub 512 rejects chunks
+    # over ~512 tokens ("input too large to process"). Match the 8192 context.
+    command: ["-hf", "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF:Q8_0", "--reranking", "--host", "0.0.0.0", "--port", "8091", "-c", "8192", "-b", "8192", "-ub", "8192", "-ngl", "0"]
+    ports:
+      - "8091:8091"
+    volumes:
+      - pai_llama_cache:/root/.cache/llama.cpp
+
+  # Vector store (Python-only access). Native hybrid dense+BM25 (topology §3.2).
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - pai_qdrant_data:/qdrant/storage
+
+  # Dev SERP layer for the web-search connector.
+  # Self-hosted SearXNG, JSON API enabled via ./searxng/settings.yml. The ML
+  # service reaches it at SEARXNG_BASE_URL (see ml/.env). Dormant until
+  # the web_search connector is enabled — running the container causes no egress
+  # by itself.
+  # Host 8888 fell inside a Windows reserved port range on this box; remapped
+  # to 18888 (container port unchanged).
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "18888:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: "http://localhost:18888/"
+
+volumes:
+  pai_pg_data:
+  pai_redis_data:
+  pai_qdrant_data:
+  pai_llama_cache:

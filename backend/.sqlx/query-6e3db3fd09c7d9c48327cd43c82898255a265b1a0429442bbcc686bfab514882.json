@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.kind::text AS \"kind!\", c.project_id,\n                  CASE WHEN c.kind = 'dm'\n                       THEN (SELECT u.display_name FROM group_chat_members gm2\n                             JOIN users u ON u.id = gm2.user_id\n                             WHERE gm2.group_chat_id = c.id AND gm2.user_id <> $1 LIMIT 1)\n                       ELSE c.name END AS name,\n                  (SELECT count(*) FROM group_chat_messages gm\n                   WHERE gm.group_chat_id = c.id AND gm.sequence_number > m.last_read_seq\n                     AND (gm.sender_user_id IS NULL OR gm.sender_user_id <> $1)) AS \"unread_count!\"\n           FROM group_chats c JOIN group_chat_members m ON m.group_chat_id = c.id\n           WHERE m.user_id = $1 ORDER BY c.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_chats",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_chats",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "unread_count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "6e3db3fd09c7d9c48327cd43c82898255a265b1a0429442bbcc686bfab514882"
+}

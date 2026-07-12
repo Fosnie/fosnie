@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE chat_attachments SET message_id = $1, chat_id = $2 WHERE id = ANY($3) AND owner_user_id = $4 AND message_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "44b3151759a78dccd471e90f23498629f01b79090ebd16b36c5931d42cd87e21"
+}

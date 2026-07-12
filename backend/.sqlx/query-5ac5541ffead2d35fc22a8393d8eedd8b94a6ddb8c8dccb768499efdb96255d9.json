@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE knowledge_bases SET archived_at = now() WHERE id = $1 AND archived_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ac5541ffead2d35fc22a8393d8eedd8b94a6ddb8c8dccb768499efdb96255d9"
+}

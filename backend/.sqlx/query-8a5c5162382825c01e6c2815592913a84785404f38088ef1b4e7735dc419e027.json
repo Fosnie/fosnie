@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE memory_facts SET content = COALESCE($2, content), pinned = COALESCE($3, pinned), user_edited = user_edited OR ($2 IS NOT NULL), updated_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8a5c5162382825c01e6c2815592913a84785404f38088ef1b4e7735dc419e027"
+}

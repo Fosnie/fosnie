@@ -1,0 +1,35 @@
+# PAI Platform backend — TEST image. Build context = repo root.
+# Multi-stage: build the React SPA, build the Rust binary (sqlx OFFLINE so no DB
+# is needed at build time — uses backend/.sqlx), ship a slim runtime that serves
+# both the API and the SPA bundle. Migrations are embedded at compile time
+# (sqlx::migrate!) and run on boot, so no separate migrate step.
+
+# ── 1. Frontend (React 19 + Vite) ────────────────────────────────────────────
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm install
+COPY frontend/ ./
+ARG VITE_KEYCLOAK_URL=http://localhost:8081
+ENV VITE_KEYCLOAK_URL=$VITE_KEYCLOAK_URL
+RUN npm run build          # → /app/frontend/dist
+
+# ── 2. Rust backend ──────────────────────────────────────────────────────────
+FROM rust:1-bookworm AS build
+WORKDIR /app/backend
+ENV SQLX_OFFLINE=true
+# Cache deps: copy manifests first, then sources.
+COPY backend/Cargo.toml backend/Cargo.lock ./
+COPY backend/.sqlx ./.sqlx
+COPY backend/ ./
+RUN cargo build --release --bin fosnie-backend
+
+# ── 3. Runtime (slim; rustls TLS → no libssl needed) ─────────────────────────
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app/backend/target/release/fosnie-backend /usr/local/bin/fosnie-backend
+COPY --from=frontend /app/frontend/dist /opt/pai/frontend/dist
+RUN mkdir -p /var/lib/pai
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/fosnie-backend"]

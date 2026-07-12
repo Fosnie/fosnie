@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO events\n             (id, event_type, actor_type, actor_user_id, resource_type, resource_id,\n              project_id, payload, causation_id, trigger_chain, depth)\n           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "event_actor_type",
+            "kind": {
+              "Enum": [
+                "human",
+                "agent",
+                "workflow",
+                "system"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Jsonb",
+        "Uuid",
+        "UuidArray",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ae60f7e43a6d90ca9165ae3d5efb335a50455dd46675fb77f436b2a06cf398ac"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE embedding_index\n           SET embed_model = COALESCE(desired_model, embed_model),\n               embed_base_url = desired_base_url,\n               embed_api_key_encrypted = desired_api_key_encrypted,\n               dim = COALESCE(desired_dim, dim),\n               collection_name = $1,\n               status = 'active', error = NULL,\n               reindex_done = reindex_total,\n               desired_model = NULL, desired_base_url = NULL,\n               desired_api_key_encrypted = NULL, desired_dim = NULL,\n               desired_collection_name = NULL,\n               built_at = now(), updated_at = now()\n           WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7c761adc5f5e5c75ac4ec379cbd39857a2713db6ecde406a6a5cc123e45a7a59"
+}

@@ -1,0 +1,86 @@
+# PAI Platform backend — TEST boot config (container, host networking).
+# Mounted at /etc/pai/config.test.toml; PAI_CONFIG_FILE points here.
+# Secrets come from PAI__* env (see docker-compose.test.yml), NOT this file.
+# This is a TEST profile: http on localhost, dev Keycloak realm. Not production.
+
+database_url = "postgres://pai:pai@localhost:5432/pai"   # overridden by PAI__DATABASE_URL
+redis_url    = "redis://localhost:6379"
+log_level    = "info"
+
+# 0 = learn max_model_len from vLLM /v1/models at runtime.
+max_context_tokens = 0
+
+[server]
+host       = "127.0.0.1"     # host networking; reach it via SSH tunnel
+port       = 8080
+static_dir = "/opt/pai/frontend/dist"   # SPA baked into the backend image
+public_url = "http://localhost:8080"     # loopback ⇒ plain http allowed by validate()
+
+[ml]
+base_url = "http://127.0.0.1:8090"
+# shared_secret comes from PAI__ML__SHARED_SECRET env.
+
+[observability]
+# Set PAI__OBSERVABILITY__METRICS_TOKEN to enable /metrics (fail-closed otherwise).
+metrics_token = ""
+log_format    = "json"
+
+[features]
+# EVERYTHING ON. The external engines for these are all wired in
+# docker-compose.test.yml (STT/TTS/verifier/SearXNG); the in-process ones
+# (workflows) need no engine.
+voice            = true    # dictation + read-aloud (STT_*/TTS_* on the ML service)
+voice_live       = true    # live cascade; degrades to batch via the engines below
+workflows        = true    # event-driven workflow engine (in-process)
+groundedness     = true    # verifier sidecar on :8095 (VERIFY_* on the ML service)
+data_owner_approval = true # owner approval for access-bearing group adds (inbox endpoints)
+# Firecracker code-interpreter: feature ON. It needs /dev/kvm (wired into the
+# backend service) AND a built rootfs/kernel in ./firecracker. If your box lacks
+# nested KVM, see README "Code interpreter" — run the backend natively for this one.
+code_interpreter = true
+
+[storage]
+branding_dir  = "/var/lib/pai/branding"
+artefacts_dir = "/var/lib/pai/artefacts"
+documents_dir = "/var/lib/pai/documents"
+workspace_dir = "/var/lib/pai/workspace"
+skills_dir    = "/var/lib/pai/skills"
+prompts_dir   = "/var/lib/pai/prompts"
+exports_dir   = "/var/lib/pai/exports"
+
+[keycloak]
+url       = "http://localhost:8081"   # dev realm; browser + backend share this host
+realm     = "fosnie"
+client_id = "fosnie"
+# client_secret comes from PAI__KEYCLOAK__CLIENT_SECRET env (seed: fosnie-secret).
+
+[tool_timeout_secs]
+
+# Live-voice engines. We don't run the streaming STT / turn sidecar containers,
+# so point STT at the batch fallback ("none") and TTS at the kokoro batch endpoint
+# — live voice then works end-to-end via the documented fallbacks (no errors).
+# To go fully streaming, add sherpa-onnx + the turn sidecar and set these to ws://…
+[voice_live]
+stt_stream_kind   = "none"               # batch STT per utterance (no live partials)
+stt_stream_url    = ""
+stt_sample_rate   = 16000
+turn_detector_url = ""                    # silence-threshold gate decides turns
+tts_stream        = false                 # per-clause batch synthesis via kokoro
+tts_stream_url    = "http://127.0.0.1:8880"
+
+# Firecracker code-interpreter VM. Paths point inside the backend container at the
+# ./firecracker bind-mount. You must build vmlinux + rootfs.ext4 + guest agent per
+# deploy/firecracker/README.md and drop them there.
+[code_interpreter_vm]
+firecracker_bin = "firecracker"
+kernel_image    = "/opt/pai/firecracker/vmlinux"
+rootfs_image    = "/opt/pai/firecracker/rootfs.ext4"
+snapshot_dir    = "/opt/pai/firecracker/snapshot"
+socket_dir      = "/run/pai/firecracker"
+vsock_cid       = 3
+vsock_port      = 5005
+vcpus           = 2
+mem_mb          = 512
+wall_secs       = 30
+pool_size       = 1
+max_output_bytes = 33554432

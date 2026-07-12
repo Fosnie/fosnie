@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT model_agent_traceability->>'model' AS model\n           FROM audit_events\n           WHERE action_type = 'chat.assistant.completed' AND payload->>'message_id' = $1\n           ORDER BY seq DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "model",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "11636988ddac8c78c69ee93d0a99a9916b65fbbe3a29791191c21657e50455f7"
+}

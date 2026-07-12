@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agent_runs SET status = 'completed', finished_at = now(), updated_at = now() WHERE id = $1 AND status = 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d9a4734f1e1e121d5905f8a777b19f5ca81ca90481971943cad3bd266a57d36c"
+}

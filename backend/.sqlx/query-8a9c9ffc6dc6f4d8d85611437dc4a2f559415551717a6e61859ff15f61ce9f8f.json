@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT scope::text AS \"scope!\", owner_user_id, owner_project_id FROM memory_facts WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "scope!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "memory_facts",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "memory_facts",
+            "name": "owner_project_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      true,
+      true
+    ]
+  },
+  "hash": "8a9c9ffc6dc6f4d8d85611437dc4a2f559415551717a6e61859ff15f61ce9f8f"
+}

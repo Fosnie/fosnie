@@ -1,0 +1,107 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, scope, label, base_url, model, reasoning_mode, is_default,\n                  (api_key_encrypted IS NOT NULL) AS \"api_key_set!\"\n           FROM provider_configs\n           WHERE role = 'llm' AND enabled\n             AND ( scope = 'deployment' OR (scope = 'user' AND scope_id = $1) )\n           ORDER BY (scope = 'user'), is_default DESC, label",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "scope",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "scope"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "base_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "base_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "model"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "reasoning_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "reasoning_mode"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "is_default",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "is_default"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "api_key_set!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "52bb3337720f82743e0ff9eb0a6ab2264d075e20ceff6af9834432dfbbfbc411"
+}

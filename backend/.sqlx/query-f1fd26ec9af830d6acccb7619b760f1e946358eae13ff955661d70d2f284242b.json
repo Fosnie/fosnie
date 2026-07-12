@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, disk_path AS \"disk_path!\" FROM generated_artefacts",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "generated_artefacts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "disk_path!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "generated_artefacts",
+            "name": "disk_path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f1fd26ec9af830d6acccb7619b760f1e946358eae13ff955661d70d2f284242b"
+}

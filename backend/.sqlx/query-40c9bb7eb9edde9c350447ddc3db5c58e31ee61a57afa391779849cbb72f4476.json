@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT bytes_path FROM document_versions WHERE id = $1 AND document_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bytes_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "document_versions",
+            "name": "bytes_path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "40c9bb7eb9edde9c350447ddc3db5c58e31ee61a57afa391779849cbb72f4476"
+}

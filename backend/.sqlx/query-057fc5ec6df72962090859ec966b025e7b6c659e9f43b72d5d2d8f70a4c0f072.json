@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE workflow_runs SET status = 'running', started_at = now() WHERE id = $1 AND status = 'queued'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "057fc5ec6df72962090859ec966b025e7b6c659e9f43b72d5d2d8f70a4c0f072"
+}

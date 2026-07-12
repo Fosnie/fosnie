@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users\n              SET email = 'stale-' || replace(id::text, '-', '') || '@stale.invalid',\n                  deactivated_at = COALESCE(deactivated_at, now())\n            WHERE email = $1 AND id <> $2\n            RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "284ef789512081e669232b87800157db47ad631d371a946d820b25cd019f0311"
+}

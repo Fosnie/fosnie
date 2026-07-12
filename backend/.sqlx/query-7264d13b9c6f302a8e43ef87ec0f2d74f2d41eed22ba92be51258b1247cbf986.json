@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO kb_documents (id, kb_id, original_filename, mime, bytes_path, ingest_status, created_by) VALUES ($1, $2, $3, $4, $5, 'uploaded', $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7264d13b9c6f302a8e43ef87ec0f2d74f2d41eed22ba92be51258b1247cbf986"
+}

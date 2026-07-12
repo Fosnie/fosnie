@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.original_filename AS \"filename!\", c.column_key, c.value, c.reasoning\n                   FROM tabular_cells c JOIN documents d ON d.id = c.document_id\n                   WHERE c.review_id = $1 AND c.status = 'done'\n                   ORDER BY d.original_filename, c.column_key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "filename!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "documents",
+            "name": "original_filename"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "column_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "column_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "value"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "reasoning",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "reasoning"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "dedae2a4eed07ab179be11a747fd1d3a426766573625af34c3d07db326418153"
+}

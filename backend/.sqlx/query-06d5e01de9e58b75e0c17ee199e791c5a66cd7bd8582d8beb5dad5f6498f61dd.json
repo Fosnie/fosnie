@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n                     SELECT 1 FROM group_chat_messages gm\n                     JOIN group_chat_members m ON m.group_chat_id = gm.group_chat_id\n                     WHERE m.user_id = $1 AND gm.attachments @> $2\n                   ) AS \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "06d5e01de9e58b75e0c17ee199e791c5a66cd7bd8582d8beb5dad5f6498f61dd"
+}

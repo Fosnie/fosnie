@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM group_chat_members WHERE group_chat_id = $1 AND user_id <> $2 AND user_id <> ALL($3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "80781ccd0aab39eaec4b2f567640c894e3a447422821bddf626dc922ca4ed78d"
+}

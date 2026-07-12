@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE workflows SET name = COALESCE($2, name), description = COALESCE($3, description), enabled = COALESCE($4, enabled), trigger_on_system_events = COALESCE($5, trigger_on_system_events), condition = COALESCE($6, condition), action_config = COALESCE($7, action_config), coalesce_window_secs = COALESCE($8, coalesce_window_secs), max_runs_per_window = COALESCE($9, max_runs_per_window), version = version + 1, updated_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "Jsonb",
+        "Jsonb",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fb573cf7efd750af7a801daadd4b2865060f4ca7a824f2acc2c4c4a71c6ed4cc"
+}

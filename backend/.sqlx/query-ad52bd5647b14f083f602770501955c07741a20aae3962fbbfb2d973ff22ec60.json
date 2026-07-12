@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT to_char(d, 'YYYY-MM-DD') AS \"day!\",\n                  COALESCE(SUM((a.token_usage->>'prompt_tokens')::bigint\n                             + (a.token_usage->>'completion_tokens')::bigint), 0)::bigint AS \"tokens!: i64\",\n                  COUNT(a.id) AS \"messages!: i64\"\n           FROM generate_series((now() - interval '29 days')::date, now()::date, interval '1 day') d\n           LEFT JOIN audit_events a\n             ON a.action_type = 'chat.assistant.completed'\n            AND date_trunc('day', a.occurred_at)::date = d::date\n           GROUP BY d ORDER BY d",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "tokens!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "messages!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "ad52bd5647b14f083f602770501955c07741a20aae3962fbbfb2d973ff22ec60"
+}

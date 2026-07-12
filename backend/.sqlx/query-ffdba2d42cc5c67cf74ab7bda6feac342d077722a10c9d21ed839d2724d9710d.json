@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, scope::text AS \"scope!\", content, pinned, user_edited\n           FROM memory_facts\n           WHERE (scope = 'user' AND owner_user_id = $1)\n              OR (scope = 'project' AND owner_project_id = $2)\n           ORDER BY pinned DESC, updated_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "memory_facts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "scope!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "content",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "memory_facts",
+            "name": "content"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "pinned",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "memory_facts",
+            "name": "pinned"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "user_edited",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "memory_facts",
+            "name": "user_edited"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ffdba2d42cc5c67cf74ab7bda6feac342d077722a10c9d21ed839d2724d9710d"
+}

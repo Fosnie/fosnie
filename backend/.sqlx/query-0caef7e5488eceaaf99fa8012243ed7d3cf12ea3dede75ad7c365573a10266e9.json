@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT child.relname AS \"name!\",\n                  pg_get_expr(child.relpartbound, child.oid) AS \"bound!\"\n           FROM pg_inherits\n           JOIN pg_class parent ON parent.oid = pg_inherits.inhparent\n           JOIN pg_class child  ON child.oid  = pg_inherits.inhrelid\n           WHERE parent.relname = 'audit_events'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Name",
+        "origin": {
+          "Table": {
+            "table": "pg_class",
+            "name": "relname"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "bound!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "0caef7e5488eceaaf99fa8012243ed7d3cf12ea3dede75ad7c365573a10266e9"
+}

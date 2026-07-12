@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM chat_shares WHERE chat_id = $1 AND group_chat_id = $2 AND shared_by = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2f210f6152b319187dd33f3a9afa0057b374519e632c62cbca369502bbda231e"
+}

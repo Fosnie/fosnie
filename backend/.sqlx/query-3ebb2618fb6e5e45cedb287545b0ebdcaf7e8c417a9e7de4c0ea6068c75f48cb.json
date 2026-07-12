@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tabular_cells SET status = 'pending', value = NULL, reasoning = NULL, citations = NULL, error = NULL, updated_at = now() WHERE review_id = $1 AND document_id = $2 AND column_key = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3ebb2618fb6e5e45cedb287545b0ebdcaf7e8c417a9e7de4c0ea6068c75f48cb"
+}

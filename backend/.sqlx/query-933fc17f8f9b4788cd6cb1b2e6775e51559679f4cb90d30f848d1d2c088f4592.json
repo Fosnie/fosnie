@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO config_settings (key, value, value_type, scope, updated_by, updated_at)\n        VALUES ($1, $2, $3, $4, $5, now())\n        ON CONFLICT (key) DO UPDATE\n            SET value = EXCLUDED.value,\n                value_type = EXCLUDED.value_type,\n                scope = EXCLUDED.scope,\n                updated_by = EXCLUDED.updated_by,\n                updated_at = now()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        {
+          "Custom": {
+            "name": "config_value_type",
+            "kind": {
+              "Enum": [
+                "string",
+                "int",
+                "float",
+                "bool",
+                "json"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "933fc17f8f9b4788cd6cb1b2e6775e51559679f4cb90d30f848d1d2c088f4592"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE provider_configs SET is_default = false\n           WHERE role = 'llm' AND scope = $1 AND scope_id IS NOT DISTINCT FROM $2 AND is_default",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fff538e9b88a55bc698fc7455ff73a8ce3fa3703c6038e45ec265dcd71b7f488"
+}

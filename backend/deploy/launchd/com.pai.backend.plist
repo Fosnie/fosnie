@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PAI Platform backend — macOS launchd job (Mac Studio profile). macOS
+     counterpart of systemd/fosnie-backend.service: one
+     process hosts both the hot API/WebSocket runtime and the background scheduler.
+     Boot config is selected via PAI_CONFIG_FILE (see deploy/config.macos.example.toml).
+     Install: copy to /Library/LaunchDaemons/ (root) or ~/Library/LaunchAgents/,
+     then `launchctl load -w <plist>`. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pai.backend</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/fosnie-backend</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/opt/pai</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Select the macOS/llama.cpp boot profile. -->
+        <key>PAI_CONFIG_FILE</key>
+        <string>/etc/pai/config.macos.toml</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/pai/backend.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/pai/backend.err.log</string>
+</dict>
+</plist>

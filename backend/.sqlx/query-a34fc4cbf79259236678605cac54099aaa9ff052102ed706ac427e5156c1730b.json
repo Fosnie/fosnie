@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE knowledge_bases SET status = 'error' WHERE id = (SELECT kb_id FROM kb_documents WHERE id = $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a34fc4cbf79259236678605cac54099aaa9ff052102ed706ac427e5156c1730b"
+}

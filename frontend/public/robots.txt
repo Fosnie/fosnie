@@ -1,0 +1,3 @@
+# Private AI Platform — internal application, not a public website.
+User-agent: *
+Disallow: /

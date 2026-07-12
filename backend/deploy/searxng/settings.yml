@@ -1,0 +1,36 @@
+# SearXNG settings for the PAI Platform dev SERP layer (web-search connector).
+# Minimal delta over the image defaults.
+#
+# Key points:
+#   - `formats: [html, json]` — the JSON API returns 403 unless json is listed.
+#   - `limiter: false` — the platform's ML service is the single client; the
+#     built-in bot limiter would throttle it. Politeness pacing towards the
+#     upstream engines lives in the platform (ml/app/web/pacing.py).
+#   - Engine basket per the resolved decision: DDG, Mojeek, Startpage, Qwant,
+#     Wikipedia as the reliable core; Google stays at image default (best-effort,
+#     expected to be blocked intermittently).
+
+use_default_settings: true
+
+server:
+  # Dev-only value; generate a fresh secret for any non-dev deployment.
+  secret_key: "pai-dev-searxng-secret-change-me"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
+
+engines:
+  - name: duckduckgo
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: startpage
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: wikipedia
+    disabled: false

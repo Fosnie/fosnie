@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT acting_user_id FROM agent_runs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "acting_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "acting_user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "4c222756809ec1cc635407abc674c3b898364e878669031b9e7419aaf8b6f1d6"
+}

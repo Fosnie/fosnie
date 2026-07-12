@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name, columns_config FROM tabular_reviews WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular_reviews",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "columns_config",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tabular_reviews",
+            "name": "columns_config"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "35b177ce89086f1b7a62ffbba7b9d23cde3154dbd5d9ad6270d0fb69622fc893"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO document_versions (id, document_id, version_number, source, bytes_path, byte_size, created_by) VALUES ($1, $2, $3, ($4::text)::doc_source, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Text",
+        "Text",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "82decf667e7117a588daad524df5776df1b5bf213f7ed0b7df5b43a1a417978c"
+}

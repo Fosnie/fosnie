@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agents SET name = $2, description = $3, system_prompt = $4, params = $5 WHERE id = $1 AND archived_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "21b4a0452a36a79de50b68bfc615c4490239ac56993d9da6a5eca0c2428ea9f4"
+}

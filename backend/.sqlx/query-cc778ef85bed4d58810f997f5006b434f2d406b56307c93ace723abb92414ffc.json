@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT enabled, description_override FROM tool_overrides WHERE tool_name = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "tool_overrides",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "description_override",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tool_overrides",
+            "name": "description_override"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "cc778ef85bed4d58810f997f5006b434f2d406b56307c93ace723abb92414ffc"
+}

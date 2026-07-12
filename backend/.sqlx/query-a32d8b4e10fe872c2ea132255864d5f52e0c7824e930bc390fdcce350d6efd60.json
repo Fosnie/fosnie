@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, status::text AS \"status!\", step_count, agent_id, pending_tool,\n                  extract(epoch from created_at)::bigint AS \"created_epoch!\",\n                  extract(epoch from finished_at)::bigint AS finished_epoch\n           FROM agent_runs WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 50",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "step_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "step_count"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "pending_tool",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "pending_tool"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_epoch!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "finished_epoch",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "a32d8b4e10fe872c2ea132255864d5f52e0c7824e930bc390fdcce350d6efd60"
+}

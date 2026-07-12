@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO custom_tool_versions (id, tool_id, version, snapshot, created_by) VALUES ($1,$2,1,$3,$4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3e0d9fd05f0854c0d60f098a36e72066360be69fbd6602ba9f591957b2d8ae55"
+}

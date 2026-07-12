@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tabular_reviews SET status = 'done' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c786aff60cb6dab38258ef90900c93a4db88e28bbf79e2782917fdb055c4f3b6"
+}

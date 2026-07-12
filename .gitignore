@@ -1,0 +1,51 @@
+# --- Rust ---
+/backend/target/
+
+# --- Python (ML service) ---
+/ml/.venv/
+**/__pycache__/
+*.py[cod]
+/ml/.pytest_cache/
+/ml/.ruff_cache/
+
+# --- Runtime data (uploaded docs, workspace versions, artefacts, branding) ---
+/backend/data/
+/ml/data/
+
+# --- Generated release artefacts (SBOMs via deploy/scripts/generate-sbom.sh) ---
+/sbom/
+
+# --- Frontend (when it lands) ---
+/frontend/node_modules/
+/frontend/dist/
+
+# --- Secrets / local env ---
+.env
+*.env
+!*.env.example
+# The deploy .env template IS a tracked release asset (attached to the GitHub
+# Release + fetched by install.sh/.ps1). Un-ignore it despite the *.env rule.
+!/backend/deploy/example.env
+# Local boot config — holds the dev DB password, message_encryption_key and the
+# Keycloak client_secret. Only the example is tracked.
+/backend/config.toml
+/backend/config.local.toml
+# Sidecar virtualenvs (groundedness verifier, voice turn-detector) — heavy, local-only.
+/backend/deploy/**/.venv/
+
+# --- Process logs (backend/ml run output) ---
+*.log
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# --- Claude Code local project state (plans, local settings, repo instructions) ---
+/.claude/
+/CLAUDE.md
+
+# NOTE: backend/.sqlx is intentionally committed — sqlx offline query cache,
+# required to build without a live database.

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT created_by, kb_id FROM kb_documents WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "kb_documents",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kb_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "kb_documents",
+            "name": "kb_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "601a895c6671c34df67abe466eb06812f78e7532d06e08b62d87fe2e32668321"
+}

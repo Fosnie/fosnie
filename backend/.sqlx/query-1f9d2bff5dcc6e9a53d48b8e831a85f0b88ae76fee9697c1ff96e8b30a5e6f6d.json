@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mfa_recovery_codes SET used_at = now()\n           WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1f9d2bff5dcc6e9a53d48b8e831a85f0b88ae76fee9697c1ff96e8b30a5e6f6d"
+}

@@ -1,0 +1,125 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT version_number, source, name, description, system_prompt, params, tools, project_knowledge_ids, created_at FROM agent_versions WHERE agent_id = $1 AND version_number = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "version_number"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "system_prompt",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "system_prompt"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "params",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "params"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "tools",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "tools"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "project_knowledge_ids",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "project_knowledge_ids"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "489bd835f00b150b98a0ac8b446d0cce7d32d3f0d922babc5fdb64758a570e39"
+}

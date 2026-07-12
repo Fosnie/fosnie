@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO groups (id, name, managed_by) VALUES ($1, $2, 'idp')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d4282a7f255d2804d1ba536afd8a4ff6d0609e83943eb165fd2748ca2fd48e3"
+}

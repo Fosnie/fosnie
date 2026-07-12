@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agent_runs SET status = 'cancelled', finished_at = now(), updated_at = now() WHERE id = $1 AND status IN ('running', 'awaiting_approval', 'approved')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ededf4d06edf792229668c88d1d9033d58779dde6d6f7f2f6041016001174efa"
+}

@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, claim_text, verdict::text AS \"verdict!\", verifier_score,\n                  source_span->>'text' AS source_text,\n                  bound_evidence_ref->>'evidence' AS evidence\n           FROM claim_verdicts\n           WHERE run_id = $1 AND verdict::text <> 'supported' AND source_span->>'text' IS NOT NULL\n           ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "claim_text",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "claim_text"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "verdict!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "verifier_score",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "verifier_score"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "source_text",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "evidence",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "8438707e1fc0543565f8b971f64ece93d55a7212fb68b577539bde2bf0255bbb"
+}

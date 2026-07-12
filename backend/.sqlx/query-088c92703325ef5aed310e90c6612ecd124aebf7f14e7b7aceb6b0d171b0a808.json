@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_servers SET status = 'unreachable', last_health_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "088c92703325ef5aed310e90c6612ecd124aebf7f14e7b7aceb6b0d171b0a808"
+}

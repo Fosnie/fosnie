@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (id, display_name, email, role) VALUES ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        {
+          "Custom": {
+            "name": "platform_role",
+            "kind": {
+              "Enum": [
+                "super_admin",
+                "client_admin",
+                "power_user",
+                "user"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "02b8204a884417a139eb44e7f7100bbd4c76045f16dad997e0a9810bfb822c44"
+}

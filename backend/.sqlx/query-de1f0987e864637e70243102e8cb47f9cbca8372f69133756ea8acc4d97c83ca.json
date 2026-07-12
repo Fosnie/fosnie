@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO verification_runs\n             (id, target_type, target_id, mode, verifier_model, strictness,\n              faithfulness_score, total_claims, supported, contradicted, not_mentioned,\n              status, created_by, finished_at)\n           VALUES ($1, ($2::text)::verification_target, $3, ($4::text)::verification_mode,\n                   $5, $6, $7, $8, $9, $10, $11, 'succeeded', $12, now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Float8",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de1f0987e864637e70243102e8cb47f9cbca8372f69133756ea8acc4d97c83ca"
+}

@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT base_url, model, api_key_encrypted, enabled, reasoning_mode\n               FROM provider_configs\n               WHERE role = $1\n                 AND ( (scope = 'user' AND scope_id = $2)\n                    OR (scope = 'deployment' AND scope_id IS NULL) )\n               ORDER BY (scope = 'user') DESC\n               LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "base_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "base_url"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "model"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "api_key_encrypted",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "api_key_encrypted"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "reasoning_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "provider_configs",
+            "name": "reasoning_mode"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "5653803e3df62b815ce05f3fd9c4153fc6af961e68948344bf0d723a5c035f79"
+}

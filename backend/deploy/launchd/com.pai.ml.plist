@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PAI Platform ML/RAG service — macOS launchd job (Mac Studio profile).
+     macOS counterpart of systemd/pai-ml.service. The platform's LLM client;
+     LLM_BASE_URL points at a local llama.cpp OpenAI server on this profile.
+     Env comes from /etc/pai/ml.macos.env (see ml/.env.macos.example).
+     Install: copy to /Library/LaunchDaemons/, then `launchctl load -w <plist>`. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pai.ml</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/uv</string>
+        <string>run</string>
+        <string>uvicorn</string>
+        <string>app.main:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8090</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/opt/pai/ml</string>
+
+    <!-- launchd has no EnvironmentFile; load /etc/pai/ml.macos.env via a wrapper
+         or set the needed vars here. Keys mirror ml/.env.macos.example. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>LLM_BASE_URL</key>
+        <string>http://127.0.0.1:8080/v1</string>
+        <key>SOFFICE_BIN</key>
+        <string>/Applications/LibreOffice.app/Contents/MacOS/soffice</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/pai/ml.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/pai/ml.err.log</string>
+</dict>
+</plist>

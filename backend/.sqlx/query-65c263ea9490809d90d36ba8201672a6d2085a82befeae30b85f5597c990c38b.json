@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT summary, up_to_sequence FROM chat_summaries WHERE chat_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "summary",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_summaries",
+            "name": "summary"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "up_to_sequence",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_summaries",
+            "name": "up_to_sequence"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "65c263ea9490809d90d36ba8201672a6d2085a82befeae30b85f5597c990c38b"
+}

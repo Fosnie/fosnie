@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE embedding_index\n           SET desired_model = $1, desired_base_url = $2,\n               desired_api_key_encrypted = COALESCE($3, desired_api_key_encrypted),\n               desired_dim = $4, updated_by = $5, updated_at = now()\n           WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5e23e5755f7869cf7980f7892aba1405c4ef23d7b69979346eae88418cbbc140"
+}

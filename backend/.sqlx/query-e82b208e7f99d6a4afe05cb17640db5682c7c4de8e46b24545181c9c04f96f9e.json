@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO generated_artefacts (id, chat_id, turn_id, message_id, kind, title, disk_path, mime, created_by) VALUES ($1, $2, $3, $4, 'html'::artefact_kind, $5, $6, $7, $8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e82b208e7f99d6a4afe05cb17640db5682c7c4de8e46b24545181c9c04f96f9e"
+}

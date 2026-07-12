@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT claim_text, verdict::text AS \"verdict!\", verifier_score,\n                  bound_evidence_ref, had_citation, source_span, repair_action\n           FROM claim_verdicts WHERE run_id = $1 ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "claim_text",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "claim_text"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "verdict!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "verifier_score",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "verifier_score"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "bound_evidence_ref",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "bound_evidence_ref"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "had_citation",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "had_citation"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "source_span",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "source_span"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "repair_action",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "claim_verdicts",
+            "name": "repair_action"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "450c9e4c2b1c0d285ddc9e7c1e66349a1e437c0a3f6473e56629c43c70ebe7aa"
+}

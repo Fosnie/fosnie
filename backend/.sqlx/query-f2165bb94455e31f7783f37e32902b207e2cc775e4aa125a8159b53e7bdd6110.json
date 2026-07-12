@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT source_hash, disk_path FROM skills WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "source_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "skills",
+            "name": "source_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "disk_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "skills",
+            "name": "disk_path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "f2165bb94455e31f7783f37e32902b207e2cc775e4aa125a8159b53e7bdd6110"
+}

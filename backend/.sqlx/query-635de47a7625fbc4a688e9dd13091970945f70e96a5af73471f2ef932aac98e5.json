@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE embedding_index SET status = 'failed', error = $1, updated_at = now() WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "635de47a7625fbc4a688e9dd13091970945f70e96a5af73471f2ef932aac98e5"
+}

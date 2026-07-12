@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO audit_events\n            (seq, id, actor_user_id, actor_role, action_type, resource_type, resource_id,\n             occurred_at, session_id, source_ip, outcome, outcome_reason,\n             model_agent_traceability, token_usage, risk_anomaly_flag, payload, prev_hash, hash, signature)\n        VALUES\n            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Text",
+        "Text",
+        {
+          "Custom": {
+            "name": "audit_outcome",
+            "kind": {
+              "Enum": [
+                "success",
+                "failure"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Bool",
+        "Jsonb",
+        "Bytea",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5a7f44cea4dcc9e3a63a49b3831353af4c0a829a5aea408502a2499222871e14"
+}

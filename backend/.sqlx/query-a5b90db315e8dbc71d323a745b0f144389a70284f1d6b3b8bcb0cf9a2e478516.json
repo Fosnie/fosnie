@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tabular_cells SET status = ($4::text)::tabular_cell_status, value = $5, reasoning = $6, citations = $7, error = $8, updated_at = now() WHERE review_id = $1 AND document_id = $2 AND column_key = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Text",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a5b90db315e8dbc71d323a745b0f144389a70284f1d6b3b8bcb0cf9a2e478516"
+}

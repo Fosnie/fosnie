@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM kb_access_grants WHERE id = $1 AND kb_id = $2\n           RETURNING principal_type::text AS \"principal_type!\", principal_id, permission::text AS \"permission!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "principal_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "kb_access_grants",
+            "name": "principal_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "permission!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "22d11ae5882307457529bed00a75969e3e094d53a73a02f5a1ec5407e3fbd795"
+}

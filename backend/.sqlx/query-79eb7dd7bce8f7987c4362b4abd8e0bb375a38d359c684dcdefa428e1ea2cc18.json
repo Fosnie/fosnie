@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(DISTINCT actor_user_id) AS \"n!\" FROM audit_events\n           WHERE actor_user_id IS NOT NULL AND occurred_at >= now() - interval '7 days'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "n!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "79eb7dd7bce8f7987c4362b4abd8e0bb375a38d359c684dcdefa428e1ea2cc18"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE workflow_runs SET status = ($2::text)::workflow_run_status, finished_at = now(), outcome = $3, error = $4 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "172046f53b7c2c42d9c9b14a606fd6effde7fa8fabbb13dc23a8566dd17d77b5"
+}

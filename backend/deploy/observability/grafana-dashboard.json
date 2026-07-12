@@ -1,0 +1,171 @@
+{
+  "title": "PAI Platform — Overview",
+  "uid": "pai-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Prometheus",
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP request rate (by status)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (status) (rate(http_requests_total{job=\"fosnie-backend\"}[5m]))", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "HTTP latency (p50 / p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"fosnie-backend\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"fosnie-backend\"}[5m])))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "LLM latency (TTFT / generation p95)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_ttft_seconds_bucket[5m])))", "legendFormat": "TTFT p95" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_generation_seconds_bucket[5m])))", "legendFormat": "generation p95" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Chat turns & tokens/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "rate(chat_turns_total[5m])", "legendFormat": "turns/s" },
+        { "refId": "B", "expr": "sum by (kind) (rate(llm_tokens_total[5m]))", "legendFormat": "{{kind}} tok/s" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Voice: turn latency p95 (ms) & barge-ins/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(voice_turn_latency_ms_bucket[5m])))", "legendFormat": "turn latency p95 (ms)" },
+        { "refId": "B", "expr": "rate(voice_barge_in_total[5m])", "legendFormat": "barge-ins/s" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Durable task queue depth (by status)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "task_queue_depth", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "ML upstream latency p95 (by op)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, op) (rate(ml_request_duration_seconds_bucket[5m])))", "legendFormat": "{{op}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Datastore ping (s)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "db_ping_seconds", "legendFormat": "postgres" },
+        { "refId": "B", "expr": "redis_ping_seconds", "legendFormat": "redis" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Postgres pool connections",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "db_pool_connections", "legendFormat": "{{state}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "WebSocket connections & rejected origins/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "ws_connections", "legendFormat": "open connections" },
+        { "refId": "B", "expr": "rate(ws_origin_rejected_total[5m])", "legendFormat": "origin-rejected/s" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Process RSS",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "process_resident_memory_bytes{job=\"fosnie-backend\"}", "legendFormat": "RSS" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Process CPU %",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "process_cpu_usage_percent{job=\"fosnie-backend\"}", "legendFormat": "CPU %" }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Client errors/s (by kind)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum by (kind) (rate(client_errors_total[5m]))", "legendFormat": "{{kind}}" }
+      ]
+    }
+  ]
+}

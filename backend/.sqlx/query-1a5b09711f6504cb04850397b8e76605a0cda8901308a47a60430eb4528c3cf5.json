@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET email = 'erased-' || id || '@gdpr.invalid', display_name = 'Erased user', deactivated_at = COALESCE(deactivated_at, now()) WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1a5b09711f6504cb04850397b8e76605a0cda8901308a47a60430eb4528c3cf5"
+}

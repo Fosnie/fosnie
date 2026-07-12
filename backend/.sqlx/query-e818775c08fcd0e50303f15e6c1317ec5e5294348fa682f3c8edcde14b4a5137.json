@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM feedback WHERE message_id = $1 AND user_id = $2\n           RETURNING rating::text AS \"rating!\", agent_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rating!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "feedback",
+            "name": "agent_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      true
+    ]
+  },
+  "hash": "e818775c08fcd0e50303f15e6c1317ec5e5294348fa682f3c8edcde14b4a5137"
+}

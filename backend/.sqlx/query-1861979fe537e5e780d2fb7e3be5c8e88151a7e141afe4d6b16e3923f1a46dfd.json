@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO claim_verdicts\n                 (id, run_id, claim_text, source_span, had_citation, verdict, verifier_score)\n               VALUES ($1, $2, $3, $4, true, ($5::text)::claim_verdict, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1861979fe537e5e780d2fb7e3be5c8e88151a7e141afe4d6b16e3923f1a46dfd"
+}

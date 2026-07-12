@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT embed_model, embed_base_url, embed_api_key_encrypted, dim,\n                  collection_name, status\n           FROM embedding_index WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "embed_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "embed_model"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "embed_base_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "embed_base_url"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "embed_api_key_encrypted",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "embed_api_key_encrypted"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "dim",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "dim"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "collection_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "collection_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6d1f7611a56be16cf861df0a355e1fe55fafcc75c3ce5dbd899420906dc2dbf0"
+}

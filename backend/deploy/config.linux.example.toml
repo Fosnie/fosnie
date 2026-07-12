@@ -1,0 +1,121 @@
+# PAI Platform backend — boot config, PROFILE A: Linux + vLLM + NVIDIA/ROCm.
+# Copy to /etc/pai/config.linux.toml and point PAI_CONFIG_FILE at it
+# (EnvironmentFile in systemd/fosnie-backend.service, or PAI__ env overrides).
+# Boot layer only: endpoints, secrets, ports, paths, host capabilities.
+# Operational tuning (RAG top-k, retention, branding) is runtime-mutable config.
+
+database_url = "postgres://pai:pai@localhost:5432/pai"
+redis_url = "redis://localhost:6379"
+log_level = "info"
+
+# 0 = learn max_model_len from the inference server (vLLM /v1/models) at runtime.
+max_context_tokens = 0
+
+[server]
+host = "127.0.0.1"
+port = 8080
+static_dir = "/opt/pai/frontend/dist"
+public_url = "https://pai.example.internal"
+# WebSocket Origin allow-list (anti cross-site WS hijacking). Empty/unset ⇒ the
+# origin of `public_url` is the sole allowed origin (correct when the SPA is
+# served same-origin). Set explicitly only if the SPA is served from a different
+# origin (e.g. a separate dev/proxy host): allowed_ws_origins = ["https://pai.example.internal"]
+
+[ml]
+# The Python ML service; it is the LLM client (talks to vLLM on this profile).
+base_url = "http://127.0.0.1:8090"
+# Shared secret sent as `X-PAI-ML-Key` on every call; the ML service rejects
+# requests without it. Set the SAME value as the ML service's SHARED_SECRET env
+# (and set the ML service's STORAGE_ROOT to the storage parent below). Generate
+# a random value, e.g. `openssl rand -hex 32`.
+shared_secret = "CHANGE-ME-shared-secret"
+
+[observability]
+# GET /metrics is FAIL-CLOSED: disabled (404) while this is empty — system
+# telemetry is never readable by default. Set a high-entropy token to enable the
+# internal Prometheus scrape (`Authorization: Bearer <token>`, constant-time
+# checked). Generate one: `openssl rand -hex 32`. Keep the scrape on loopback;
+# never proxy /metrics to the public gateway. Prefer setting it via the env file
+# (PAI__OBSERVABILITY__METRICS_TOKEN) rather than committing it here.
+metrics_token = ""
+log_format = "json"
+
+[features]
+# Linux + KVM can run the Firecracker code-interpreter (when the tool is built).
+code_interpreter = true
+# Voice: batch dictation + read-aloud (needs the STT/TTS engines on the ML service).
+voice = true
+# Live / streaming voice (cascade streaming STT → LLM → streaming TTS + barge-in).
+# Needs `voice` on too; the engines are configured in [voice_live] below. Absent
+# engines degrade gracefully (batch STT per utterance / silence gate / batch TTS).
+voice_live = true
+
+# Live / streaming-voice engines (used only when features.voice_live = true). All
+# in-perimeter; ws:// on the controlled LAN. Any engine left empty/off degrades.
+[voice_live]
+# Streaming STT: "websocket" → a streaming engine (sherpa-onnx online-websocket-
+# server, Apache; or NVIDIA NeMo nemotron-3.5-asr-streaming on a GPU host). "none"
+# → batch fallback (per-utterance ML /transcribe; no live partials).
+stt_stream_kind = "websocket"
+stt_stream_url = "ws://127.0.0.1:8097"
+stt_sample_rate = 16000
+# Turn-detection sidecar (Silero VAD + Smart-Turn v3). Empty → the silence
+# threshold alone decides. See deploy/voice/turn/README.md.
+turn_detector_url = "http://127.0.0.1:8096"
+# Streaming TTS: kokoro-fastapi chunked /v1/audio/speech. false → per-clause batch.
+tts_stream = true
+tts_stream_url = "http://127.0.0.1:8094"
+
+[storage]
+branding_dir = "/var/lib/pai/branding"
+artefacts_dir = "/var/lib/pai/artefacts"
+documents_dir = "/var/lib/pai/documents"
+workspace_dir = "/var/lib/pai/workspace"
+skills_dir = "/var/lib/pai/skills"
+prompts_dir = "/var/lib/pai/prompts"
+exports_dir = "/var/lib/pai/exports"
+
+[keycloak]
+url = "https://auth.example.internal"
+realm = "fosnie"
+client_id = "fosnie"
+# client_secret via PAI__KEYCLOAK__CLIENT_SECRET env, not committed here.
+
+# Per-tool-type timeout overrides (seconds). Defaults suit vLLM; leave empty to
+# use code defaults (system/memory 10, web/dms 30, document_read 60, rag/artefact/code 120).
+[tool_timeout_secs]
+
+# Code-interpreter backend selection (only used when features.code_interpreter = true).
+# Two Linux-only, network-less sandbox tiers share one rootfs definition:
+#   - Firecracker microVM (strongest; needs /dev/kvm)      -> [code_interpreter_vm]
+#   - gVisor / runsc (systrap platform; NO KVM needed)     -> this block
+# `auto` (default): KVM present -> Firecracker, else runsc usable -> gVisor, else
+# unavailable. Force a tier with "firecracker" / "gvisor", or "off" to disable.
+# Build both artefacts with deploy/firecracker/build-rootfs.sh (emits the ext4 for
+# Firecracker AND the OCI rootfs dir below for gVisor from the same package set).
+[code_interpreter]
+backend = "auto"
+runsc_bin = "runsc"
+gvisor_rootfs = "/opt/pai/firecracker/rootfs"   # OCI rootfs DIRECTORY (read-only)
+gvisor_state_dir = "/run/pai/gvisor"
+# gVisor cgroup handling: "auto" (default) skips cgroup setup when the process
+# cannot manage cgroups (rootless, or root inside a container without
+# --cgroupns=host). Set "always" if the backend runs in a container and you would
+# otherwise need --cgroupns=host; "never" forces real cgroup resource enforcement.
+ignore_cgroups = "auto"
+
+# Firecracker code-interpreter VM (used when the selected backend is Firecracker).
+# Build the kernel/rootfs/guest-agent per deploy/firecracker/README.md.
+[code_interpreter_vm]
+firecracker_bin = "firecracker"
+kernel_image = "/opt/pai/firecracker/vmlinux"
+rootfs_image = "/opt/pai/firecracker/rootfs.ext4"
+snapshot_dir = "/opt/pai/firecracker/snapshot"
+socket_dir = "/run/pai/firecracker"
+vsock_cid = 3
+vsock_port = 5005
+vcpus = 2
+mem_mb = 512
+wall_secs = 30
+pool_size = 1
+max_output_bytes = 33554432

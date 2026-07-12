@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO workflow_coalesce (workflow_id, scope_key, event_ids, depth, fire_at) VALUES ($1, $2, ARRAY[$3]::uuid[], $4, now() + ($5::int * interval '1 second')) ON CONFLICT (workflow_id, scope_key) DO UPDATE SET event_ids = array_append(workflow_coalesce.event_ids, $3), depth = GREATEST(workflow_coalesce.depth, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "91b06e1a1e76793c84951779b2ef059d71fc47c3c98f2cd0fbaadbe54e855a5d"
+}

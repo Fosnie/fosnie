@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE kb_documents SET ingest_status = 'extracting' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7fa60421b751bb76ce7b5241b0c1b14105e7f102ea65cf0868a0855940b5f768"
+}

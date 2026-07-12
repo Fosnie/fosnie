@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n            SELECT 1 FROM group_feature_flags f\n            JOIN group_members m ON m.group_id = f.group_id\n            WHERE m.user_id = $1 AND f.feature = $2 AND f.enabled = false\n        ) AS \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "05451b093dc5089b2f9b8e3a04c6e80de823280def6e24172a0b0193e92bbf85"
+}

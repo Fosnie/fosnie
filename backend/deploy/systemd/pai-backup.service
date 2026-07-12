@@ -1,0 +1,36 @@
+# Copyright 2026 Private AI Ltd (SC881079)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# One-shot PAI backup, driven by pai-backup.timer. Config lives in
+# /etc/pai/backup.env (PAI_DB_URL, PAI_QDRANT_URL, PAI_STORAGE_DIRS,
+# PAI_BACKUP_DIR, PAI_BACKUP_RETAIN, optional PAI_BACKUP_AGE_RECIPIENT).
+[Unit]
+Description=PAI Platform backup (Postgres + Qdrant + storage)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pai
+Group=pai
+EnvironmentFile=/etc/pai/backup.env
+ExecStart=/opt/pai/deploy/scripts/backup.sh
+# Backups are I/O heavy but not urgent — keep them off the platform's back.
+Nice=10
+IOSchedulingClass=idle
+# Hardening: the job only needs to read the stores and write the backup dir.
+ProtectSystem=strict
+ReadWritePaths=/var/backups/pai
+PrivateTmp=true
+NoNewPrivileges=true

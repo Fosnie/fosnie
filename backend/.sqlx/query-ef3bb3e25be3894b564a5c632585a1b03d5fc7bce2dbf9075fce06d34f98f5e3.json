@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT gc.id FROM group_chats gc\n           WHERE gc.kind = 'dm'\n             AND (SELECT count(*) FROM group_chat_members m WHERE m.group_chat_id = gc.id) = 2\n             AND EXISTS (SELECT 1 FROM group_chat_members m WHERE m.group_chat_id = gc.id AND m.user_id = $1)\n             AND EXISTS (SELECT 1 FROM group_chat_members m WHERE m.group_chat_id = gc.id AND m.user_id = $2)\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_chats",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ef3bb3e25be3894b564a5c632585a1b03d5fc7bce2dbf9075fce06d34f98f5e3"
+}

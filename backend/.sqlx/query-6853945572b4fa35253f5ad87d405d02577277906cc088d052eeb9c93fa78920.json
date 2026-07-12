@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n             SELECT 1 FROM knowledge_bases kb\n             WHERE kb.id = $2 AND kb.archived_at IS NULL AND (\n                 kb.owner_id = $1\n                 OR EXISTS (\n                     SELECT 1 FROM kb_access_grants g\n                     WHERE g.kb_id = kb.id AND g.permission = 'manage' AND (\n                         (g.principal_type = 'user'  AND g.principal_id = $1)\n                      OR (g.principal_type = 'group' AND g.principal_id IN\n                            (SELECT group_id FROM group_members WHERE user_id = $1))\n                     )\n                 )\n             )\n           ) AS \"ok!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ok!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6853945572b4fa35253f5ad87d405d02577277906cc088d052eeb9c93fa78920"
+}

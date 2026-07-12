@@ -1,0 +1,3 @@
+{"question": "What are the main approaches to running large language models fully on-premise in 2026, and what are their trade-offs?", "template": "exploration", "depth": "standard", "source": "web"}
+{"question": "Compare the leading self-hosted vector databases for a single-GPU deployment: indexing speed, hybrid search, and operational cost.", "template": "formal", "depth": "standard", "source": "web"}
+{"question": "What does the current literature say about retrieval-augmented generation faithfulness, and where do the methods disagree?", "template": "literature", "depth": "standard", "source": "web"}

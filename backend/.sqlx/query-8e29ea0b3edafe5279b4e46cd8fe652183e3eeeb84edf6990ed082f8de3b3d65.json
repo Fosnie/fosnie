@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO claim_verdicts\n                 (id, run_id, claim_text, source_span, had_citation, verdict, verifier_score)\n               SELECT id, $2, claim_text, span::jsonb, false, verdict::claim_verdict, score\n               FROM UNNEST($1::uuid[], $3::text[], $4::text[], $5::text[], $6::float8[])\n                  AS t(id, claim_text, span, verdict, score)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Float8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8e29ea0b3edafe5279b4e46cd8fe652183e3eeeb84edf6990ed082f8de3b3d65"
+}

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE custom_tools SET name=$2, display_name=$3, description=$4, kind=$5,\n                     params_schema=$6, config=$7, auth_value_enc=$8, requires_egress=$9,\n                     side_effecting=$10, timeout_secs=$11, version=$12, approved_version=NULL,\n                     enabled=false, updated_at=now()\n                   WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Text",
+        "Bool",
+        "Bool",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0fa4596370f25b53081962fc4be93c764b663449449e4afbfa657d940edecbd8"
+}

@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name, description, system_prompt, params, tools, project_knowledge_ids FROM agent_versions WHERE agent_id = $1 AND version_number = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "system_prompt",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "system_prompt"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "params",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "params"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "tools",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "tools"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "project_knowledge_ids",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "agent_versions",
+            "name": "project_knowledge_ids"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3c76f3741d12f19206b2019b00c247ffc66a23e3039902789e7fa72748ec9a0e"
+}

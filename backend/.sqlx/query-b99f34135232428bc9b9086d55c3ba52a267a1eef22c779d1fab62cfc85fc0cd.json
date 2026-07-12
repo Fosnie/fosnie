@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO custom_tools\n             (id, name, display_name, description, kind, params_schema, config, auth_value_enc,\n              requires_egress, side_effecting, enabled, approved_version, version, timeout_secs, created_by)\n           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,NULL,1,$11,$12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Text",
+        "Bool",
+        "Bool",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b99f34135232428bc9b9086d55c3ba52a267a1eef22c779d1fab62cfc85fc0cd"
+}

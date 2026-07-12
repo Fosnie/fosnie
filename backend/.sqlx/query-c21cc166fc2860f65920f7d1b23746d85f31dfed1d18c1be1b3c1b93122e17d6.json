@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO workflows (id, name, description, owner_id, project_id, trigger_event_type, trigger_scope, trigger_on_system_events, condition, coalesce_window_secs, action_type, agent_id, action_config, max_runs_per_window) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Bool",
+        "Jsonb",
+        "Int4",
+        "Text",
+        "Uuid",
+        "Jsonb",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c21cc166fc2860f65920f7d1b23746d85f31dfed1d18c1be1b3c1b93122e17d6"
+}

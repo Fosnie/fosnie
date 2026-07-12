@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE skills SET name = $2, description = $3, disk_path = $4, is_default = $5, slug = $6, source_hash = $7 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bd094d334b948d4a38dec56fdb54207413fd03929ecd259cbddccaa5621803cc"
+}

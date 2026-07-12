@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tasks (id, task_type, payload) VALUES ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "task_type",
+            "kind": {
+              "Enum": [
+                "ingest",
+                "automation_run",
+                "audit_retention",
+                "artefact_cleanup",
+                "tabular_generate",
+                "export",
+                "agent_resume",
+                "workflow_run",
+                "verify_draft",
+                "repair_run",
+                "web_search_deep",
+                "deep_research",
+                "audit_checkpoint",
+                "mcp_health",
+                "reindex_embeddings"
+              ]
+            }
+          }
+        },
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6b23a98e787fb447f8add586425930d582a3e05edde38a5b82c487eb23e1da11"
+}

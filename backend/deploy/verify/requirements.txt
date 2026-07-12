@@ -1,0 +1,12 @@
+# Groundedness verifier sidecar (LettuceDetect + NLI + FactCG + HHEM).
+# CPU-only; pulls ~400 MB ModernBERT + ~280 MB DeBERTa NLI + ~600 MB DeBERTa-v3
+# FactCG + ~1.2 GB HHEM once.
+lettucedetect
+# Pinned <5: HHEM-2.1-open's trust_remote_code model predates transformers 5's
+# `all_tied_weights_keys` and fails to load on it; 4.57 supports ModernBERT
+# (LettuceDetect, 4.48+) AND HHEM, so all four models load.
+transformers<5
+torch
+sentencepiece
+fastapi
+uvicorn[standard]

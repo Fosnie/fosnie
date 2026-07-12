@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO exports (id, requested_by, kind, target_id, format) VALUES ($1, $2, ($3::text)::export_kind, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c67857652a0501cdbba95eb6fb2cd2ebf618c84942c4610d550e3cdd9c06aadb"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE claim_verdicts SET repair_action = $2, bound_evidence_ref = COALESCE(bound_evidence_ref, '{}'::jsonb) || $3::jsonb WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d8d2dd3c72289dde4f9670aa75a3faee7ce45b71b050f070da6082c1d548fd87"
+}

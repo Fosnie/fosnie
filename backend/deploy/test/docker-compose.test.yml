@@ -1,0 +1,316 @@
+# PAI Platform — TEST deploy (2× A100 80GB, single Linux box).
+#
+# NOT the production artefact. Production is bare-metal + systemd + zero-egress
+# This brings the WHOLE platform
+# up in containers with PROD-version models and an optimised vLLM, so you can click
+# through it, find bugs, and redeploy fast after fixes.
+#
+#   cd backend/deploy/test
+#   cp .env.test.example .env        # set HF_TOKEN + secrets
+#   docker compose --env-file .env -f docker-compose.test.yml up -d --build
+#
+# Fast redeploy after a code fix (models stay warm in GPU):  ./redeploy.sh
+#
+# Networking: host mode throughout, so every service keeps the platform's native
+# 127.0.0.1:<port> wiring (matches config.linux.example.toml / .env.linux.example).
+# Access from your laptop over an SSH tunnel:
+#   ssh -L 8080:localhost:8080 -L 8081:localhost:8081 user@<box>
+#
+# GPU layout:
+#   GPU 0  → main LLM  (Qwen3-32B-AWQ, the heavy one — owns the card)
+#   GPU 1  → GLM-OCR + Qwen3-Embedding-4B + Qwen3-Reranker (all small, share the card)
+
+name: pai-test
+
+x-gpu0: &gpu0
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - { driver: nvidia, device_ids: ["0"], capabilities: ["gpu"] }
+
+x-gpu1: &gpu1
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - { driver: nvidia, device_ids: ["1"], capabilities: ["gpu"] }
+
+services:
+
+  # ─── Datastores ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:17
+    network_mode: host
+    environment:
+      POSTGRES_USER: pai
+      POSTGRES_PASSWORD: pai
+      POSTGRES_DB: pai
+    # host net → binds 5432 on the box. matches PAI__DATABASE_URL below.
+    volumes:
+      - pai_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pai -d pai"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    network_mode: host
+    volumes:
+      - pai_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    network_mode: host
+    # binds 6333 (HTTP) + 6334 (gRPC)
+    volumes:
+      - pai_qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # ─── Identity ────────────────────────────────────────────────────────────
+  # Dev realm seed (alice/bob/carol, client secret `fosnie-secret`).
+  # Fine for a test box; NEVER for production (see ../keycloak/PRODUCTION-REALM.md).
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    network_mode: host
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+      KC_HTTP_PORT: "8081"          # leave 8080 for the backend
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ../keycloak/import:/opt/keycloak/data/import:ro
+    restart: unless-stopped
+
+  # ─── Inference (GPU 0+1): main LLM, tensor-parallel across both cards ─────
+  # Ampere (A100) has NO native FP8 compute → the weight-quant lever is AWQ/GPTQ
+  # int4, not FP8.
+  # Huihui-Qwen3.6-27B-abliterated-AWQ sharded over 2× A100 (--tensor-parallel-size 2).
+  # At 0.75 util the remaining ~25 % per card holds the GPU1 support models below.
+  # fp8 KV cache still helps on Ampere (memory only) → more concurrency / context.
+  # PINNED parser flags (08 §B.16 / 07-DEPLOYMENT §8): --tool-call-parser qwen3_xml
+  # + --reasoning-parser qwen3 — a wrong version silently breaks tool-calls.
+  vllm-main:
+    image: vllm/vllm-openai:${VLLM_TAG:-latest}
+    network_mode: host
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - { driver: nvidia, device_ids: ["0", "1"], capabilities: ["gpu"] }
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+      VLLM_ATTENTION_BACKEND: FLASHINFER   # L2 lever; remove if image lacks flashinfer
+    volumes:
+      - pai_hf_cache:/root/.cache/huggingface
+    command: >
+      --model ${LLM_MODEL:-alexxorm/Huihui-Qwen3.6-27B-abliterated-AWQ}
+      --served-model-name ${LLM_SERVED_NAME:-qwen3}
+      --host 127.0.0.1 --port 8000
+      --tensor-parallel-size 2
+      --quantization awq_marlin
+      --max-model-len ${LLM_MAX_MODEL_LEN:-131072}
+      --gpu-memory-utilization 0.70
+      --kv-cache-dtype fp8
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_xml
+      --reasoning-parser qwen3
+      --seed 0
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 40            # first boot downloads weights — be patient
+      start_period: 60s
+    restart: unless-stopped
+
+  # ─── Inference (GPU 1): OCR ──────────────────────────────────────────────
+  # GLM-OCR (zai-org, 0.9B, MIT) over an OpenAI-compatible vision endpoint. The
+  # ML service reaches it at OCR_BASE_URL and sends OCR_MODEL=glm-ocr.
+  # depends_on main healthy → the TP-2 main model reserves its 0.75 of BOTH cards
+  # first; these support models then fit in the ~25 % left on GPU1.
+  vllm-ocr:
+    image: vllm/vllm-openai:${VLLM_TAG:-latest}
+    network_mode: host
+    <<: *gpu1
+    ipc: host
+    depends_on:
+      vllm-main: { condition: service_healthy }
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+    volumes:
+      - pai_hf_cache:/root/.cache/huggingface
+    command: >
+      --model zai-org/GLM-OCR
+      --served-model-name glm-ocr
+      --host 127.0.0.1 --port 8002
+      --gpu-memory-utilization 0.10
+      --max-model-len 16384
+      --allowed-local-media-path /
+    restart: unless-stopped
+
+  # ─── Inference (GPU 1): embeddings ───────────────────────────────────────
+  # Qwen3-Embedding-4B (the quality target; 08 §B.8). `--runner pooling` exposes
+  # the OpenAI /v1/embeddings the ML service expects at EMBED_BASE_URL.
+  # (Older vLLM: swap `--runner pooling` for `--task embed`.)
+  vllm-embed:
+    image: vllm/vllm-openai:${VLLM_TAG:-latest}
+    network_mode: host
+    <<: *gpu1
+    ipc: host
+    depends_on:
+      vllm-main: { condition: service_healthy }
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+    volumes:
+      - pai_hf_cache:/root/.cache/huggingface
+    command: >
+      --model ${EMBED_MODEL:-Qwen/Qwen3-Embedding-4B}
+      --served-model-name qwen3-embedding
+      --runner pooling
+      --host 127.0.0.1 --port 8001
+      --gpu-memory-utilization 0.20
+      --enforce-eager
+    restart: unless-stopped
+
+  # ─── Inference (GPU 1): reranker ─────────────────────────────────────────
+  # Qwen3-Reranker-0.6B via llama.cpp — exposes /v1/rerank, exactly what the ML
+  # service calls (rerank_base_url + /v1/rerank). Prod swaps to Infinity by URL;
+  # for a test box this matches the code path with zero glue. -ngl 99 → GPU1.
+  reranker:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    network_mode: host
+    <<: *gpu1
+    command: >
+      -hf ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF:Q8_0
+      --reranking --host 127.0.0.1 --port 8091
+      -c 8192 -b 8192 -ub 8192 -ngl 99
+    volumes:
+      - pai_llama_cache:/root/.cache/llama.cpp
+    restart: unless-stopped
+
+  # ─── Voice: STT (GPU 0) ──────────────────────────────────────────────────
+  # Qwen3-ASR-1.7B via llama.cpp. Takes audio on /v1/chat/completions (input_audio)
+  # → the ML service uses STT_FORMAT=chat. On GPU0 (uses main's spare ~25 % there,
+  # balancing GPU1's OCR+embed+reranker). deploy/voice/README.md.
+  stt:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - { driver: nvidia, device_ids: ["0"], capabilities: ["gpu"] }
+    depends_on:
+      vllm-main: { condition: service_healthy }
+    command: >
+      -hf foryoung365/Qwen3-ASR-1.7B-Q4_K_M-GGUF:Q4_K_M
+      --host 127.0.0.1 --port 8092 -ngl 99
+    volumes:
+      - pai_llama_cache:/root/.cache/llama.cpp
+    restart: unless-stopped
+
+  # ─── Voice: TTS (CPU) ────────────────────────────────────────────────────
+  # kokoro-fastapi serves the OpenAI /v1/audio/speech contract directly. CPU is
+  # fine for read-aloud. Binds :8880 on the host (host networking).
+  tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    network_mode: host
+    restart: unless-stopped
+
+  # ─── Groundedness verifier (CPU) ─────────────────────────────────────────
+  # LettuceDetect (+ NLI + FactCG + HHEM) behind /v1/verify. Runs post-stream, so
+  # CPU is fine — never on the TTFT path. deploy/verify/README.md.
+  verify:
+    build:
+      context: ../../..
+      dockerfile: backend/deploy/test/Dockerfile.verify
+    image: pai-verify:test
+    network_mode: host
+    volumes:
+      - pai_hf_cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+  # ─── Web search SERP layer (CPU) ─────────────────────────────────────────
+  # Self-hosted SearXNG, JSON API on. DORMANT until the web_search connector is
+  # flipped on in Admin → Integrations (runtime config) — running it causes no
+  # egress by itself. deploy/searxng/README.md.
+  # Bridge networking (NOT host): SearXNG binds :8080 internally, which would clash
+  # with the backend on host net — so publish it as :8888, where the ML service
+  # (on host net) reaches it at 127.0.0.1:8888.
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8888:8080"
+    volumes:
+      - ../searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: "http://localhost:8888/"
+    restart: unless-stopped
+
+  # ─── Platform: Python ML/RAG service ─────────────────────────────────────
+  # Pure HTTP client (no torch/vLLM in the image) → tiny, rebuilds in seconds.
+  pai-ml:
+    build:
+      context: ../../..
+      dockerfile: backend/deploy/test/Dockerfile.ml
+    image: pai-ml:test
+    network_mode: host
+    env_file: ./ml.test.env
+    environment:
+      SHARED_SECRET: ${ML_SHARED_SECRET:?set ML_SHARED_SECRET in .env}
+    volumes:
+      - pai_storage:/var/lib/pai
+    depends_on: [postgres, qdrant, vllm-main, vllm-embed, reranker, vllm-ocr, stt, tts, verify, searxng]
+    restart: unless-stopped
+
+  # ─── Platform: Rust backend (serves the React SPA too) ───────────────────
+  # Firecracker code-interpreter: the backend orchestrates microVMs directly and
+  # needs /dev/kvm. The repo notes Docker is not a *supported* KVM host
+  # (deploy/firecracker/README.md) — this privileged + /dev/kvm passthrough makes
+  # it work where the host kernel exposes nested KVM; if your box doesn't, see
+  # README "Code interpreter" for the run-backend-natively fallback. You must also
+  # build vmlinux + rootfs.ext4 + guest agent and drop them in ./firecracker.
+  fosnie-backend:
+    build:
+      context: ../../..
+      dockerfile: backend/deploy/test/Dockerfile.backend
+    image: fosnie-backend:test
+    network_mode: host
+    privileged: true
+    devices:
+      - "/dev/kvm:/dev/kvm"
+    environment:
+      PAI_CONFIG_FILE: /etc/pai/config.test.toml
+      PAI__DATABASE_URL: postgres://pai:pai@localhost:5432/pai
+      PAI__REDIS_URL: redis://localhost:6379
+      PAI__ML__SHARED_SECRET: ${ML_SHARED_SECRET:?set ML_SHARED_SECRET in .env}
+      PAI__KEYCLOAK__CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-fosnie-secret}
+      PAI__MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-}
+      PAI__AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
+    volumes:
+      - ./config.test.toml:/etc/pai/config.test.toml:ro
+      - ./firecracker:/opt/pai/firecracker          # vmlinux + rootfs.ext4 (you build these)
+      - pai_storage:/var/lib/pai
+    depends_on: [postgres, redis, keycloak, pai-ml]
+    restart: unless-stopped
+
+volumes:
+  pai_pg_data:
+  pai_redis_data:
+  pai_qdrant_data:
+  pai_hf_cache:        # HF weights persist across restarts — download once
+  pai_llama_cache:
+  pai_storage:         # branding / artefacts / documents / workspace

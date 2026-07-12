@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.disk_path FROM skills s WHERE s.id = $2 AND s.enabled AND (s.is_default OR EXISTS ( SELECT 1 FROM agent_skills a JOIN chats c ON c.agent_id = a.agent_id WHERE c.id = $1 AND a.skill_id = s.id))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "disk_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "skills",
+            "name": "disk_path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "00ba9112403c3d602be21162b8526f8e4aa6ff9d75d2e92e8f7eb1d63739d842"
+}

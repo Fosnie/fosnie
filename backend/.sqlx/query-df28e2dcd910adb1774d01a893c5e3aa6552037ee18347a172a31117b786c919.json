@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT url, title, domain, published_date, fetched_at, quote_text, snippet_only\n               FROM web_citations WHERE turn_id = $1 ORDER BY created_at, id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "published_date",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "published_date"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "fetched_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "fetched_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "quote_text",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "quote_text"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "snippet_only",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "snippet_only"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "df28e2dcd910adb1774d01a893c5e3aa6552037ee18347a172a31117b786c919"
+}

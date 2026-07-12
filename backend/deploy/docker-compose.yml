@@ -1,0 +1,193 @@
+# Fosnie — standalone PRODUCTION compose (release asset).
+#
+# Default (no profile) = "external inference": 5 containers (backend, ml,
+# postgres, qdrant, redis). You bring an LLM — set a provider key in the admin UI
+# after first login (Settings → Providers). Nothing reaches the network by default.
+#
+#   docker compose up -d
+#
+# Fully local (zero keys, all inference on this host) — adds Ollama (LLM + embed)
+# and a llama.cpp reranker; the backend auto-seeds the provider rows (LOCAL_STACK):
+#
+#   docker compose --profile local up -d
+#   # then pull the models once (or let install.sh --local do it):
+#   docker compose exec ollama ollama pull qwen3:4b
+#   docker compose exec ollama ollama pull hf.co/ggml-org/bge-m3-Q8_0-GGUF:Q8_0
+#
+# Opt-in self-hosted web search (stays dormant until the web_search connector is
+# enabled in the admin UI):  docker compose --profile search up -d
+#
+# Only the backend publishes a port; postgres/qdrant/redis/ml stay on the internal
+# compose network. Secrets come from .env (the installer regenerates them).
+
+name: fosnie
+
+services:
+  backend:
+    image: "ghcr.io/fosnie/fosnie-backend:${APP_VERSION:-latest}"
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Service hostnames on the compose network — baked here, NOT in the user .env.
+      # DATABASE_URL falls back to the bundled postgres; set PAI__DATABASE_URL in
+      # .env (+ drop the postgres service) to point at a managed database instead.
+      PAI__DATABASE_URL: "${PAI__DATABASE_URL:-postgres://pai:${POSTGRES_PASSWORD}@postgres:5432/pai}"
+      PAI__REDIS_URL: "redis://redis:6379"
+      PAI__ML__BASE_URL: "http://ml:8090"
+      PAI__ML__SHARED_SECRET: "${ML_SHARED_SECRET}"
+      PAI__MESSAGE_ENCRYPTION_KEY: "${MESSAGE_ENCRYPTION_KEY}"
+      PAI__AUDIT_SIGNING_KEY: "${AUDIT_SIGNING_KEY:-}"
+      PAI__AUTH__MODE: "${AUTH_MODE:-local}"
+      # Empty = external-inference mode. install.sh --local sets LOCAL_STACK=1 in
+      # .env, which makes the backend seed the Ollama/reranker provider rows on boot.
+      LOCAL_STACK: "${LOCAL_STACK:-}"
+      # The browser-facing URL. Localhost is fine out of the box; if you serve
+      # Fosnie on a domain, set PUBLIC_URL to that https URL (a non-loopback URL
+      # MUST be https — front the stack with a TLS reverse proxy; see the README).
+      PAI__SERVER__PUBLIC_URL: "${PUBLIC_URL:-http://localhost:${HOST_PORT:-8080}}"
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    volumes:
+      - appdata:/var/lib/pai
+      # The document store MUST be shared with the ml service: the backend writes
+      # uploads here and hands ml the absolute path to read for extraction/RAG
+      # (docs, workspace, chat-attachments). Without this shared mount ml reads its
+      # own empty volume → FileNotFoundError on ingest.
+      - docstore:/var/lib/pai/data
+    # Let the containers reach inference engines you run on the HOST (e.g. a local
+    # STT/TTS/verifier on host ports) via `http://host.docker.internal:<port>` in a
+    # provider's base_url. Docker Desktop provides this name automatically; this
+    # entry makes it resolve on Linux too (no-op on Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      ml: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  ml:
+    image: "ghcr.io/fosnie/fosnie-ml:${APP_VERSION:-latest}"
+    restart: unless-stopped
+    environment:
+      SHARED_SECRET: "${ML_SHARED_SECRET}"
+      QDRANT_URL: "http://qdrant:6333"
+      # Rerank/embed/LLM endpoints are delivered per-request by the backend from
+      # provider_configs (admin UI, or the LOCAL_STACK seed in --profile local →
+      # http://reranker:8091 + http://ollama:11434/v1), so no *_BASE_URL is baked here.
+      # The sole runtime model (fastembed BM25) is baked into the image; stay offline.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - mldata:/var/lib/pai
+      # Shared document store (see the backend service) — ml reads the uploaded
+      # files the backend wrote, by the same absolute path.
+      - docstore:/var/lib/pai/data
+    # ml is the HTTP client of the STT/TTS/verifier engines; reach host-run ones via
+    # host.docker.internal (see the backend service note).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      qdrant: { condition: service_started }
+      redis: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pai
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: pai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pai -d pai"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  qdrant:
+    # Pinned (dev uses :latest; prod MUST pin). Bump in lockstep with qdrant-client
+    # in ml/pyproject.toml. v1.12 has sparse vectors + the Query API the RAG hybrid needs.
+    image: qdrant/qdrant:v1.12.5
+    restart: unless-stopped
+    volumes:
+      - qdrantdata:/qdrant/storage
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ── profile: local — fully-local inference (no external calls, no API keys) ──
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local"]
+    restart: unless-stopped
+    volumes:
+      - ollamadata:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  reranker:
+    # llama.cpp server serving the Qwen3-Reranker GGUF via /v1/rerank (CPU: -ngl 0).
+    # -b/-ub raised to the context size (reranking scores a whole query+doc sequence
+    # in ONE physical batch; the default -ub 512 rejects longer chunks).
+    image: ghcr.io/ggml-org/llama.cpp:server
+    profiles: ["local"]
+    restart: unless-stopped
+    command: ["-hf", "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF:Q8_0", "--reranking", "--host", "0.0.0.0", "--port", "8091", "-c", "8192", "-b", "8192", "-ub", "8192", "-ngl", "0"]
+    volumes:
+      - llamacache:/root/.cache/llama.cpp
+    # The upstream image's baked-in HEALTHCHECK curls the llama.cpp default port
+    # 8080, not our --port 8091 — override it or the container is always
+    # "unhealthy" despite serving fine.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8091/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ── profile: search — self-hosted SearXNG for the web_search connector ──
+  # Running the container causes no egress by itself; the connector stays dormant
+  # until enabled in the admin UI.
+  searxng:
+    image: searxng/searxng:latest
+    profiles: ["search"]
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: "http://searxng:8080/"
+    volumes:
+      - searxngdata:/etc/searxng
+
+volumes:
+  appdata: {}
+  mldata: {}
+  docstore: {}   # shared document store (backend writes, ml reads) — see the services
+  pgdata: {}
+  qdrantdata: {}
+  redisdata: {}
+  ollamadata: {}
+  llamacache: {}
+  searxngdata: {}

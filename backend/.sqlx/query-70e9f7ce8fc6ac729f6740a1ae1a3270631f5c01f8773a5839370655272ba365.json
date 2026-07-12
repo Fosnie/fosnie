@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE group_chat_members SET last_read_seq = GREATEST(last_read_seq, COALESCE((SELECT max(sequence_number) FROM group_chat_messages WHERE group_chat_id = $1), 0)) WHERE group_chat_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "70e9f7ce8fc6ac729f6740a1ae1a3270631f5c01f8773a5839370655272ba365"
+}

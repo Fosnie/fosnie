@@ -1,0 +1,118 @@
+/* Copyright 2026 Private AI Ltd (SC881079)
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+   Neutral default theme for HTML artefacts (dashboards / informative pages). A
+   clean, professional light theme — NOT PAI-branded; a deployment overrides this
+   wholesale via the `html_theme` config. Plain CSS custom properties only (no
+   Tailwind, no build step), system font stacks, no external URLs (zero-egress).
+   The dashboard scaffold consumes these variables with fallbacks, so a page is
+   readable even if this theme is absent. */
+
+:root {
+  /* Surfaces */
+  --pai-bg:        #f6f7f9;   /* page canvas */
+  --pai-surface:   #ffffff;   /* cards / panels */
+  --pai-surface-2: #f0f2f5;   /* subtle raised / zebra */
+  --pai-line:      #e2e6ea;   /* hairlines */
+
+  /* Ink */
+  --pai-ink:    #1f2933;      /* body text */
+  --pai-ink-2:  #51606e;      /* secondary text */
+  --pai-muted:  #8a97a4;      /* captions / labels */
+
+  /* Accent + status */
+  --pai-accent:   #2f6db5;    /* primary accent */
+  --pai-accent-2: #1f9d8f;    /* secondary accent */
+  --pai-good:     #2e9e5b;
+  --pai-warn:     #c98a1a;
+  --pai-bad:      #c0492f;
+
+  /* Categorical chart palette (ECharts `color`) */
+  --pai-c1: #2f6db5;
+  --pai-c2: #1f9d8f;
+  --pai-c3: #c98a1a;
+  --pai-c4: #7a5bb0;
+  --pai-c5: #c0492f;
+  --pai-c6: #4a8db2;
+
+  /* Type */
+  --pai-font: "Helvetica Neue", Arial, system-ui, -apple-system, sans-serif;
+  --pai-font-num: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
+
+  /* Geometry + elevation */
+  --pai-radius:   12px;
+  --pai-radius-s: 8px;
+  --pai-gap:      16px;
+  --pai-shadow:   0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.10);
+  --pai-maxw:     1100px;
+}
+
+html { background: var(--pai-bg); }
+
+body {
+  margin: 0;
+  font-family: var(--pai-font);
+  color: var(--pai-ink);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.pai-wrap { max-width: var(--pai-maxw); margin: 0 auto; padding: 32px 24px 56px; }
+
+.pai-header { margin-bottom: 24px; }
+.pai-header h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+.pai-header .pai-sub { color: var(--pai-ink-2); font-size: 15px; }
+
+/* KPI cards */
+.pai-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--pai-gap); margin: 20px 0; }
+.pai-kpi {
+  background: var(--pai-surface);
+  border: 1px solid var(--pai-line);
+  border-radius: var(--pai-radius);
+  box-shadow: var(--pai-shadow);
+  padding: 18px 20px;
+}
+.pai-kpi .pai-kpi-val { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+.pai-kpi .pai-kpi-label { color: var(--pai-muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 4px; }
+
+/* Card + chart grid */
+.pai-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: var(--pai-gap); }
+.pai-card {
+  grid-column: span 12;
+  background: var(--pai-surface);
+  border: 1px solid var(--pai-line);
+  border-radius: var(--pai-radius);
+  box-shadow: var(--pai-shadow);
+  padding: 18px 20px;
+}
+.pai-card.pai-half { grid-column: span 6; }
+@media (max-width: 760px) { .pai-card.pai-half { grid-column: span 12; } }
+.pai-card h2 { font-size: 16px; margin: 0 0 12px; }
+.pai-chart { width: 100%; height: 320px; }
+
+/* Tables */
+.pai-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.pai-table th, .pai-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--pai-line); }
+.pai-table th { color: var(--pai-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+.pai-table tbody tr:nth-child(even) { background: var(--pai-surface-2); }
+
+/* Sources footer */
+.pai-sources { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--pai-line); color: var(--pai-ink-2); font-size: 13px; }
+.pai-sources ol { margin: 8px 0 0; padding-left: 20px; }
+.pai-sources li { margin: 3px 0; }
+
+.pai-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.pai-badge.good { background: #e7f4ec; color: var(--pai-good); }
+.pai-badge.warn { background: #fbf1dd; color: var(--pai-warn); }
+.pai-badge.bad  { background: #f8e7e2; color: var(--pai-bad); }

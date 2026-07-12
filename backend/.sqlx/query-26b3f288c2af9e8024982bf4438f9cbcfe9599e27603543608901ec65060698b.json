@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.group_chat_id, m.id, m.sequence_number, m.content\n           FROM group_chat_messages m\n           JOIN group_chat_members mem ON mem.group_chat_id = m.group_chat_id AND mem.user_id = $1\n           JOIN group_chats gc ON gc.id = m.group_chat_id\n           WHERE gc.kind <> 'dm'\n             AND NOT m.content_encrypted\n             AND m.content_tsv @@ websearch_to_tsquery('english', $2)\n           ORDER BY ts_rank(m.content_tsv, websearch_to_tsquery('english', $2)) DESC\n           LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "group_chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sequence_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "content",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "content"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "26b3f288c2af9e8024982bf4438f9cbcfe9599e27603543608901ec65060698b"
+}

@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, name, display_name, description, kind, params_schema, config,\n                  auth_value_enc, requires_egress, side_effecting, version, timeout_secs\n             FROM custom_tools WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "params_schema",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "params_schema"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "config",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "config"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "auth_value_enc",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "auth_value_enc"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "requires_egress",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "requires_egress"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "side_effecting",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "side_effecting"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "timeout_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "custom_tools",
+            "name": "timeout_secs"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "741f56ef83cd38ea416032515dd86b507b4e3b54da038e6fc489ff9d8fe367f7"
+}

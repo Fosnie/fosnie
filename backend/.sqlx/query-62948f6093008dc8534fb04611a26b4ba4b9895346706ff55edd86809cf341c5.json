@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE document_edits SET status = ($3::text)::edit_status, resolved_by = $4, resolved_at = now() WHERE document_id = $1 AND w_id = $2 AND status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "62948f6093008dc8534fb04611a26b4ba4b9895346706ff55edd86809cf341c5"
+}

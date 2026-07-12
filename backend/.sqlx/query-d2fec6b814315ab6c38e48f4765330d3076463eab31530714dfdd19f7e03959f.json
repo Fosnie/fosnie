@@ -1,0 +1,121 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, sequence_number, sender_user_id, message_type::text AS \"message_type!\",\n                  content, content_encrypted, created_at, mentions, shared_resources\n           FROM group_chat_messages\n           WHERE group_chat_id = $1 AND sequence_number > $2\n           ORDER BY sequence_number ASC LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sequence_number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "sequence_number"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sender_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "sender_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "message_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "content",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "content"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "content_encrypted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "content_encrypted"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "mentions",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "mentions"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "shared_resources",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "group_chat_messages",
+            "name": "shared_resources"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "d2fec6b814315ab6c38e48f4765330d3076463eab31530714dfdd19f7e03959f"
+}

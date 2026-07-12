@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM chat_kb_links WHERE chat_id = $1 AND kb_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2092f72a2a08ff9e990b5c4b878af2e3926e6575aa198554382a78aef52f5c31"
+}

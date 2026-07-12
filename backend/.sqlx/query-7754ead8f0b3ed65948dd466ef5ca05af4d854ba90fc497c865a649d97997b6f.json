@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT embed_model, embed_base_url, dim, collection_name, status,\n                  reindex_done, reindex_total, error,\n                  desired_model, desired_base_url, desired_dim,\n                  (embed_api_key_encrypted IS NOT NULL) AS \"api_key_set!\",\n                  (desired_api_key_encrypted IS NOT NULL) AS \"desired_api_key_set!\"\n           FROM embedding_index WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "embed_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "embed_model"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "embed_base_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "embed_base_url"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "dim",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "dim"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "collection_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "collection_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "reindex_done",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "reindex_done"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "reindex_total",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "reindex_total"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "error"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "desired_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "desired_model"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "desired_base_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "desired_base_url"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "desired_dim",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "embedding_index",
+            "name": "desired_dim"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "api_key_set!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "desired_api_key_set!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "7754ead8f0b3ed65948dd466ef5ca05af4d854ba90fc497c865a649d97997b6f"
+}

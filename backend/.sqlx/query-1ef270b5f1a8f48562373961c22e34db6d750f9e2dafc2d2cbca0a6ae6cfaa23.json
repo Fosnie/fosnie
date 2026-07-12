@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT vr.id AS \"run_id!\", m.id AS \"message_id!\", c.id AS \"chat_id!\",\n                  left(m.content, 160) AS \"snippet!\",\n                  vr.faithfulness_score AS \"score: f64\",\n                  (COALESCE(vr.contradicted, 0) + COALESCE(vr.not_mentioned, 0)) AS \"flagged!: i32\",\n                  vr.created_at\n           FROM verification_runs vr\n           JOIN messages m ON m.id = vr.target_id\n           JOIN chats c ON c.id = m.chat_id\n           WHERE vr.mode::text = 'live' AND vr.target_type::text = 'message'\n             AND vr.status = 'succeeded' AND vr.faithfulness_score IS NOT NULL\n           ORDER BY vr.faithfulness_score ASC, vr.created_at DESC\n           LIMIT 10",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "run_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "message_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "chat_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "snippet!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "score: f64",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "faithfulness_score"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "flagged!: i32",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      true,
+      null,
+      false
+    ]
+  },
+  "hash": "1ef270b5f1a8f48562373961c22e34db6d750f9e2dafc2d2cbca0a6ae6cfaa23"
+}

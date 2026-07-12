@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO workflow_runs\n             (id, workflow_id, trigger_event_ids, status, depth, run_as_user_id)\n           VALUES ($1, $2, $3, 'queued', $4, $5)\n           ON CONFLICT (workflow_id, trigger_event_ids) DO NOTHING\n           RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workflow_runs",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray",
+        "Int4",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d13acf7f4a7dbc6a4b185a33e1ea274468f890f1ee57ab78691af9cc11ce5ee0"
+}

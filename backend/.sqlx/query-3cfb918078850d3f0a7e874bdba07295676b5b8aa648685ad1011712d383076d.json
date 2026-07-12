@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (COUNT(*) FILTER (\n                     WHERE EXISTS (SELECT 1 FROM citations c WHERE c.message_id = vr.target_id)\n                        OR EXISTS (SELECT 1 FROM web_citations w WHERE w.message_id = vr.target_id)\n                   ))::float8\n                 / NULLIF(COUNT(*), 0)::float8 AS \"frac: f64\"\n           FROM verification_runs vr\n           WHERE vr.mode::text = 'live' AND vr.target_type::text = 'message'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "frac: f64",
+        "type_info": "Float8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3cfb918078850d3f0a7e874bdba07295676b5b8aa648685ad1011712d383076d"
+}

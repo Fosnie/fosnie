@@ -1,0 +1,482 @@
+@import "tailwindcss";
+@source "../../../../fosnie-enterprise/frontend/**/*.tsx";
+
+/* ── Self-hosted fonts (from the brand site fosnie.dev, zero-egress): Space Grotesk
+   (display) + Instrument Sans (body) + JetBrains Mono (labels/dates). Ported 1:1
+   from the site's @fontsource woff2 subsets. Each family ships a latin file (no
+   unicode-range → the default) plus a latin-ext file scoped to the extended-Latin
+   block, so accented British/European glyphs resolve without pulling a second file
+   for plain text. The classic (navy/gold) theme still names Spectral/Barlow via its
+   own --font-* overrides; those woff2 files are kept in /public/fonts. ── */
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/SpaceGrotesk-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/SpaceGrotesk-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/SpaceGrotesk-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/SpaceGrotesk-ext-500.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/SpaceGrotesk-ext-600.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/InstrumentSans-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/InstrumentSans-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/InstrumentSans-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/InstrumentSans-ext-400.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/InstrumentSans-ext-500.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Instrument Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/InstrumentSans-ext-600.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-ext-400.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-ext-500.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── Design tokens (brand palette + fonts). Tailwind v4 @theme → utilities like
+   bg-navy, text-gold, font-serif. Runtime branding override is a later slice. ── */
+@theme {
+  /* Fosnie (fosnie.dev) palette is the DEFAULT: near-black canvas + purple accent.
+     The Tailwind utility NAMES are kept (bg-navy, text-gold …) as stable aliases —
+     they now resolve to the new palette. The classic navy/gold values are restored
+     under :root[data-theme="classic"] in design.css (loads after this file, so it
+     wins). Keep these in sync with the alias tokens in design.css. */
+  /* — Surfaces: navy ramp → near-black ramp (blue hue killed) — */
+  --color-navy: #0b0a09;
+  --color-navy-light: #141312;
+  --color-navy-lighter: #201e1b;
+  /* Deepest canvas + a mid raised surface (design "bg-0"/"bg-3"). */
+  --color-navy-deep: #080807;
+  --color-navy-raised: #1a1917;
+
+  /* — Accent: gold → пурпурный. text-gold/eyebrow/focus/scrollbar read these, so
+       the legible tint #d1799a is the base (#900c3f fails WCAG at small sizes and
+       is reserved for solid fills in design.css). — */
+  --color-gold: #d1799a;
+  --color-gold-light: #e8a6bd;
+  --color-gold-dark: #b3517a;
+  /* Soft accent glow fill (chips/focus rings) — has alpha. */
+  --color-gold-glow: rgba(144, 12, 63, 0.14);
+
+  --color-slate: #948f88;
+  --color-slate-light: #aaa6a0;
+  --color-slate-lighter: #d8d5cf;
+  --color-slate-lightest: #f4f3ef;
+
+  --color-off-white: #f7f6f3;
+
+  /* Status / risk. urgency-* kept for existing call-sites; ok/warn/risk are the
+     design's corrected values for new screens. Theme-neutral — unchanged. */
+  --color-urgency-red: oklch(45% 0.15 29);
+  --color-urgency-amber: oklch(65% 0.125 57);
+  --color-ok: oklch(70% 0.09 150);
+  --color-warn: oklch(72% 0.125 57);
+  --color-risk: oklch(55% 0.15 29);
+
+  /* Hairlines (alpha) → border-line / border-line-strong. Neutral white on black. */
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-line-strong: rgba(255, 255, 255, 0.17);
+
+  --font-sans: "Instrument Sans", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-serif: "Space Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, monospace;
+
+  /* Geometry: ROUNDED (glass-era refresh). Overrides Tailwind's rounded-* scale;
+     kept in sync with the --r-* aliases in design.css. --radius-xs stays a
+     hairline for inset detailing. */
+  --radius-xs: 1px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-2xl: 18px;
+  --radius-3xl: 22px;
+
+  /* Elevation: layered stacks (tight ambient + soft drop). Mirror --shadow-2 /
+     --shadow-pop in design.css. */
+  --shadow-raise: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px -10px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 2px 4px rgba(0, 0, 0, 0.45), 0 28px 56px -18px rgba(0, 0, 0, 0.7);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Pin to the viewport; inner regions own their own scroll (no page scroll). */
+  overflow: hidden;
+  background-color: var(--color-navy);
+  color: var(--color-slate-lightest);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-weight: 600;
+  color: var(--color-off-white);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+::selection {
+  background: var(--color-gold-glow);
+  color: var(--color-off-white);
+}
+
+/* ── Brand utilities (mirror the prototype's styles.css) ── */
+.serif {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+.eyebrow {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-gold);
+  white-space: nowrap;
+}
+.rule-gold {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--color-gold-dark) 20%,
+    var(--color-gold) 50%,
+    var(--color-gold-dark) 80%,
+    transparent
+  );
+}
+
+/* Range slider: gold track fill (set inline) + square gold thumb. */
+.ed-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  outline: none;
+}
+.ed-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--color-gold);
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+.ed-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--color-gold);
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+.ed-slider::-moz-range-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 2px;
+}
+
+/* Custom checkboxes — replace the bright native (OS-blue) control with a themed one:
+   near-black box + white hairline, purple solid fill + white tick when checked. Global
+   so every raw <input type=checkbox> is restyled with no per-call-site change. Native
+   margins are left intact so inline "☑ label" spacing is unaffected. */
+input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  vertical-align: -3px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: 5px;
+  background-color: var(--color-navy-deep);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 11px;
+  cursor: pointer;
+  transition: background-color 0.15s var(--ease-out, ease), border-color 0.15s var(--ease-out, ease);
+}
+input[type="checkbox"]:hover { border-color: var(--accent-link, var(--color-gold)); }
+input[type="checkbox"]:checked {
+  background-color: var(--accent-solid, var(--color-gold));
+  border-color: var(--accent-solid, var(--color-gold));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.4 6.2 4.7 8.6 9.6 3.4' fill='none' stroke='%23fff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent-link, var(--color-gold)); outline-offset: 2px; }
+input[type="checkbox"]:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Thin brand scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+/* Kill the up/down arrow buttons Chromium draws on Windows scrollbars (the little
+   triangles at the track ends). */
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-navy-lighter);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gold-dark);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-navy-lighter) transparent;
+}
+
+/* Custom thin gold scrollbar for the sidebar project/chat lists. */
+.thin-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-gold-dark);
+  border-radius: 9999px;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gold);
+}
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-gold-dark) transparent;
+}
+
+/* Entrance animations: base state is VISIBLE; the reveal (opacity + a small rise on
+   the site's --ease-out curve) is gated on an .anim-on trigger, so content stays fully
+   visible under print / reduced-motion / frozen clock / no-JS. Add `anim-on` to a
+   container (or the element itself) after first paint to play them; add `stagger` to a
+   container to ripple its direct children in sequence (the one orchestrated page-load
+   moment). The fosnie.dev feel. */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+.fade-up,
+.fade-in {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* Both the descendant form (trigger on an ancestor) and the self form (element is
+     its own trigger, e.g. a screen root with `anim-on fade-in`). */
+  .anim-on .fade-up,
+  .anim-on.fade-up {
+    animation: fadeUp 0.42s var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+  }
+  .anim-on .fade-in,
+  .anim-on.fade-in {
+    animation: fadeIn 0.42s var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+  }
+  /* Orchestrated stagger: ramp animation-delay across a container's direct reveal
+     children (~40ms step, capped so long lists don't drag). */
+  .stagger.anim-on > .fade-up,
+  .stagger.anim-on > .fade-in { animation-delay: 0ms; }
+  .stagger.anim-on > :nth-child(2) { animation-delay: 40ms; }
+  .stagger.anim-on > :nth-child(3) { animation-delay: 80ms; }
+  .stagger.anim-on > :nth-child(4) { animation-delay: 120ms; }
+  .stagger.anim-on > :nth-child(5) { animation-delay: 160ms; }
+  .stagger.anim-on > :nth-child(6) { animation-delay: 200ms; }
+  .stagger.anim-on > :nth-child(7) { animation-delay: 240ms; }
+  .stagger.anim-on > :nth-child(8) { animation-delay: 280ms; }
+  .stagger.anim-on > :nth-child(9) { animation-delay: 320ms; }
+  .stagger.anim-on > :nth-child(n + 10) { animation-delay: 360ms; }
+}
+@media print {
+  .fade-up,
+  .fade-in {
+    transform: none !important;
+    animation: none !important;
+  }
+}
+
+/* In-app motion toggle (AppearanceContext → [data-motion] on <html>). "reduced"
+   stops the entrance animations the same way prefers-reduced-motion does, for
+   users whose OS setting doesn't express it. The toggle is an explicit opt-out. */
+:root[data-motion="reduced"] .anim-on .fade-up,
+:root[data-motion="reduced"] .anim-on .fade-in,
+:root[data-motion="reduced"] .anim-on.fade-up,
+:root[data-motion="reduced"] .anim-on.fade-in {
+  animation: none !important;
+  transform: none !important;
+}
+
+/* Animated specular border (Linear-style sheen travelling around a panel edge).
+   --ang needs @property to interpolate. Frozen under reduced motion. */
+@property --ang {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes spin-border {
+  to { --ang: 360deg; }
+}
+
+/* Shimmer sweep for live "thinking" labels (reasoning + agent-activity headers).
+   A gold gradient travels across the text while the model works. Reduced-motion
+   (OS or the in-app toggle) freezes it to a solid gold. */
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.shimmer-text {
+  background: linear-gradient(
+    100deg,
+    var(--color-gold-dark) 30%,
+    var(--color-gold-light) 50%,
+    var(--color-gold-dark) 70%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text { animation: none; color: var(--color-gold); }
+}
+:root[data-motion="reduced"] .shimmer-text { animation: none; color: var(--color-gold); }
+
+/* Mode-switch cross-fade (View Transitions API, triggered in Sidebar.switchMode).
+   A subtle, quick dissolve between General / Legal / Deep Research surfaces. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.22s;
+  animation-timing-function: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+/* Belt-and-braces: even though the JS gates on the toggle, kill the transition
+   under OS reduced-motion too. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}

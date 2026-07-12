@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chat_shares (chat_id, group_chat_id, shared_by) VALUES ($1, $2, $3) ON CONFLICT (chat_id, group_chat_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1a430468e127e8a461ed9f423ae42e6dc48fe0b7e9aa3c01e9267842a5741d85"
+}

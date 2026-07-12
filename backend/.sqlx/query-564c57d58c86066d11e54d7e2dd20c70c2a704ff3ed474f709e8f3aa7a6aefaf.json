@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ag.id::text AS \"agent_id?: String\",\n                  ag.name AS \"agent_name?\",\n                  AVG(vr.faithfulness_score) FILTER (WHERE vr.status = 'succeeded') AS \"avg_score: f64\",\n                  COUNT(vr.id) AS \"runs!: i64\"\n           FROM verification_runs vr\n           JOIN messages m ON m.id = vr.target_id\n           JOIN chats c ON c.id = m.chat_id\n           LEFT JOIN agents ag ON ag.id = c.agent_id\n           WHERE vr.mode::text = 'live' AND vr.target_type::text = 'message'\n           GROUP BY ag.id, ag.name\n           ORDER BY COUNT(vr.id) DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "agent_id?: String",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "agent_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agents",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "avg_score: f64",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "runs!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "564c57d58c86066d11e54d7e2dd20c70c2a704ff3ed474f709e8f3aa7a6aefaf"
+}

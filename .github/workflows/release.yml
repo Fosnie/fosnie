@@ -1,0 +1,81 @@
+# Fosnie release — build + push the two application images to GHCR and attach the
+# deploy assets to the GitHub Release. DORMANT until the repo is published (no tag
+# is pushed before then). Zero secrets in the repo: GHCR auth uses the built-in
+# GITHUB_TOKEN.
+#
+# Build context is the repo root; the Dockerfiles are backend/Dockerfile and
+# ml/Dockerfile. Migrations are embedded in the backend binary (run on boot).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # attach assets to the Release
+  packages: write   # push to GHCR
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: backend
+            image: fosnie-backend
+            dockerfile: backend/Dockerfile
+          - name: ml
+            image: fosnie-ml
+            dockerfile: ml/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      # arm64 for the Python ml image is cheap. NOTE: the Rust backend under QEMU
+      # arm64 is SLOW (30+ min); if that bites, either add native arm64 runners or
+      # cross-compile aarch64-unknown-linux-gnu in backend/Dockerfile and keep this
+      # single-arch. Left multi-arch here for correctness; optimise when it hurts.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  release-assets:
+    needs: images
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Attach deploy assets to the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            backend/deploy/docker-compose.yml
+            backend/deploy/example.env
+            backend/deploy/install.sh
+            backend/deploy/install.ps1

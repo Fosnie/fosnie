@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM kb_documents WHERE id = $1 AND kb_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "10a9a5b6e95df14f9bf14d240954a34930f04e79c00934f87e7503b793cf7f2c"
+}

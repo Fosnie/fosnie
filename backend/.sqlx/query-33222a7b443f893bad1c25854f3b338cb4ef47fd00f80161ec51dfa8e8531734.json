@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n             SELECT 1 FROM provider_configs\n             WHERE role = 'llm' AND scope = $1 AND scope_id IS NOT DISTINCT FROM $2 AND label = $3\n           ) AS \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "33222a7b443f893bad1c25854f3b338cb4ef47fd00f80161ec51dfa8e8531734"
+}

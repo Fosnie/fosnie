@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n             SELECT 1 FROM workflow_runs wr\n             JOIN events ev ON ev.id = ANY(wr.trigger_event_ids)\n             WHERE wr.id = ANY($1) AND wr.workflow_id = $2 AND ev.resource_id = $3\n           ) AS \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e8e1b63d1c72d901cf15e383ae77639baba5bc6b0ef7f031d4f6363d30bad2ed"
+}

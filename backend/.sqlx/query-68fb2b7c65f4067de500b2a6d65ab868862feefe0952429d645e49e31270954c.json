@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET avatar_path = NULL, avatar_mime = NULL, avatar_updated_at = NULL WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "68fb2b7c65f4067de500b2a6d65ab868862feefe0952429d645e49e31270954c"
+}

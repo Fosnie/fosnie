@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kd.bytes_path, kd.mime\n                   FROM kb_documents kd\n                   JOIN project_kb_links pl ON pl.kb_id = kd.kb_id\n                   WHERE kd.id = $1 AND pl.project_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bytes_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "kb_documents",
+            "name": "bytes_path"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "kb_documents",
+            "name": "mime"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "590b78aa1bf78d20b2ec7d1f7377d608141f492b08ee6e9f6fffbab559eded15"
+}

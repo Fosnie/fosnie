@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO web_citations\n           (id, message_id, turn_id, url, title, domain, published_date, fetched_at, quote_text, snippet_only)\n           SELECT id, $2, $3, url, title, domain, published_date, fetched_at, quote_text, snippet_only\n           FROM UNNEST($1::uuid[], $4::text[], $5::text[], $6::text[], $7::date[], $8::timestamptz[], $9::text[], $10::bool[])\n              AS t(id, url, title, domain, published_date, fetched_at, quote_text, snippet_only)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "DateArray",
+        "TimestamptzArray",
+        "TextArray",
+        "BoolArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "04ef0f13a8d4f212cedf3d6f093577e097101ba65f2a0f3b25cbc64b6adc4b9a"
+}

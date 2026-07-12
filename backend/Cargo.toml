@@ -1,0 +1,96 @@
+# Copyright 2026 Private AI Ltd (SC881079)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[package]
+name = "fosnie-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Fosnie Rust backend — chat orchestration, transport, audit, config, scheduler."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "fosnie_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fosnie-backend"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.102"
+argon2 = "0.5"
+async-trait = "0.1"
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4", features = ["derive"] }
+cron = "0.15"
+axum-keycloak-auth = "=0.8.3"
+deadpool-redis = "0.23.0"
+ed25519-dalek = "2.2.0"
+figment = { version = "0.10.19", features = ["toml", "env"] }
+futures-util = "0.3.32"
+hex = "0.4.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "form", "rustls"] }
+# Official Rust MCP SDK (client role) — FEATURE B1. stdio (TokioChildProcess) +
+# streamable-HTTP (reqwest-backed) client transports. Pinned; protocol negotiated at
+# handshake. Only `mcp/client.rs` touches this crate (isolated behind the McpClient trait).
+rmcp = { version = "1.7.0", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+serde_with = "3"
+aes-gcm = "0.10"
+sha2 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "time", "json", "macros", "migrate"] }
+thiserror = "2.0.18"
+time = { version = "0.3.47", features = ["serde", "formatting"] }
+tokio = { version = "1.52.3", features = ["full"] }
+# TOTP (RFC 6238) second factor for Core local-auth (ts-core-2fa). `otpauth` gives
+# the `Secret`/base32 + `get_url()` otpauth-URL builder; `gen_secret` gives a
+# CSPRNG secret. `qr` deliberately OFF — the QR is rendered on the frontend from
+# the otpauth URL, not as a server-side image (no image/egress deps in the backend).
+totp-rs = { version = "5.7.2", default-features = false, features = ["otpauth", "gen_secret"] }
+tokio-cron-scheduler = "0.15.1"
+# WebSocket *client* for the live-voice streaming-STT engine (axum ships only the
+# server side). Local sherpa/NeMo are reached over `ws://` on the in-perimeter LAN;
+# the OpenAI Realtime STT adapter needs `wss://`, so enable rustls TLS (matches the
+# reqwest TLS backend — webpki roots, no system trust store dependency).
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# Direct dep only to install the process-wide rustls `CryptoProvider` at startup:
+# reqwest + sqlx + tokio-tungstenite each pull rustls, so both `aws-lc-rs` and `ring`
+# are in the tree and rustls 0.23 cannot auto-pick a default → tungstenite's `wss://`
+# connect (OpenAI Realtime STT) panics. `main` installs aws-lc-rs explicitly.
+rustls = "0.23"
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.11", features = ["trace", "cors", "fs"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+uuid = { version = "1.23.2", features = ["v5", "v7", "serde"] }
+metrics = "0.24.6"
+metrics-exporter-prometheus = "0.18.3"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+tokio-tungstenite = "0.24"
+
+# Build profiles (Core is now its own standalone crate/repo root — no workspace).
+# Keep target/debug from ballooning (~69GB on Windows): trim debuginfo.
+# line-tables-only keeps usable backtraces; deps carry none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

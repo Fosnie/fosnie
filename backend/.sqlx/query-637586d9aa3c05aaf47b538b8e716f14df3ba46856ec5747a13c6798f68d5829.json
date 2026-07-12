@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE knowledge_bases SET visibility = ($2::text)::kb_visibility WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "637586d9aa3c05aaf47b538b8e716f14df3ba46856ec5747a13c6798f68d5829"
+}

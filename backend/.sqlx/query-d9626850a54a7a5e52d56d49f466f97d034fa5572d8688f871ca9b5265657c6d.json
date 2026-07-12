@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT disk_path FROM skills WHERE slug = 'report-to-page'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "disk_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "skills",
+            "name": "disk_path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d9626850a54a7a5e52d56d49f466f97d034fa5572d8688f871ca9b5265657c6d"
+}

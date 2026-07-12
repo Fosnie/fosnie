@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users\n           SET avatar_path = $1, avatar_mime = $2, avatar_updated_at = now()\n           WHERE id = $3\n           RETURNING extract(epoch from avatar_updated_at)::bigint AS \"epoch!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "epoch!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c828fdd6e861a59e94bfe10919543c0982051e7e3f9c4db0aa6503b288098512"
+}

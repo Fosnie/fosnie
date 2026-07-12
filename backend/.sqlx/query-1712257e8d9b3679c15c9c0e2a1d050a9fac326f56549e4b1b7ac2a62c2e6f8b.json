@@ -1,0 +1,240 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT seq,\n               actor_user_id,\n               actor_role,\n               action_type,\n               resource_type,\n               resource_id,\n               occurred_at,\n               session_id,\n               source_ip,\n               outcome AS \"outcome: AuditOutcome\",\n               outcome_reason,\n               model_agent_traceability,\n               token_usage,\n               risk_anomaly_flag,\n               payload,\n               prev_hash,\n               hash,\n               signature\n        FROM audit_events\n        ORDER BY seq ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "actor_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "actor_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "actor_role",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "actor_role"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "action_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "action_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "resource_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "resource_type"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "resource_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "resource_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "occurred_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "occurred_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "session_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "session_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "source_ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "source_ip"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "outcome: AuditOutcome",
+        "type_info": {
+          "Custom": {
+            "name": "audit_outcome",
+            "kind": {
+              "Enum": [
+                "success",
+                "failure"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "outcome"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "outcome_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "outcome_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "model_agent_traceability",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "model_agent_traceability"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "token_usage",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "token_usage"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "risk_anomaly_flag",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "risk_anomaly_flag"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "prev_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "prev_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "hash"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "signature",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "audit_events",
+            "name": "signature"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "1712257e8d9b3679c15c9c0e2a1d050a9fac326f56549e4b1b7ac2a62c2e6f8b"
+}

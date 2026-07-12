@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kind::text AS \"kind!\", project_id,\n                  CASE WHEN kind = 'dm'\n                       THEN (SELECT u.display_name FROM group_chat_members gm2\n                             JOIN users u ON u.id = gm2.user_id\n                             WHERE gm2.group_chat_id = $1 AND gm2.user_id <> $2 LIMIT 1)\n                       ELSE name END AS name\n           FROM group_chats WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_chats",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      true,
+      null
+    ]
+  },
+  "hash": "79bc350247673d582001f3134cf04f9db8f153181fa6e3dcf08707b79d6abc1d"
+}

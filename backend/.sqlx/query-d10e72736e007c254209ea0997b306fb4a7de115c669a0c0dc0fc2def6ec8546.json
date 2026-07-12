@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT value, value_type AS \"value_type: ConfigValueType\"\n           FROM config_settings WHERE key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "config_settings",
+            "name": "value"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "value_type: ConfigValueType",
+        "type_info": {
+          "Custom": {
+            "name": "config_value_type",
+            "kind": {
+              "Enum": [
+                "string",
+                "int",
+                "float",
+                "bool",
+                "json"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "config_settings",
+            "name": "value_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d10e72736e007c254209ea0997b306fb4a7de115c669a0c0dc0fc2def6ec8546"
+}

@@ -1,0 +1,11 @@
+# Voice turn-detection sidecar — Silero VAD (torch.hub) + Smart-Turn v3 (CPU).
+# Pulls the small Silero VAD on first boot and the Smart-Turn v3 weights on first
+# /detect. Pin the model versions in the deployment profile (like the LLM).
+torch
+# <5 for the same trust_remote_code / API-stability reasons as the verify sidecar.
+transformers<5
+numpy
+fastapi
+uvicorn[standard]
+# torch.hub fetches silero-vad; the standalone package is an alternative loader:
+# silero-vad

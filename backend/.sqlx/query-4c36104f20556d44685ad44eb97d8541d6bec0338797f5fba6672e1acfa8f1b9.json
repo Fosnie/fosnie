@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE automation_runs SET status = 'succeeded', output_chat_id = $2, completed_at = $3 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4c36104f20556d44685ad44eb97d8541d6bec0338797f5fba6672e1acfa8f1b9"
+}

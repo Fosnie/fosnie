@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT resource_type::text AS \"resource_type!\", resource_id,\n                  principal_type::text AS \"principal_type!\", principal_id\n           FROM access_grants WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "resource_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "resource_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "access_grants",
+            "name": "resource_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "principal_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "principal_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "access_grants",
+            "name": "principal_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "b448b40d3c94b1ec1e926548a8bcf274d0572b959a5d88f752bec789d91549b6"
+}

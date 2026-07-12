@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE messages\n           SET content = $2, completed_at = $3, interrupted_at = $4,\n               prompt_tokens = $5, completion_tokens = $6, activity = $7\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4",
+        "Int4",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "154f336685b080cd4d8e6edb694346cccf5c2f53b3d51c77ecfc14c1ed852ed0"
+}

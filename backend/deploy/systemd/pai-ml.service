@@ -1,0 +1,32 @@
+# PAI Platform ML/RAG service (pai-ml). FastAPI/uvicorn, single ASGI process
+# (topology §7.2). The platform's LLM client — Rust never calls the LLM directly.
+# Linux deploy target; dev runs via `uv run uvicorn app.main:app --port 8090`.
+
+[Unit]
+Description=PAI Platform ML/RAG service (pai-ml)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=pai
+Group=pai
+WorkingDirectory=/opt/pai/ml
+EnvironmentFile=/etc/pai/ml.env
+# Offline guard: the only runtime model download is the
+# fastembed `Qdrant/bm25` sparse model. Forcing offline mode makes a stray pull fail
+# loudly rather than silently reaching the network — pre-provision the fastembed cache
+# in the offline bundle. Harmless when online; overridable in ml.env if ever needed.
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+# LLM_BASE_URL points at vLLM in prod (OpenAI-shape); the platform is not
+# engine-locked. uv provides the pinned virtualenv.
+ExecStart=/usr/local/bin/uv run uvicorn app.main:app --host 127.0.0.1 --port 8090
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

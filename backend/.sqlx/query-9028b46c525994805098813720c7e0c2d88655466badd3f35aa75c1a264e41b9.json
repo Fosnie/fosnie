@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE exports SET status = 'ready', disk_path = $2, mime = $3, filename = $4, completed_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9028b46c525994805098813720c7e0c2d88655466badd3f35aa75c1a264e41b9"
+}

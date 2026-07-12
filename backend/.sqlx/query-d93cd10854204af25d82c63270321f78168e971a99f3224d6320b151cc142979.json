@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO kb_access_grants (id, kb_id, principal_type, principal_id, permission, granted_by) VALUES ($1, $2, ($3::text)::principal_type, $4, ($5::text)::kb_permission, $6) ON CONFLICT (kb_id, principal_type, principal_id) DO UPDATE SET permission = EXCLUDED.permission",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d93cd10854204af25d82c63270321f78168e971a99f3224d6320b151cc142979"
+}

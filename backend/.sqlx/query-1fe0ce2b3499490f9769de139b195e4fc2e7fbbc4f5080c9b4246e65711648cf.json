@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM group_chat_notes WHERE id = $1 AND group_chat_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1fe0ce2b3499490f9769de139b195e4fc2e7fbbc4f5080c9b4246e65711648cf"
+}

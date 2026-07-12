@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(*) AS \"runs!: i64\",\n                  AVG(faithfulness_score) FILTER (\n                    WHERE status = 'succeeded' AND faithfulness_score IS NOT NULL\n                  ) AS \"avg_score: f64\",\n                  COALESCE(SUM(supported), 0)::bigint     AS \"supported!: i64\",\n                  COALESCE(SUM(contradicted), 0)::bigint  AS \"contradicted!: i64\",\n                  COALESCE(SUM(not_mentioned), 0)::bigint AS \"not_mentioned!: i64\"\n           FROM verification_runs\n           WHERE mode::text = 'live'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "runs!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "avg_score: f64",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "supported!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "contradicted!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "not_mentioned!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "64717926ca61f68490afa347fdbc49339682dd36737f2a56fa799bff106137a7"
+}

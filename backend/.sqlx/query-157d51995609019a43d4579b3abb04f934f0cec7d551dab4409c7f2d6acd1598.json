@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agent_runs SET status = ($2::text)::agent_run_status, updated_at = now() WHERE id = $1 AND status = 'awaiting_approval'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "157d51995609019a43d4579b3abb04f934f0cec7d551dab4409c7f2d6acd1598"
+}

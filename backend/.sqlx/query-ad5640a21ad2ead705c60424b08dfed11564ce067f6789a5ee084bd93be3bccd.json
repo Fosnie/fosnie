@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chats (id, owner_user_id, title, mode, research_params) VALUES ($1, $2, $3, 'research', $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ad5640a21ad2ead705c60424b08dfed11564ce067f6789a5ee084bd93be3bccd"
+}

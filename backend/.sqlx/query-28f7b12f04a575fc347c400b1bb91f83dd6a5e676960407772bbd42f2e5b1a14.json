@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT document_id, column_key FROM tabular_cells WHERE review_id = $1 AND status = 'error'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "document_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "document_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "column_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "column_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "28f7b12f04a575fc347c400b1bb91f83dd6a5e676960407772bbd42f2e5b1a14"
+}

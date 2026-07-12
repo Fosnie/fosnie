@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE automations SET name = COALESCE($2, name), schedule = COALESCE($3, schedule), prompt = COALESCE($4, prompt), status = COALESCE(($5::text)::automation_status, status), next_run_at = CASE WHEN $3 IS NULL THEN next_run_at ELSE $6 END, project_id = CASE WHEN $7 THEN $8 ELSE project_id END, kb_ids = COALESCE($9::uuid[], kb_ids), deliver_group_chat_id = CASE WHEN $10 THEN $11 ELSE deliver_group_chat_id END WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Bool",
+        "Uuid",
+        "UuidArray",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0c41c4e07109d7dde0b6b312fa0211dba1b746b1a64f532df6b437c7657c2b8a"
+}

@@ -1,0 +1,5 @@
+/target
+.env
+config.toml
+
+# Keep committed: .sqlx/ (offline query cache), .env.example, config.example.toml

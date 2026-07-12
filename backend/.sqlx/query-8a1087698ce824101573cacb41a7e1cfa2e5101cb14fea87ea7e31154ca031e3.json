@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT workflow_id, scope_key, event_ids, depth\n           FROM workflow_coalesce\n           WHERE fire_at <= now()\n           ORDER BY fire_at\n           LIMIT $1\n           FOR UPDATE SKIP LOCKED",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workflow_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "workflow_coalesce",
+            "name": "workflow_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "scope_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workflow_coalesce",
+            "name": "scope_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "event_ids",
+        "type_info": "UuidArray",
+        "origin": {
+          "Table": {
+            "table": "workflow_coalesce",
+            "name": "event_ids"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "depth",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "workflow_coalesce",
+            "name": "depth"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8a1087698ce824101573cacb41a7e1cfa2e5101cb14fea87ea7e31154ca031e3"
+}

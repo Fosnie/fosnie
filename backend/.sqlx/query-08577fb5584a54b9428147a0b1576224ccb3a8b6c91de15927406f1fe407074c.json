@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO verification_runs\n             (id, target_type, target_id, mode, verifier_model, status, created_by)\n           VALUES ($1, ($2::text)::verification_target, $3, ($4::text)::verification_mode, $5, 'queued', $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "08577fb5584a54b9428147a0b1576224ccb3a8b6c91de15927406f1fe407074c"
+}

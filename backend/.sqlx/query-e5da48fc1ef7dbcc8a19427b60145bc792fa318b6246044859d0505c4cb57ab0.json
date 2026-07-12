@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO feedback (id, message_id, user_id, rating, comment, agent_id, model) VALUES ($1, $2, $3, ($4::text)::feedback_rating, $5, $6, $7) ON CONFLICT (message_id, user_id) DO UPDATE SET rating = EXCLUDED.rating, comment = COALESCE(EXCLUDED.comment, feedback.comment), agent_id = EXCLUDED.agent_id, model = EXCLUDED.model, updated_at = now() RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "feedback",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e5da48fc1ef7dbcc8a19427b60145bc792fa318b6246044859d0505c4cb57ab0"
+}

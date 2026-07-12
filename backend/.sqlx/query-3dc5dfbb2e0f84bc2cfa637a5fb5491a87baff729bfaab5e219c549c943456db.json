@@ -1,0 +1,138 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, name, description, owner_id, visibility::text AS \"visibility!\",\n                  origin_project_id, restricted, embedding_model_id, embedding_dimension,\n                  status::text AS \"status!\", created_at\n           FROM knowledge_bases WHERE id = $1 AND archived_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "owner_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "owner_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "visibility!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "origin_project_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "origin_project_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "restricted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "restricted"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "embedding_model_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "embedding_model_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "embedding_dimension",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "embedding_dimension"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "knowledge_bases",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      null,
+      true,
+      false,
+      false,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "3dc5dfbb2e0f84bc2cfa637a5fb5491a87baff729bfaab5e219c549c943456db"
+}

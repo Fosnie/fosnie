@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO provider_configs\n                       (id, role, scope, scope_id, base_url, model, label, is_default,\n                        api_key_encrypted, enabled, updated_by, updated_at)\n                   VALUES ($1, 'llm', 'deployment', NULL, $2, $3, 'Local (Ollama)',\n                        NOT EXISTS (SELECT 1 FROM provider_configs\n                                    WHERE role = 'llm' AND scope = 'deployment' AND is_default),\n                        NULL, true, NULL, now())\n                   ON CONFLICT (scope, COALESCE(scope_id, '00000000-0000-0000-0000-000000000000'::uuid), label)\n                       WHERE role = 'llm'\n                   DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5c4538804cdb2672cc2e661177a9076997b977af5879b0d73f6c67cbdd8b41c5"
+}

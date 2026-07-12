@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE provider_configs SET\n               label = $4,\n               base_url = $5,\n               model = $6,\n               api_key_encrypted = COALESCE($7, api_key_encrypted),\n               enabled = $8,\n               reasoning_mode = $9,\n               updated_by = $10,\n               updated_at = now()\n           WHERE id = $1 AND role = 'llm' AND scope = $2 AND scope_id IS NOT DISTINCT FROM $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4a052cd0e1fefec1550727288f11883fb3f35faf2622d04548b3bdf4d48e14c"
+}

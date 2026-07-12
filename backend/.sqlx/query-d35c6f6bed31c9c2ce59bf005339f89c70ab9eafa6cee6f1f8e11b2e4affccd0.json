@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tool_overrides (tool_name, enabled, description_override, updated_by, updated_at)\n           VALUES ($1, $2, $3, $4, now())\n           ON CONFLICT (tool_name) DO UPDATE\n             SET enabled = EXCLUDED.enabled,\n                 description_override = EXCLUDED.description_override,\n                 updated_by = EXCLUDED.updated_by,\n                 updated_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d35c6f6bed31c9c2ce59bf005339f89c70ab9eafa6cee6f1f8e11b2e4affccd0"
+}

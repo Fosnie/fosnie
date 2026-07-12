@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO citations (id, message_id, doc_id, quote_text, page_number, clause_section_ref, additional_metadata) SELECT id, $2, doc_id, quote_text, page_number, clause_section_ref, meta::jsonb FROM UNNEST($1::uuid[], $3::uuid[], $4::text[], $5::int4[], $6::text[], $7::text[]) AS t(id, doc_id, quote_text, page_number, clause_section_ref, meta)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid",
+        "UuidArray",
+        "TextArray",
+        "Int4Array",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "124999ab78cd0bbb3c5abdbc8f9108d1904e8a20508607644287b8e762954f36"
+}

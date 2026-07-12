@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT w.message_id, w.url, w.title, w.domain, w.published_date, w.fetched_at, w.quote_text, w.snippet_only\n           FROM web_citations w JOIN messages m ON m.id = w.message_id\n           WHERE m.chat_id = $1 ORDER BY w.created_at, w.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "published_date",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "published_date"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "fetched_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "fetched_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "quote_text",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "quote_text"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "snippet_only",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "web_citations",
+            "name": "snippet_only"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e9ba13fbed1741bb1ac5416f6b9cee054d715f12d5ab390e4f74f01bae35477d"
+}

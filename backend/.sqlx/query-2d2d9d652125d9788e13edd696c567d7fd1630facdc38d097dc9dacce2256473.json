@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n             SELECT 1 FROM provider_configs\n             WHERE id = $1 AND role = 'llm' AND enabled\n               AND ( scope = 'deployment'\n                  OR (scope = 'user' AND scope_id = $2) )\n           ) AS \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2d2d9d652125d9788e13edd696c567d7fd1630facdc38d097dc9dacce2256473"
+}

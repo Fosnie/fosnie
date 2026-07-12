@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO projects (id, name, description, owner_user_id, sector) VALUES ($1, $2, $3, $4, ($5::text)::project_sector)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e888af032f3d7149630ad4f25854204686c23adb15a205c5bd13210c4a56fd50"
+}

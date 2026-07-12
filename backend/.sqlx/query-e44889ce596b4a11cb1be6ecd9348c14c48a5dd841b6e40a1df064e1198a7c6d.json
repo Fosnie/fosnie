@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT bytes_path FROM kb_documents WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bytes_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "kb_documents",
+            "name": "bytes_path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e44889ce596b4a11cb1be6ecd9348c14c48a5dd841b6e40a1df064e1198a7c6d"
+}

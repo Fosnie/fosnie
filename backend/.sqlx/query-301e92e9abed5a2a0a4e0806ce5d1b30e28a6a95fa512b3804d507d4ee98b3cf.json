@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT EXISTS (\n            SELECT 1 FROM access_grants g\n            WHERE g.resource_type = $1\n              AND g.resource_id = $2\n              AND g.permission = $3\n              AND (\n                    (g.principal_type = 'user'  AND g.principal_id = $4)\n                 OR (g.principal_type = 'group' AND g.principal_id IN\n                        (SELECT group_id FROM group_members WHERE user_id = $4))\n              )\n        ) AS \"allowed!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "allowed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "grant_resource_type",
+            "kind": {
+              "Enum": [
+                "project",
+                "project_knowledge",
+                "agent",
+                "skill",
+                "prompt",
+                "chat",
+                "group_chat",
+                "project_chat",
+                "tabular_review",
+                "automation",
+                "document",
+                "mcp_server"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        {
+          "Custom": {
+            "name": "permission",
+            "kind": {
+              "Enum": [
+                "read",
+                "write",
+                "share",
+                "delete"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "301e92e9abed5a2a0a4e0806ce5d1b30e28a6a95fa512b3804d507d4ee98b3cf"
+}

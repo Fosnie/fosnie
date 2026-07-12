@@ -1,0 +1,174 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT target_type::text AS \"target_type!\", target_id, mode::text AS \"mode!\",\n                  status, verifier_model, strictness, faithfulness_score, total_claims, supported,\n                  contradicted, not_mentioned, created_by, created_at, finished_at\n           FROM verification_runs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "target_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "target_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "mode!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "verifier_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "verifier_model"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "strictness",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "strictness"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "faithfulness_score",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "faithfulness_score"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "total_claims",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "total_claims"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "supported",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "supported"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "contradicted",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "contradicted"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "not_mentioned",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "not_mentioned"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "finished_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "verification_runs",
+            "name": "finished_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      null,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "d8e1b41ed58dca30b36f77a6b4edbdf462fb330f57246f2e30492154dabcd01d"
+}

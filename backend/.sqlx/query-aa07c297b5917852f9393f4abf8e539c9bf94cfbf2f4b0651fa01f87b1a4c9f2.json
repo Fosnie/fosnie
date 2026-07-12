@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users\n              SET deactivated_at = COALESCE(deactivated_at, now()),\n                  self_archived_at = now(),\n                  display_name = 'Deleted user',\n                  display_name_custom = false,\n                  email = $2\n            WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aa07c297b5917852f9393f4abf8e539c9bf94cfbf2f4b0651fa01f87b1a4c9f2"
+}

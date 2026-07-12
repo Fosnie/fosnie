@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n                 SELECT 1 FROM chat_shares cs\n                 JOIN group_chat_members m ON m.group_chat_id = cs.group_chat_id\n                 WHERE cs.chat_id = $1 AND m.user_id = $2\n               ) AS \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "447be7ea550350ff8d116be1c05449f20eaa6b7e68c3bf3c77f2fd603da72ea8"
+}

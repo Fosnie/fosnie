@@ -1,0 +1,50 @@
+# Public-access OVERLAY for the test stack — put the demo on the internet at
+# https://chat.example.com with zero open firewall ports, via a Cloudflare
+# Tunnel. Use ALONGSIDE the base file:
+#
+#   docker compose --env-file .env \
+#     -f docker-compose.test.yml -f docker-compose.public.yml up -d
+#
+# What this overlay changes vs the base (localhost) stack:
+#   • adds `cloudflared` — outbound-only tunnel, no inbound ports, Cloudflare TLS
+#   • points the backend's public_url + Keycloak issuer at the public hostnames
+#   • tells Keycloak it sits behind a proxy on its public hostname
+#
+# Prereqs (one-off, ~15 min — see PUBLIC-ACCESS.md):
+#   1. Domain example.com on Cloudflare (nameservers pointed at CF).
+#   2. A named tunnel + token  → put it in .env as CLOUDFLARE_TUNNEL_TOKEN.
+#   3. Public hostnames in the tunnel config:
+#        chat.example.com  → http://localhost:8080   (platform)
+#        auth.example.com  → http://localhost:8081   (Keycloak)
+#   4. Patch the Keycloak realm redirect/web-origins to the https hostnames
+#      (PUBLIC-ACCESS.md has the 6-line patch).
+
+services:
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    network_mode: host
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARE_TUNNEL_TOKEN}"]
+    restart: unless-stopped
+
+  # Backend now serves a PUBLIC https origin → public_url/keycloak.url must be https
+  # (validate() enforces it off-loopback; Cloudflare terminates the TLS).
+  fosnie-backend:
+    build:
+      args:
+        VITE_KEYCLOAK_URL: "https://auth.example.com"
+    environment:
+      PAI__SERVER__PUBLIC_URL: "https://chat.example.com"
+      PAI__KEYCLOAK__URL: "https://auth.example.com"
+
+  # Keycloak behind the Cloudflare proxy: trust X-Forwarded-* and advertise its
+  # public hostname so issuer + redirect URLs are built as https://auth.example.com.
+  keycloak:
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+      KC_HTTP_PORT: "8081"
+      KC_HEALTH_ENABLED: "true"
+      KC_PROXY_HEADERS: "xforwarded"
+      KC_HOSTNAME: "https://auth.example.com"
+      KC_HOSTNAME_STRICT: "false"

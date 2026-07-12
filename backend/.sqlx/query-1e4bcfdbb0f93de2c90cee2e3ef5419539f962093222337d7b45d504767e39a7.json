@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO knowledge_bases (id, name, description, owner_id, visibility, origin_project_id, restricted, embedding_model_id, embedding_dimension, status) VALUES ($1, $2, NULL, $3, 'project', $4, false, $5, $6, 'empty')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1e4bcfdbb0f93de2c90cee2e3ef5419539f962093222337d7b45d504767e39a7"
+}

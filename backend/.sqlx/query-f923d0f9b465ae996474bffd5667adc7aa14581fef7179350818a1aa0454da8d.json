@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT to_char(d, 'YYYY-MM-DD') AS \"day!\",\n                  AVG(vr.faithfulness_score) FILTER (WHERE vr.status = 'succeeded') AS \"avg_score: f64\",\n                  COUNT(vr.id) AS \"runs!: i64\"\n           FROM generate_series((now() - interval '29 days')::date, now()::date, interval '1 day') d\n           LEFT JOIN verification_runs vr\n             ON vr.mode::text = 'live'\n            AND date_trunc('day', vr.created_at)::date = d::date\n           GROUP BY d ORDER BY d",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "avg_score: f64",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "runs!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f923d0f9b465ae996474bffd5667adc7aa14581fef7179350818a1aa0454da8d"
+}

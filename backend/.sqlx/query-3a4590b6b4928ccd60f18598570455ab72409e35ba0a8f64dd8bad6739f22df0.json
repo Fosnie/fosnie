@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kb_id FROM project_kb_links WHERE project_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kb_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "project_kb_links",
+            "name": "kb_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3a4590b6b4928ccd60f18598570455ab72409e35ba0a8f64dd8bad6739f22df0"
+}

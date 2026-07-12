@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chat_summaries (chat_id, summary, up_to_sequence, updated_at) VALUES ($1, $2, $3, now()) ON CONFLICT (chat_id) DO UPDATE SET summary = EXCLUDED.summary, up_to_sequence = EXCLUDED.up_to_sequence, updated_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e0d1b55f3c37469489d8419ad0ffe2c6bdf17a7bb8867eca4cb9e21782bac1b3"
+}

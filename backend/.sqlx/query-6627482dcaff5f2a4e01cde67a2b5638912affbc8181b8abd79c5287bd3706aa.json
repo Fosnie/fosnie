@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (id, display_name, email, role, password_hash, last_seen_at)\n           VALUES ($1, $2, $3, $4, $5, now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        {
+          "Custom": {
+            "name": "platform_role",
+            "kind": {
+              "Enum": [
+                "super_admin",
+                "client_admin",
+                "power_user",
+                "user"
+              ]
+            }
+          }
+        },
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6627482dcaff5f2a4e01cde67a2b5638912affbc8181b8abd79c5287bd3706aa"
+}

@@ -1,0 +1,41 @@
+# Build context excludes for `docker build` (backend/Dockerfile, ml/Dockerfile).
+# .gitignore governs git, not the Docker context — without this file the whole
+# repo (incl. multi-GB build artefacts) is sent to the daemon on every build.
+
+# --- Rust ---
+backend/target/
+
+# --- Python (ML service) ---
+ml/.venv/
+**/__pycache__/
+*.py[cod]
+ml/.pytest_cache/
+ml/.ruff_cache/
+
+# --- Frontend ---
+frontend/node_modules/
+frontend/dist/
+
+# --- Runtime data ---
+backend/data/
+ml/data/
+
+# --- Generated release artefacts ---
+sbom/
+
+# --- Secrets / local env ---
+.env
+*.env
+!*.env.example
+backend/config.toml
+backend/config.local.toml
+backend/deploy/**/.venv/
+
+# --- VCS / editor / OS ---
+.git/
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+.claude/

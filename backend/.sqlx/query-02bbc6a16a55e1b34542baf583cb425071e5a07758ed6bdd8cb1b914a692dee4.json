@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE kb_documents SET ingest_status = 'error' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "02bbc6a16a55e1b34542baf583cb425071e5a07758ed6bdd8cb1b914a692dee4"
+}

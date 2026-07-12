@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tasks (id, task_type, payload) VALUES ($1, ($2::text)::task_type, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ccb209d2f0e395913eff4991230b25420528f9541f8f5fa3906685cd0d0df91d"
+}

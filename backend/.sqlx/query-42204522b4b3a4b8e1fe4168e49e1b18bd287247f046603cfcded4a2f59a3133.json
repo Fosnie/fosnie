@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT g.id, g.principal_type::text AS \"principal_type!\", g.principal_id,\n                  g.permission::text AS \"permission!\",\n                  COALESCE(u.display_name, grp.name) AS name\n           FROM kb_access_grants g\n           LEFT JOIN users u   ON g.principal_type = 'user'  AND u.id = g.principal_id\n           LEFT JOIN groups grp ON g.principal_type = 'group' AND grp.id = g.principal_id\n           WHERE g.kb_id = $1\n           ORDER BY g.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "kb_access_grants",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "principal_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "kb_access_grants",
+            "name": "principal_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "permission!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "name",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "42204522b4b3a4b8e1fe4168e49e1b18bd287247f046603cfcded4a2f59a3133"
+}

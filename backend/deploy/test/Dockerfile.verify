@@ -1,0 +1,16 @@
+# Groundedness verifier sidecar — TEST image. Build context = repo root.
+# Wraps LettuceDetect (+ NLI + FactCG + HHEM) behind the /v1/verify contract the
+# ML service calls (backend/deploy/verify/README.md). CPU is fine — it runs
+# post-stream, never on the TTFT path. Models (~2.5 GB total) download once.
+
+FROM python:3.12-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/pai/verify
+COPY backend/deploy/verify/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/deploy/verify/ ./
+ENV VERIFY_MODEL=KRLabsOrg/lettucedect-large-modernbert-en-v1 \
+    VERIFY_PORT=8095
+EXPOSE 8095
+CMD ["python", "server.py"]

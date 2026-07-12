@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tabular_cells (id, review_id, document_id, column_key) SELECT id, $1, document_id, column_key FROM UNNEST($2::uuid[], $3::uuid[], $4::text[]) AS t(id, document_id, column_key)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "UuidArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "71dca1127ac2207590a538b74c1b8c095b801c0fd6f337ca659d0d8021da97e2"
+}

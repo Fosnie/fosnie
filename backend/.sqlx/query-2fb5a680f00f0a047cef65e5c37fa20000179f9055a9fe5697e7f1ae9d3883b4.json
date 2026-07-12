@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE group_chat_notes SET content = $3, version = version + 1, updated_by = $4, updated_at = now() WHERE id = $1 AND group_chat_id = $2 AND version = $5 RETURNING version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "group_chat_notes",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2fb5a680f00f0a047cef65e5c37fa20000179f9055a9fe5697e7f1ae9d3883b4"
+}

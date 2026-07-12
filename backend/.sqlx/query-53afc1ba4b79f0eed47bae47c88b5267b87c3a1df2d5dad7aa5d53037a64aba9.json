@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tabular_reviews SET status = 'error' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "53afc1ba4b79f0eed47bae47c88b5267b87c3a1df2d5dad7aa5d53037a64aba9"
+}

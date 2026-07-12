@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE knowledge_bases SET status = 'ready', last_ingest_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a489d44fc4ae3f748b98df28a808a4d4a0c00091d9057879257eccfbe25f7315"
+}

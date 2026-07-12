@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM project_kb_links WHERE project_id = $1 AND kb_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "347e8603d982199ae9bc0b5d449c26ab4c9d50a3ff79cb126997481577a729f4"
+}

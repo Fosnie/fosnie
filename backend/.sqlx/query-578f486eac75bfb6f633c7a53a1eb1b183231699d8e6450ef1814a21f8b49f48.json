@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agent_runs SET status = 'awaiting_approval', pending_tool = $2, pending_args = $3, pending_step = $4, updated_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "578f486eac75bfb6f633c7a53a1eb1b183231699d8e6450ef1814a21f8b49f48"
+}

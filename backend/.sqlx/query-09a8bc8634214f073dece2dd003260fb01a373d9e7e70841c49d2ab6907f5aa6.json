@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO automation_runs (id, automation_id, status) VALUES ($1, $2, 'running')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "09a8bc8634214f073dece2dd003260fb01a373d9e7e70841c49d2ab6907f5aa6"
+}

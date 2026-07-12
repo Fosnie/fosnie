@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT document_id, column_key, status::text AS \"status!\", value, reasoning, citations, error\n           FROM tabular_cells WHERE review_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "document_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "document_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "column_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "column_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "value"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "reasoning",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "reasoning"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "citations",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "citations"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tabular_cells",
+            "name": "error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "5a5bbdf403631990c2c9d1d5b85ebbe5ff87c62a5e8c5f4e1eb15cd86f1f50e2"
+}

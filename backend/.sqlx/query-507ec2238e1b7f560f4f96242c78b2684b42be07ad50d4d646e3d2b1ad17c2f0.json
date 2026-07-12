@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT l.kb_id AS \"kb_id!\"\n                   FROM project_kb_links l\n                   JOIN knowledge_bases kb ON kb.id = l.kb_id AND kb.archived_at IS NULL\n                   WHERE l.project_id = $1 AND (\n                       $2\n                       OR kb.owner_id = $3\n                       OR EXISTS (\n                           SELECT 1 FROM kb_access_grants g WHERE g.kb_id = kb.id AND (\n                               (g.principal_type = 'user'  AND g.principal_id = $3)\n                            OR (g.principal_type = 'group' AND g.principal_id IN\n                                  (SELECT group_id FROM group_members WHERE user_id = $3))\n                           )\n                       )\n                   )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kb_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "project_kb_links",
+            "name": "kb_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "507ec2238e1b7f560f4f96242c78b2684b42be07ad50d4d646e3d2b1ad17c2f0"
+}
