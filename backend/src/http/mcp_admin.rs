@@ -83,7 +83,7 @@ pub async fn list(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> Res
             .map(|a| a.len() as i64)
             .unwrap_or(0);
         out.push(ServerOut {
-            connected: state.mcp.is_connected(&r.slug).await,
+            connected: state.mcp.is_connected(&r.slug, None).await,
             id: r.id,
             slug: r.slug,
             name: r.name,
@@ -290,6 +290,12 @@ pub async fn approve(
     .await?
     .ok_or_else(|| AppError::Validation("MCP server not found".into()))?;
 
+    // An OAuth server is approved through its catalogue-source connection, not a static
+    // transport (it has no baked-in credential to connect with).
+    if s.auth_type == "oauth" {
+        return crate::http::mcp_oauth::approve_oauth(&state, &ctx, id, &s.slug).await;
+    }
+
     let transport = match s.transport.as_str() {
         "stdio" => {
             let cmd: Vec<String> = s.command.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
@@ -305,7 +311,7 @@ pub async fn approve(
         _ => return Err(AppError::Validation("invalid transport".into())),
     };
 
-    let catalog = state.mcp.connect(&s.slug, transport).await?;
+    let catalog = state.mcp.connect(&s.slug, None, transport).await?;
     crate::mcp::record_catalog(&state.pg, id, &catalog).await?;
     sqlx::query!("UPDATE mcp_servers SET enabled = true WHERE id = $1", id)
         .execute(&state.pg)
@@ -324,9 +330,138 @@ pub async fn delete(
         .fetch_optional(&state.pg)
         .await?
     {
-        state.mcp.disconnect(&slug).await;
+        state.mcp.disconnect_all(&slug).await;
     }
     sqlx::query!("DELETE FROM mcp_servers WHERE id = $1", id).execute(&state.pg).await?;
     audit_server(&state, &ctx, "mcp.server.deleted", id, json!({})).await;
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct PatchBody {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    /// `none | bearer | api_key | header | oauth`.
+    #[serde(default)]
+    pub auth_type: Option<String>,
+    #[serde(default)]
+    pub auth_header_name: Option<String>,
+    /// New secret; absent = keep the stored one.
+    #[serde(default)]
+    pub auth_value: Option<String>,
+    #[serde(default)]
+    pub requires_egress: Option<bool>,
+}
+
+/// Update a registered server in place. Changing `url` or `auth_type` forces re-approval
+/// (the pinned catalogue and the connection no longer describe the same endpoint); a name
+/// change does not. Editing exists so rotating credentials does not mean delete +
+/// re-register, which would drop every RBAC grant and re-pin the catalogue.
+pub async fn patch_server(
+    State(state): State<AppState>,
+    AuthUser(ctx): AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PatchBody>,
+) -> Result<Json<Value>> {
+    state.rbac.require_permission(&state.pg, &ctx, permissions::MCP_MANAGE).await?;
+    let cur = sqlx::query!(
+        "SELECT slug, transport, url, auth_type, requires_egress FROM mcp_servers WHERE id = $1",
+        id
+    )
+    .fetch_optional(&state.pg)
+    .await?
+    .ok_or_else(|| AppError::NotFound("MCP server not found".into()))?;
+
+    let new_auth_type = body.auth_type.clone().unwrap_or_else(|| cur.auth_type.clone());
+    if new_auth_type == "oauth" && cur.transport == "stdio" {
+        return Err(AppError::Validation("a stdio server cannot use OAuth".into()));
+    }
+    // OAuth servers always reach a remote endpoint, so they require egress.
+    let requires_egress = if new_auth_type == "oauth" {
+        true
+    } else {
+        body.requires_egress.unwrap_or(cur.requires_egress)
+    };
+
+    let new_url = body.url.clone().or_else(|| cur.url.clone());
+    if let Some(u) = &new_url {
+        if cur.transport == "http" {
+            crate::mcp::validate::validate_endpoint(u, requires_egress)?;
+        }
+    }
+
+    // Re-encode auth material only for the static schemes; OAuth material lives in the
+    // oauth tables, not here.
+    let (auth_type_final, header_name, value_enc) = if new_auth_type == "oauth" {
+        ("oauth".to_string(), None, None)
+    } else if body.auth_type.is_some() || body.auth_value.is_some() || body.auth_header_name.is_some() {
+        normalise_auth(
+            &state,
+            Some(new_auth_type.as_str()),
+            body.auth_header_name.as_deref(),
+            body.auth_value.as_deref(),
+        )?
+    } else {
+        // No auth change requested — leave the stored values untouched below.
+        (cur.auth_type.clone(), None, None)
+    };
+
+    let reapprove = body.url.is_some() && new_url != cur.url
+        || body.auth_type.is_some() && new_auth_type != cur.auth_type;
+
+    // Build the update. Only overwrite auth columns when the caller actually changed them.
+    let touch_auth = new_auth_type == "oauth"
+        || body.auth_type.is_some()
+        || body.auth_value.is_some()
+        || body.auth_header_name.is_some();
+
+    if touch_auth {
+        sqlx::query!(
+            r#"UPDATE mcp_servers
+                  SET name = COALESCE($2, name),
+                      url = $3,
+                      auth_type = $4,
+                      auth_header_name = $5,
+                      auth_value_enc = COALESCE($6, auth_value_enc),
+                      requires_egress = $7,
+                      status = CASE WHEN $8 THEN 'pending' ELSE status END,
+                      updated_at = now()
+                WHERE id = $1"#,
+            id,
+            body.name,
+            new_url,
+            auth_type_final,
+            header_name,
+            value_enc,
+            requires_egress,
+            reapprove,
+        )
+        .execute(&state.pg)
+        .await?;
+    } else {
+        sqlx::query!(
+            r#"UPDATE mcp_servers
+                  SET name = COALESCE($2, name),
+                      url = $3,
+                      requires_egress = $4,
+                      status = CASE WHEN $5 THEN 'pending' ELSE status END,
+                      updated_at = now()
+                WHERE id = $1"#,
+            id,
+            body.name,
+            new_url,
+            requires_egress,
+            reapprove,
+        )
+        .execute(&state.pg)
+        .await?;
+    }
+
+    if reapprove {
+        state.mcp.disconnect_all(&cur.slug).await;
+    }
+    audit_server(&state, &ctx, "mcp.server.updated", id, json!({ "reapprove": reapprove })).await;
+    Ok(Json(json!({ "ok": true, "reapprove": reapprove })))
 }

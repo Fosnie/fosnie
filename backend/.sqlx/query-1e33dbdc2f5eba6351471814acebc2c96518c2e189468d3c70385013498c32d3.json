@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.id AS server_id, s.slug, s.name,\n                  c.status AS \"conn_status?\", c.subject_label, c.scopes AS \"scopes?\"\n             FROM mcp_servers s\n             LEFT JOIN mcp_oauth_connections c\n                    ON c.mcp_server_id = s.id AND c.user_id = $1\n            WHERE s.auth_type = 'oauth' AND s.status = 'active' AND s.enabled\n            ORDER BY s.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "server_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "slug",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "slug"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "conn_status?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_connections",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "subject_label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_connections",
+            "name": "subject_label"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "scopes?",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_connections",
+            "name": "scopes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "1e33dbdc2f5eba6351471814acebc2c96518c2e189468d3c70385013498c32d3"
+}

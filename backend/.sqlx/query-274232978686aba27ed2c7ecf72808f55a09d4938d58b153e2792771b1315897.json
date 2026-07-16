@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_oauth_connections SET status = 'reauth_required' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "274232978686aba27ed2c7ecf72808f55a09d4938d58b153e2792771b1315897"
+}

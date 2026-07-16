@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_oauth_connections\n              SET status = 'revoked', access_token_enc = NULL, refresh_token_enc = NULL\n            WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f0c65737a4bb42f3110470cb618186f34654f0af53cd0d34453d913982061bc2"
+}

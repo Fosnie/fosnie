@@ -81,6 +81,49 @@ use rmcp::transport::streamable_http_client::{
 use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
 
+/// Build the reqwest client every remote MCP connection uses: the given default headers
+/// plus `redirect::Policy::none()`. Forbidding redirects is the actual SSRF stop — the
+/// SDK has no internal redirect loop, so a 3xx into an internal host with a secret
+/// attached is only prevented here. Both the static-auth path and the OAuth path share
+/// this one construction so neither can drift into an unhardened client.
+pub(crate) fn build_hardened_client(
+    headers: reqwest::header::HeaderMap,
+) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| AppError::Other(anyhow::anyhow!("build MCP http client: {e}")))
+}
+
+/// A hardened client with no default headers — for OAuth discovery, token exchange, and
+/// the OAuth transport (which injects a fresh bearer per request rather than baking one
+/// into the client).
+pub fn hardened_client() -> Result<reqwest::Client> {
+    build_hardened_client(reqwest::header::HeaderMap::new())
+}
+
+/// Open an OAuth-authenticated streamable-HTTP connection. `auth_manager` carries the
+/// approved metadata, the configured client, and the per-connection credential store; the
+/// SDK's `AuthClient` wrapper fetches (and refreshes) the access token per request, so the
+/// connection survives token rotation. The manager is built by the OAuth flow layer, which
+/// has the database and deployment key; this function owns only the transport handshake.
+pub async fn serve_oauth(
+    url: &str,
+    auth_manager: rmcp::transport::auth::AuthorizationManager,
+    http: reqwest::Client,
+) -> Result<Arc<dyn McpConn>> {
+    use rmcp::transport::auth::AuthClient;
+    let auth_client = AuthClient::new(http, auth_manager);
+    let cfg = StreamableHttpClientTransportConfig::with_uri(url.to_string());
+    let tp = StreamableHttpClientTransport::with_client(auth_client, cfg);
+    let service = ()
+        .serve(tp)
+        .await
+        .map_err(|e| AppError::Other(anyhow::anyhow!("MCP OAuth handshake: {e}")))?;
+    Ok(Arc::new(RmcpConn { service }))
+}
+
 struct RmcpConn {
     service: RunningService<RoleClient, ()>,
 }
@@ -115,11 +158,7 @@ impl RmcpConn {
                     hv.set_sensitive(true);
                     headers.insert(hn, hv);
                 }
-                let client = reqwest::Client::builder()
-                    .default_headers(headers)
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .map_err(|e| AppError::Other(anyhow::anyhow!("build MCP http client: {e}")))?;
+                let client = build_hardened_client(headers)?;
                 let cfg = StreamableHttpClientTransportConfig::with_uri(url);
                 let tp = StreamableHttpClientTransport::with_client(client, cfg);
                 ().serve(tp)

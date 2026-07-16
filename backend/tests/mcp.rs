@@ -103,24 +103,24 @@ async fn manager_two_servers_discovery_and_dispatch() {
     let mgr = McpManager::new();
     let files = Arc::new(FakeConn { catalog: vec![entry("read_file", "read", false)] });
     let db = Arc::new(FakeConn { catalog: vec![entry("query", "run a query", true)] });
-    mgr.insert_conn("files", files).await;
-    mgr.insert_conn("db", db).await;
+    mgr.insert_conn("files", None, files).await;
+    mgr.insert_conn("db", None, db).await;
 
     // Discovery across both servers.
-    assert_eq!(mgr.list_tools("files").await.unwrap().len(), 1);
-    assert_eq!(mgr.list_tools("db").await.unwrap().len(), 1);
-    assert!(mgr.is_connected("files").await && mgr.is_connected("db").await);
+    assert_eq!(mgr.list_tools("files", None).await.unwrap().len(), 1);
+    assert_eq!(mgr.list_tools("db", None).await.unwrap().len(), 1);
+    assert!(mgr.is_connected("files", None).await && mgr.is_connected("db", None).await);
 
     // Dispatch on each (namespaced calls resolve to the right handle).
-    let r = mgr.call_tool("files", "read_file", json!({ "path": "/x" })).await.unwrap();
+    let r = mgr.call_tool("files", None, "read_file", json!({ "path": "/x" })).await.unwrap();
     assert!(r.contains("read_file"));
-    let r2 = mgr.call_tool("db", "query", json!({ "sql": "select 1" })).await.unwrap();
+    let r2 = mgr.call_tool("db", None, "query", json!({ "sql": "select 1" })).await.unwrap();
     assert!(r2.contains("query"));
 
     // Unknown tool errors; disconnect drops the handle.
-    assert!(mgr.call_tool("files", "nope", json!({})).await.is_err());
-    mgr.disconnect("files").await;
-    assert!(!mgr.is_connected("files").await);
+    assert!(mgr.call_tool("files", None, "nope", json!({})).await.is_err());
+    mgr.disconnect("files", None).await;
+    assert!(!mgr.is_connected("files", None).await);
 }
 
 #[tokio::test]

@@ -21,10 +21,14 @@
 //!
 //! Submodules: `client` (the rmcp transport boundary + trait), `manager` (the live
 //! connection registry on AppState), `pin` (rug-pull fingerprints), `validate`
-//! (private-endpoint check).
+//! (private-endpoint check), `oauth_policy` (SSRF policy for discovered OAuth
+//! authorisation-server endpoints).
 
 pub mod client;
 pub mod manager;
+pub mod oauth_flow;
+pub mod oauth_policy;
+pub mod oauth_store;
 pub mod pin;
 pub mod validate;
 
@@ -105,7 +109,7 @@ pub async fn session_tool_defs(
         return Vec::new();
     }
     let rows = match sqlx::query!(
-        r#"SELECT id, slug, tools_catalog FROM mcp_servers WHERE status = 'active' AND enabled"#
+        r#"SELECT id, slug, auth_type, tools_catalog FROM mcp_servers WHERE status = 'active' AND enabled"#
     )
     .fetch_all(&state.pg)
     .await
@@ -122,6 +126,11 @@ pub async fn session_tool_defs(
             .await
             .unwrap_or(false)
         {
+            continue;
+        }
+        // OAuth servers need this user's own active connection. Without one, omit the
+        // server's tools silently (the UI surfaces a Connect prompt); do not error the turn.
+        if r.auth_type == "oauth" && !user_has_active_connection(state, ctx, r.id).await {
             continue;
         }
         for t in parse_catalog(r.tools_catalog) {
@@ -141,6 +150,92 @@ pub async fn session_tool_defs(
         }
     }
     defs
+}
+
+/// Whether `ctx`'s user holds an active OAuth connection to `server_id`.
+async fn user_has_active_connection(state: &AppState, ctx: &AuthContext, server_id: Uuid) -> bool {
+    let Some(uid) = ctx.user_id else { return false };
+    sqlx::query_scalar!(
+        r#"SELECT 1 FROM mcp_oauth_connections
+             WHERE mcp_server_id = $1 AND user_id = $2 AND status = 'active'"#,
+        server_id,
+        uid
+    )
+    .fetch_optional(&state.pg)
+    .await
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// Resolve which OAuth connection a caller's tool call should run under, ensuring the
+/// live connection exists (building it lazily on a cache miss). Returns the connection id.
+/// For the durable-resume / unattended paths `user_id` may be `None`, in which case the
+/// service connection (`user_id IS NULL`) is used; there is deliberately no fall-back to
+/// an arbitrary user's token.
+async fn resolve_oauth_connection(
+    state: &AppState,
+    server_id: Uuid,
+    slug: &str,
+    url: &str,
+    user_id: Option<Uuid>,
+) -> Result<Uuid> {
+    let found: Option<Uuid> = match user_id {
+        Some(uid) => sqlx::query_scalar!(
+            r#"SELECT id FROM mcp_oauth_connections
+                 WHERE mcp_server_id = $1 AND user_id = $2 AND status = 'active'"#,
+            server_id,
+            uid
+        )
+        .fetch_optional(&state.pg)
+        .await?,
+        None => sqlx::query_scalar!(
+            r#"SELECT id FROM mcp_oauth_connections
+                 WHERE mcp_server_id = $1 AND user_id IS NULL AND status = 'active'"#,
+            server_id
+        )
+        .fetch_optional(&state.pg)
+        .await?,
+    };
+    let connection_id = found
+        .ok_or_else(|| AppError::Validation(format!("no active OAuth connection for MCP server '{slug}'")))?;
+
+    if !state.mcp.is_connected(slug, Some(connection_id)).await {
+        let client = oauth_flow::load_oauth_client_row(&state.pg, server_id)
+            .await?
+            .ok_or_else(|| AppError::Validation(format!("MCP server '{slug}' has no approved OAuth client")))?;
+        let conn = oauth_flow::connect_oauth_conn(state, url, &client, connection_id).await?;
+        state.mcp.insert_conn(slug, Some(connection_id), conn).await;
+    }
+    Ok(connection_id)
+}
+
+/// Resolve the connection id a call to `slug` on behalf of `user_id` should use, and
+/// ensure it is live. Returns `None` for non-OAuth servers (their single shared
+/// connection is keyed `None`). Used by the durable-resume / unattended path, which does
+/// not go through `dispatch`.
+pub async fn connection_for_slug(
+    state: &AppState,
+    slug: &str,
+    user_id: Option<Uuid>,
+) -> Result<Option<Uuid>> {
+    let server = sqlx::query!("SELECT id, auth_type, url FROM mcp_servers WHERE slug = $1", slug)
+        .fetch_optional(&state.pg)
+        .await?;
+    let Some(server) = server else { return Ok(None) };
+    if server.auth_type != "oauth" {
+        return Ok(None);
+    }
+    let url = server.url.unwrap_or_default();
+    let cid = resolve_oauth_connection(state, server.id, slug, &url, user_id).await?;
+    Ok(Some(cid))
+}
+
+/// True iff a tool-call error is an OAuth reauthorisation signal (expired/revoked token
+/// that could not be refreshed, or an insufficient-scope 403).
+fn is_reauth_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("authorization required") || m.contains("insufficient scope")
 }
 
 /// Is at least one MCP server in scope for this caller (so the turn must run as a
@@ -184,7 +279,7 @@ pub async fn dispatch(
     // Zero-egress choke-point (dormant ⇒ refuse + audit `integration.blocked`).
     integrations::guard_egress(state, ctx, ConnectorKind::Mcp).await?;
 
-    let server = sqlx::query!("SELECT id, status FROM mcp_servers WHERE slug = $1", slug)
+    let server = sqlx::query!("SELECT id, status, auth_type, url FROM mcp_servers WHERE slug = $1", slug)
         .fetch_optional(&state.pg)
         .await?
         .ok_or_else(|| AppError::Validation(format!("unknown MCP server '{slug}'")))?;
@@ -193,9 +288,52 @@ pub async fn dispatch(
     }
     state.rbac.require(&state.pg, ctx, ResourceType::McpServer, server.id, Permission::Read).await?;
 
+    // OAuth servers run under the caller's own connection; resolve it (and connect lazily).
+    // A caller with no active connection gets a recoverable error, not a broken turn.
+    let connection_id = if server.auth_type == "oauth" {
+        let url = server.url.clone().unwrap_or_default();
+        match resolve_oauth_connection(state, server.id, slug, &url, ctx.user_id).await {
+            Ok(cid) => Some(cid),
+            Err(_) => {
+                return Ok(format!(
+                    "error: you are not connected to MCP server '{slug}'. Connect it under \
+                     Profile then Connections, then try again."
+                ))
+            }
+        }
+    } else {
+        None
+    };
+
     let started = OffsetDateTime::now_utc();
-    let result = state.mcp.call_tool(slug, tool, args.clone()).await;
+    let result = state.mcp.call_tool(slug, connection_id, tool, args.clone()).await;
     let ms = (OffsetDateTime::now_utc() - started).whole_milliseconds();
+
+    // Map an OAuth reauth signal to a durable state change + a recoverable message.
+    if let (Some(cid), Err(e)) = (connection_id, &result) {
+        if is_reauth_error(&e.to_string()) {
+            let _ = sqlx::query!(
+                "UPDATE mcp_oauth_connections SET status = 'reauth_required' WHERE id = $1",
+                cid
+            )
+            .execute(&state.pg)
+            .await;
+            state.mcp.disconnect(slug, Some(cid)).await;
+            let mut ev = AuditEvent::action("mcp.oauth.reauth_required", ctx.role.as_str());
+            ev.actor_user_id = ctx.user_id;
+            ev.resource_type = Some("mcp_server".into());
+            ev.resource_id = Some(server.id);
+            ev.payload = Some(json!({ "server": slug, "tool": tool }));
+            let _ = audit::append(&state.pg, &ev).await;
+            let body = format!("error: {e}");
+            audit_call(state, ctx, chat_id, server.id, slug, tool, args, &body, ms, AuditOutcome::Failure).await;
+            return Ok(format!(
+                "error: your connection to MCP server '{slug}' needs re-authorisation. Reconnect \
+                 it under Profile then Connections, then try again."
+            ));
+        }
+    }
+
     let (outcome, body) = match &result {
         Ok(s) => (AuditOutcome::Success, s.clone()),
         Err(e) => (AuditOutcome::Failure, format!("error: {e}")),
@@ -269,7 +407,7 @@ pub async fn quarantine(state: &AppState, server_id: Uuid, slug: &str, reason: &
     )
     .execute(&state.pg)
     .await;
-    state.mcp.disconnect(slug).await;
+    state.mcp.disconnect_all(slug).await;
     let mut ev = AuditEvent::action("mcp.quarantined", "system");
     ev.resource_type = Some("mcp_server".into());
     ev.resource_id = Some(server_id);
@@ -286,16 +424,60 @@ pub async fn health_sweep(state: &AppState) -> Result<u64> {
         return Ok(0);
     }
     let rows = sqlx::query!(
-        r#"SELECT id, slug, pinned_tools FROM mcp_servers WHERE status = 'active' AND enabled"#
+        r#"SELECT id, slug, auth_type, url, pinned_tools FROM mcp_servers WHERE status = 'active' AND enabled"#
     )
     .fetch_all(&state.pg)
     .await?;
     let mut checked = 0u64;
     for r in rows {
-        if !state.mcp.is_connected(&r.slug).await {
-            continue; // admin re-approval reconnects
+        // For an OAuth server the catalogue is pinned against ONE designated connection,
+        // so different users' legitimately-differing tool sets are never read as a
+        // rug-pull. A missing/dead catalogue source is not an attack — skip or mark
+        // unreachable, never quarantine.
+        let conn_id = if r.auth_type == "oauth" {
+            match sqlx::query_scalar!(
+                r#"SELECT id FROM mcp_oauth_connections
+                     WHERE mcp_server_id = $1 AND is_catalog_source AND status = 'active'"#,
+                r.id
+            )
+            .fetch_optional(&state.pg)
+            .await
+            {
+                Ok(Some(id)) => Some(id),
+                _ => continue, // no catalogue source connected → nothing to sweep
+            }
+        } else {
+            None
+        };
+
+        if !state.mcp.is_connected(&r.slug, conn_id).await {
+            if let Some(cid) = conn_id {
+                // Lazily rebuild the catalogue-source connection; a build failure means
+                // the source token died → unreachable, not quarantined.
+                let url = r.url.clone().unwrap_or_default();
+                let built = match oauth_flow::load_oauth_client_row(&state.pg, r.id).await {
+                    Ok(Some(client)) => oauth_flow::connect_oauth_conn(state, &url, &client, cid).await.ok(),
+                    _ => None,
+                };
+                match built {
+                    Some(conn) => state.mcp.insert_conn(&r.slug, Some(cid), conn).await,
+                    None => {
+                        let _ = sqlx::query!(
+                            "UPDATE mcp_servers SET status = 'unreachable', last_health_at = now() WHERE id = $1",
+                            r.id
+                        )
+                        .execute(&state.pg)
+                        .await;
+                        checked += 1;
+                        continue;
+                    }
+                }
+            } else {
+                continue; // admin re-approval reconnects
+            }
         }
-        match state.mcp.list_tools(&r.slug).await {
+
+        match state.mcp.list_tools(&r.slug, conn_id).await {
             Ok(live) => {
                 if let Some(pins) = r.pinned_tools.as_ref().and_then(|v| v.as_object()) {
                     if let Some(reason) = pin::diff(pins, &live) {
@@ -318,7 +500,7 @@ pub async fn health_sweep(state: &AppState) -> Result<u64> {
                 )
                 .execute(&state.pg)
                 .await;
-                state.mcp.disconnect(&r.slug).await;
+                state.mcp.disconnect_all(&r.slug).await;
             }
         }
         checked += 1;

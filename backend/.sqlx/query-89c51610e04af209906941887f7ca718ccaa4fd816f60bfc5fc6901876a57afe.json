@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT registration_client_uri, registration_access_token_enc\n             FROM mcp_oauth_clients WHERE mcp_server_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "registration_client_uri",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_clients",
+            "name": "registration_client_uri"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "registration_access_token_enc",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_clients",
+            "name": "registration_access_token_enc"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "89c51610e04af209906941887f7ca718ccaa4fd816f60bfc5fc6901876a57afe"
+}

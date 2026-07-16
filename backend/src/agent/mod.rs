@@ -242,7 +242,12 @@ pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<()> {
             .await
             .unwrap_or(false)
         {
-            let res = state.mcp.call_tool(slug, tool, args.clone()).await;
+            // For an OAuth server, run under the originating user's connection (the
+            // approval and the identity match); never fall back to another user's token.
+            let res = match crate::mcp::connection_for_slug(state, slug, r.acting_user_id).await {
+                Ok(connection_id) => state.mcp.call_tool(slug, connection_id, tool, args.clone()).await,
+                Err(e) => Err(e),
+            };
             let mut ev = AuditEvent::action("mcp.call", "user");
             ev.actor_user_id = r.acting_user_id;
             ev.resource_type = Some("mcp_server".into());

@@ -38,6 +38,9 @@ import {
   useConnectorConnections,
   connectConnector,
   disconnectConnector,
+  useMyMcpConnections,
+  connectMcpServer,
+  disconnectMcpServer,
   type MyProvider,
   type LlmProviderOption,
   type ProviderTestResult,
@@ -422,9 +425,12 @@ export function Profile() {
   // per-user BYOK is off (the section keeps its own guard too).
   const providers = useMyProviders();
   const byokEnabled = !!providers.data?.user_byok_enabled;
-  // Connectors are an Enterprise capability — the tab appears only when enabled.
+  // Connectors are an Enterprise capability; MCP one-click connections are a Core one.
+  // The Connections tab appears when EITHER is on, and each block guards itself inside.
   const who = useWhoami();
   const connectorsEnabled = !!who.data?.capabilities?.enterprise_connectors;
+  const mcpEnabled = !!who.data?.capabilities?.mcp;
+  const connectionsTabEnabled = connectorsEnabled || mcpEnabled;
   const isLocalAuth = authMode() === "local";
   const fileRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState<string | null>(null);
@@ -511,7 +517,7 @@ export function Profile() {
     // Security (2FA + password) is a local-auth surface; Keycloak owns its own.
     ...(isLocalAuth ? ([["security", "Security"]] as [ProfileTab, string][]) : []),
     ...(byokEnabled ? ([["providers", "Providers"]] as [ProfileTab, string][]) : []),
-    ...(connectorsEnabled ? ([["connections", "Connections"]] as [ProfileTab, string][]) : []),
+    ...(connectionsTabEnabled ? ([["connections", "Connections"]] as [ProfileTab, string][]) : []),
     ["appearance", "Appearance"],
     ["danger", "Danger zone"],
   ];
@@ -700,15 +706,20 @@ const CONNECTOR_KINDS: [string, string][] = [
 /** Profile → Connections: connect/disconnect the caller's own source accounts. */
 function ConnectionsSection() {
   const qc = useQueryClient();
-  const conns = useConnectorConnections(true);
+  const who = useWhoami();
+  const connectorsEnabled = !!who.data?.capabilities?.enterprise_connectors;
+  const mcpEnabled = !!who.data?.capabilities?.mcp;
+  const conns = useConnectorConnections(connectorsEnabled);
   const [busyKind, setBusyKind] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Surface the callback's ?connected= / ?connector_error= result once on mount.
+  // Surface the callback's result once on mount (Enterprise connectors OR MCP OAuth).
   const [banner, setBanner] = useState<{ ok: boolean; text: string } | null>(() => {
     const q = new URLSearchParams(window.location.search);
     if (q.get("connected")) return { ok: true, text: `Connected ${q.get("connected")}.` };
     if (q.get("connector_error")) return { ok: false, text: q.get("connector_error") || "Connection failed." };
+    if (q.get("mcp_connected")) return { ok: true, text: `Connected ${q.get("mcp_connected")}.` };
+    if (q.get("mcp_connect_error")) return { ok: false, text: q.get("mcp_connect_error") || "Connection failed." };
     return null;
   });
 
@@ -761,7 +772,9 @@ function ConnectionsSection() {
       )}
       {err && <div className="form-err" style={{ marginBottom: 12 }}>{err}</div>}
 
-      {CONNECTOR_KINDS.map(([kind, label]) => {
+      {mcpEnabled && <McpConnectionsBlock />}
+
+      {connectorsEnabled && CONNECTOR_KINDS.map(([kind, label]) => {
         const list = byKind.get(kind) ?? [];
         return (
           <div key={kind} className="prof-card" style={{ marginBottom: 10 }}>
@@ -796,5 +809,77 @@ function ConnectionsSection() {
         );
       })}
     </section>
+  );
+}
+
+/** The MCP one-click connections (OAuth 2.1) block inside Connections. */
+function McpConnectionsBlock() {
+  const qc = useQueryClient();
+  const conns = useMyMcpConnections(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function onConnect(serverId: string) {
+    setErr(null);
+    setBusy(serverId);
+    try {
+      const { authorize_url } = await connectMcpServer(serverId);
+      window.location.href = authorize_url; // full-page hand-off to the provider
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not start the connection.");
+      setBusy(null);
+    }
+  }
+  async function onDisconnect(serverId: string) {
+    const ok = await confirmDialog({
+      title: "Disconnect?",
+      body: "This removes your stored tokens for this server.",
+      confirmLabel: "Disconnect",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await disconnectMcpServer(serverId);
+      qc.invalidateQueries({ queryKey: ["my-mcp-connections"] });
+      toast("Disconnected.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Disconnect failed.");
+    }
+  }
+
+  const list = conns.data ?? [];
+  if (list.length === 0) return null;
+
+  return (
+    <>
+      <div className="form-label" style={{ marginTop: 4 }}>MCP servers</div>
+      {err && <div className="form-err" style={{ marginBottom: 12 }}>{err}</div>}
+      {list.map((s) => (
+        <div key={s.server_id} className="prof-card" style={{ marginBottom: 10 }}>
+          <div className="prof-card-body">
+            <div className="prof-card-title">{s.name}</div>
+            {s.status === "connected" ? (
+              <div className="row" style={{ alignItems: "center", gap: 8, marginTop: 4 }}>
+                <span className="text-xs text-green-400">Connected</span>
+                {s.subject_label && <span className="ed-hint">{s.subject_label}</span>}
+              </div>
+            ) : s.status === "reauth_required" ? (
+              <div className="ed-hint"><span className="badge badge-warn">Re-authentication needed</span></div>
+            ) : (
+              <div className="ed-hint">Not connected.</div>
+            )}
+          </div>
+          {s.status === "connected" ? (
+            <button className="btn btn-line sm" disabled={busy === s.server_id} onClick={() => onDisconnect(s.server_id)}>
+              Disconnect
+            </button>
+          ) : (
+            <button className="btn btn-primary sm" disabled={busy === s.server_id} onClick={() => onConnect(s.server_id)}>
+              {busy === s.server_id ? "Starting…" : s.status === "reauth_required" ? "Reconnect" : "Connect"}
+            </button>
+          )}
+        </div>
+      ))}
+    </>
   );
 }

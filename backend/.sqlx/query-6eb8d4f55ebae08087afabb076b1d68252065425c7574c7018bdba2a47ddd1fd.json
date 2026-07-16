@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, status FROM mcp_servers WHERE slug = $1",
+  "query": "SELECT id, auth_type, url FROM mcp_servers WHERE slug = $1",
   "describe": {
     "columns": [
       {
@@ -16,12 +16,23 @@
       },
       {
         "ordinal": 1,
-        "name": "status",
+        "name": "auth_type",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "mcp_servers",
-            "name": "status"
+            "name": "auth_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "url"
           }
         }
       }
@@ -33,8 +44,9 @@
     },
     "nullable": [
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "f2ceb06b797fcbf8efd56ddc24d37cb4e9693ec252793b94de5a5697bfd9b300"
+  "hash": "6eb8d4f55ebae08087afabb076b1d68252065425c7574c7018bdba2a47ddd1fd"
 }

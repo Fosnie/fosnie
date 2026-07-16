@@ -108,6 +108,21 @@ pub async fn kv_get_del(pool: &Pool, key: &str) -> Result<Option<String>> {
     Ok(v)
 }
 
+/// Delete `key` unconditionally (idempotent — no error if absent). For callers that
+/// peek with [`kv_get`] and later consume with an explicit delete, rather than the
+/// atomic [`kv_get_del`] — e.g. an OAuth state store whose contract separates load
+/// from delete.
+pub async fn kv_del(pool: &Pool, key: &str) -> Result<()> {
+    use deadpool_redis::redis;
+    let mut conn = pool.get().await.map_err(|e| AppError::Other(anyhow::anyhow!("redis pool: {e}")))?;
+    redis::cmd("DEL")
+        .arg(key)
+        .query_async::<i64>(&mut conn)
+        .await
+        .map(|_| ())
+        .map_err(|e| AppError::Other(anyhow::anyhow!("redis DEL failed: {e}")))
+}
+
 /// Readiness probe: does Redis reply to PING?
 pub async fn ping(pool: &Pool) -> bool {
     let Ok(mut conn) = pool.get().await else {

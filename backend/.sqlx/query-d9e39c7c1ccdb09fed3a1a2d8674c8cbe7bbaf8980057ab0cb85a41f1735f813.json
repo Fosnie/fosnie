@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_servers\n                  SET name = COALESCE($2, name),\n                      url = $3,\n                      requires_egress = $4,\n                      status = CASE WHEN $5 THEN 'pending' ELSE status END,\n                      updated_at = now()\n                WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d9e39c7c1ccdb09fed3a1a2d8674c8cbe7bbaf8980057ab0cb85a41f1735f813"
+}

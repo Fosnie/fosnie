@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_oauth_connections\n                  SET access_token_enc  = $2,\n                      refresh_token_enc = COALESCE($3, refresh_token_enc),\n                      expires_at        = $4,\n                      scopes            = $5,\n                      status            = 'active',\n                      last_used_at      = now()\n                WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e9eaad8db4499705899108dba1c297c69ddbc211bc0b92e59361af8f207f59f7"
+}

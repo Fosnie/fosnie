@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO mcp_oauth_clients\n               (id, mcp_server_id, issuer, client_id, client_secret_enc, registration_source,\n                registration_client_uri, registration_access_token_enc, scopes, metadata,\n                approved_by, approved_at)\n           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())\n           ON CONFLICT (mcp_server_id, issuer) DO UPDATE SET\n               client_id = EXCLUDED.client_id,\n               client_secret_enc = EXCLUDED.client_secret_enc,\n               registration_source = EXCLUDED.registration_source,\n               registration_client_uri = EXCLUDED.registration_client_uri,\n               registration_access_token_enc = EXCLUDED.registration_access_token_enc,\n               scopes = EXCLUDED.scopes,\n               metadata = EXCLUDED.metadata,\n               approved_by = EXCLUDED.approved_by,\n               approved_at = now(),\n               updated_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Jsonb",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "26f6ba862f68a829631f1726eef9cfd455278df64a769f647eebf1710d95232f"
+}

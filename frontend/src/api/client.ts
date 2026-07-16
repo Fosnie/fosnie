@@ -1053,7 +1053,7 @@ export function setIntegrationEnabled(kind: string, enabled: boolean): Promise<u
 }
 
 // MCP servers (FEATURE B1) — admin registry
-export type McpAuthType = "none" | "bearer" | "api_key" | "header";
+export type McpAuthType = "none" | "bearer" | "api_key" | "header" | "oauth";
 export interface McpServer {
   id: string;
   slug: string;
@@ -1092,6 +1092,87 @@ export function approveMcpServer(id: string): Promise<{ status: string; tools: n
 }
 export function deleteMcpServer(id: string): Promise<{ ok: boolean }> {
   return apiFetch(`/api/admin/mcp-servers/${id}`, { method: "DELETE" });
+}
+export function patchMcpServer(
+  id: string,
+  body: {
+    name?: string;
+    url?: string;
+    auth_type?: McpAuthType;
+    auth_header_name?: string;
+    auth_value?: string;
+    requires_egress?: boolean;
+  },
+): Promise<{ ok: boolean; reapprove: boolean }> {
+  return apiFetch(`/api/admin/mcp-servers/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+// ── MCP one-click connections (OAuth 2.1) ──────────────────────────────────────
+export interface McpOauthDiscovery {
+  issuer: string;
+  dcr_available: boolean;
+  scopes_supported: string[];
+  s256_ok: boolean;
+  callback_url: string;
+  warnings: string[];
+}
+export function discoverMcpOauth(
+  id: string,
+  allowed_issuer_origin?: string,
+): Promise<McpOauthDiscovery> {
+  return apiFetch(`/api/admin/mcp-servers/${id}/oauth/discover`, {
+    method: "POST",
+    body: JSON.stringify({ allowed_issuer_origin }),
+  });
+}
+export function putMcpOauthClient(
+  id: string,
+  body: {
+    allowed_issuer_origin?: string;
+    use_dcr?: boolean;
+    client_id?: string;
+    client_secret?: string;
+    scopes?: string[];
+  },
+): Promise<{ issuer: string; registration_source: string; has_secret: boolean; scopes: string[] }> {
+  return apiFetch(`/api/admin/mcp-servers/${id}/oauth/client`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+export function deleteMcpOauthClient(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/admin/mcp-servers/${id}/oauth/client`, { method: "DELETE" });
+}
+export function setMcpCatalogSource(id: string, connection_id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/admin/mcp-servers/${id}/oauth/catalog-source`, {
+    method: "PUT",
+    body: JSON.stringify({ connection_id }),
+  });
+}
+
+export interface MyMcpConnection {
+  server_id: string;
+  slug: string;
+  name: string;
+  status: "connected" | "disconnected" | "reauth_required";
+  subject_label: string | null;
+  scopes: string[];
+}
+export function useMyMcpConnections(enabled: boolean) {
+  return useQuery({
+    queryKey: ["my-mcp-connections"],
+    queryFn: () => apiFetch<MyMcpConnection[]>("/api/me/mcp-connections"),
+    enabled,
+  });
+}
+export function connectMcpServer(serverId: string, service?: boolean): Promise<{ authorize_url: string }> {
+  return apiFetch(`/api/me/mcp-connections/${serverId}/connect`, {
+    method: "POST",
+    body: JSON.stringify({ service: !!service }),
+  });
+}
+export function disconnectMcpServer(serverId: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/me/mcp-connections/${serverId}`, { method: "DELETE" });
 }
 
 // Legal holds

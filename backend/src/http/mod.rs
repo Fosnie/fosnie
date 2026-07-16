@@ -40,6 +40,7 @@ pub mod groundedness;
 pub mod groundedness_admin;
 pub mod health;
 pub mod mcp_admin;
+pub mod mcp_oauth;
 pub mod integrations;
 pub mod kb;
 pub mod memory;
@@ -137,6 +138,10 @@ pub fn router(
             "/api/telemetry",
             post(telemetry::report).layer(DefaultBodyLimit::max(16 * 1024)),
         )
+        // MCP OAuth callback: public — identity is reconstructed from the parked flow
+        // record keyed on `state`, not from a session, so it sits ahead of the auth gate
+        // (like /login). Rate-limited inside the handler; never returns a 500.
+        .route("/api/mcp/oauth/callback", get(mcp_oauth::callback))
         .with_state(state.clone());
 
     // Edition public-route extension: merge a private edition's *public* routes
@@ -445,8 +450,32 @@ pub fn router(
             // MCP server registry (FEATURE B1): client-admin CRUD; approval connects +
             // pins the catalog. Egress still needs integration.mcp.enabled (super-admin).
             .route("/api/admin/mcp-servers", get(mcp_admin::list).post(mcp_admin::register))
-            .route("/api/admin/mcp-servers/{id}", axum::routing::delete(mcp_admin::delete))
+            .route(
+                "/api/admin/mcp-servers/{id}",
+                axum::routing::delete(mcp_admin::delete).patch(mcp_admin::patch_server),
+            )
             .route("/api/admin/mcp-servers/{id}/approve", post(mcp_admin::approve))
+            // One-click MCP connections (OAuth 2.1). Admin: discover + approve an issuer,
+            // register a client (manual or DCR), designate the catalogue source.
+            .route("/api/admin/mcp-servers/{id}/oauth/discover", post(mcp_oauth::discover))
+            .route(
+                "/api/admin/mcp-servers/{id}/oauth/client",
+                axum::routing::put(mcp_oauth::put_client).delete(mcp_oauth::delete_client),
+            )
+            .route(
+                "/api/admin/mcp-servers/{id}/oauth/catalog-source",
+                axum::routing::put(mcp_oauth::set_catalog_source),
+            )
+            // User: connect / list / disconnect under one's own identity.
+            .route("/api/me/mcp-connections", get(mcp_oauth::list_my_connections))
+            .route(
+                "/api/me/mcp-connections/{server_id}/connect",
+                post(mcp_oauth::connect),
+            )
+            .route(
+                "/api/me/mcp-connections/{server_id}",
+                axum::routing::delete(mcp_oauth::disconnect),
+            )
             // Tool catalogue: read for any authed user (agent
             // editor); native on/off + description overrides gated by tools.manage.
             .route("/api/tools/catalog", get(tools::catalog))

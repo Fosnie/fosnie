@@ -47,7 +47,10 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 # Official Rust MCP SDK (client role) — FEATURE B1. stdio (TokioChildProcess) +
 # streamable-HTTP (reqwest-backed) client transports. Pinned; protocol negotiated at
 # handshake. Only `mcp/client.rs` touches this crate (isolated behind the McpClient trait).
-rmcp = { version = "1.7.0", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "1.7.0", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
+# Types + token/refresh helpers for the MCP OAuth stores (same version rmcp's `auth`
+# feature already resolves; making it a direct dependency adds no new crate).
+oauth2 = { version = "5.0", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_with = "3"

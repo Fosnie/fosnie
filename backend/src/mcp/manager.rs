@@ -22,14 +22,26 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use crate::error::{AppError, Result};
 use crate::mcp::client::{connect, McpConn, Transport};
 use crate::mcp::ToolCatalogEntry;
 
+/// The cache key for a live connection. A server's slug plus, for an OAuth server, the id
+/// of the connection whose token authenticates it — different users (and the service
+/// connection) hold distinct live connections to the same server. `None` covers every
+/// non-OAuth auth type (`none|bearer|api_key|header`), one shared connection per slug, so
+/// their behaviour is unchanged.
+pub type ConnKey = (String, Option<Uuid>);
+
+fn key(slug: &str, connection_id: Option<Uuid>) -> ConnKey {
+    (slug.to_string(), connection_id)
+}
+
 #[derive(Clone, Default)]
 pub struct McpManager {
-    conns: Arc<RwLock<HashMap<String, Arc<dyn McpConn>>>>,
+    conns: Arc<RwLock<HashMap<ConnKey, Arc<dyn McpConn>>>>,
 }
 
 impl McpManager {
@@ -38,46 +50,64 @@ impl McpManager {
     }
 
     /// Open a real connection and cache it; returns its discovered catalog.
-    pub async fn connect(&self, slug: &str, transport: Transport) -> Result<Vec<ToolCatalogEntry>> {
+    pub async fn connect(
+        &self,
+        slug: &str,
+        connection_id: Option<Uuid>,
+        transport: Transport,
+    ) -> Result<Vec<ToolCatalogEntry>> {
         let conn = connect(transport).await?;
         let tools = conn.list_tools().await?;
-        self.conns.write().await.insert(slug.to_string(), conn);
+        self.conns.write().await.insert(key(slug, connection_id), conn);
         Ok(tools)
     }
 
-    /// Inject a connection directly (tests / the `FakeConn` demo path).
-    pub async fn insert_conn(&self, slug: &str, conn: Arc<dyn McpConn>) {
-        self.conns.write().await.insert(slug.to_string(), conn);
+    /// Inject a pre-built connection (the OAuth path, tests, the `FakeConn` demo path).
+    pub async fn insert_conn(&self, slug: &str, connection_id: Option<Uuid>, conn: Arc<dyn McpConn>) {
+        self.conns.write().await.insert(key(slug, connection_id), conn);
     }
 
-    pub async fn disconnect(&self, slug: &str) {
-        self.conns.write().await.remove(slug);
+    pub async fn disconnect(&self, slug: &str, connection_id: Option<Uuid>) {
+        self.conns.write().await.remove(&key(slug, connection_id));
     }
 
-    pub async fn is_connected(&self, slug: &str) -> bool {
-        self.conns.read().await.contains_key(slug)
+    /// Drop every cached connection for a slug, whatever the connection id. Used when a
+    /// server is quarantined, deleted, or reconfigured and all of its live connections
+    /// (across users) must be torn down at once.
+    pub async fn disconnect_all(&self, slug: &str) {
+        self.conns.write().await.retain(|(s, _), _| s != slug);
     }
 
-    pub async fn list_tools(&self, slug: &str) -> Result<Vec<ToolCatalogEntry>> {
-        self.get(slug).await?.list_tools().await
+    pub async fn is_connected(&self, slug: &str, connection_id: Option<Uuid>) -> bool {
+        self.conns.read().await.contains_key(&key(slug, connection_id))
     }
 
-    pub async fn call_tool(&self, slug: &str, tool: &str, args: Value) -> Result<String> {
-        self.get(slug).await?.call_tool(tool, args).await
+    pub async fn list_tools(&self, slug: &str, connection_id: Option<Uuid>) -> Result<Vec<ToolCatalogEntry>> {
+        self.get(slug, connection_id).await?.list_tools().await
     }
 
-    pub async fn ping(&self, slug: &str) -> bool {
-        match self.get(slug).await {
+    pub async fn call_tool(
+        &self,
+        slug: &str,
+        connection_id: Option<Uuid>,
+        tool: &str,
+        args: Value,
+    ) -> Result<String> {
+        self.get(slug, connection_id).await?.call_tool(tool, args).await
+    }
+
+    pub async fn ping(&self, slug: &str, connection_id: Option<Uuid>) -> bool {
+        match self.get(slug, connection_id).await {
             Ok(c) => c.ping().await,
             Err(_) => false,
         }
     }
 
-    async fn get(&self, slug: &str) -> Result<Arc<dyn McpConn>> {
+    async fn get(&self, slug: &str, connection_id: Option<Uuid>) -> Result<Arc<dyn McpConn>> {
         self.conns
             .read()
             .await
-            .get(slug)
+            .get(&key(slug, connection_id))
             .cloned()
             .ok_or_else(|| AppError::Validation(format!("MCP server '{slug}' is not connected")))
     }

@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.access_token_enc, c.refresh_token_enc, c.expires_at, c.scopes,\n                      cl.client_id\n                 FROM mcp_oauth_connections c\n                 JOIN mcp_oauth_clients cl ON cl.id = c.oauth_client_id\n                WHERE c.id = $1 AND c.status IN ('active', 'reauth_required')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "access_token_enc",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_connections",
+            "name": "access_token_enc"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "refresh_token_enc",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_connections",
+            "name": "refresh_token_enc"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_connections",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "scopes",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_connections",
+            "name": "scopes"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "client_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_clients",
+            "name": "client_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "c28c1c0ed4b4f8df3a3c69d7edf0007d993eb1ae7d397d215fdc8a2b0eaee564"
+}
