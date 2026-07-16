@@ -3171,8 +3171,6 @@ async fn compact_history(
             .map(|m| format!("{}: {}", m.role, m.content))
             .collect::<Vec<_>>()
             .join("\n");
-        // The size the summary must beat. Captured before `joined` may be moved below.
-        let joined_tokens = est_tokens(&joined);
         // Scaffolding call: pin minimal reasoning effort so a thinking-capable model
         // does not spend this budget on reasoning tokens and emit nothing (which would
         // silently disable compaction). The user's full effort is for their answer.
@@ -3195,14 +3193,24 @@ async fn compact_history(
                 format!("[Running summary]\n{summary}\n\n[New earlier turns]\n{joined}"),
             )
         };
+        // The size the summary must beat: the WHOLE input it replaces. On the first
+        // fold this is just the new turns; on the update branch it is the running
+        // summary plus the new turns, so a summary that legitimately grows to cover
+        // both is still measured against what it actually stands in for. Captured
+        // before `usr` moves into the request below.
+        let input_tokens = est_tokens(&usr);
         let sum_msgs =
             vec![json!({ "role": "system", "content": sys }), json!({ "role": "user", "content": usr })];
         match ml::chat_step(&state.http, &state.boot.ml.base_url, &sum_msgs, None, &sum_sampling, ml::provider_overrides(state, None).await).await {
-            // Accept only a real fold: non-empty AND objectively shorter than its
-            // source. A string that is not shorter is not a summary (an echo of the
-            // input) — accepting it would inflate the prompt and, since earlier turns
-            // are never re-summarised, make that inflation permanent.
-            Ok(s) if !s.content.trim().is_empty() && est_tokens(&s.content) < joined_tokens => {
+            // Accept only a real fold: non-empty AND objectively shorter than the
+            // input it replaces. A string that is not shorter is not a summary (an
+            // echo) — accepting it would inflate the prompt and, since earlier turns
+            // are never re-summarised, make that inflation permanent. This is a purely
+            // objective check; it deliberately does not judge whether the text is a
+            // *good* summary. (Residual: on the update branch a model that echoes only
+            // the new turns still passes and loses the old summary's content, but it
+            // cannot inflate without bound — it is still smaller than the input.)
+            Ok(s) if !s.content.trim().is_empty() && est_tokens(&s.content) < input_tokens => {
                 summary = s.content;
                 watermark = to_fold.last().map(|m| m.seq).unwrap_or(watermark);
                 let _ = upsert_summary(&state.pg, chat_id, &summary, watermark).await;
@@ -3755,28 +3763,50 @@ mod compaction_tests {
     use crate::{cache, db};
     use std::sync::Arc;
 
+    // base64(32 bytes of 0x07) — a fixed test-only DEK. The live test re-keys the
+    // deployment provider row with it so this process can decrypt the row; it is
+    // restored to its original ciphertext before the test returns.
+    const LIVE_TEST_KEY_B64: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+    const LIVE_TEST_KEY_BYTES: [u8; 32] = [7u8; 32];
+
     /// A tiny local stand-in for the ML `/chat-step` endpoint, so the fold /
-    /// watermark logic is exercised with NO live model. `reply = "summary"` returns
-    /// a short canned summary (shorter than its input, so it is accepted);
-    /// `reply = "echo"` returns the folded input verbatim (NOT shorter, so the
-    /// output-validation must reject it). Mirrors `tests/custom_tools.rs::spawn_echo`.
-    async fn spawn_mock_ml(reply: &'static str) -> String {
+    /// watermark logic is exercised with NO live model. Its output is DERIVED FROM
+    /// THE REQUEST, never a fixed constant: the Nth call returns `fractions[N]` (last
+    /// value repeated) of the request's user message, by word count. `1.0` returns
+    /// the whole message back (an echo — the summariser produced nothing shorter);
+    /// `< 1.0` returns a proportionally shorter fold. Making the response a function
+    /// of the input is deliberate: a constant summary would beat the length check on
+    /// every pass and hide a regression a real model (whose summary grows with the
+    /// input) would surface. Per-call sequencing lets one server model two folds.
+    async fn spawn_mock_ml(fractions: Vec<f64>) -> String {
         use axum::routing::post;
         use axum::Json;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let fractions = Arc::new(fractions);
+        let idx = Arc::new(AtomicUsize::new(0));
         let app = axum::Router::new().route(
             "/chat-step",
-            post(move |Json(body): Json<serde_json::Value>| async move {
-                let content = if reply == "echo" {
-                    body["messages"]
+            post(move |Json(body): Json<serde_json::Value>| {
+                let fractions = fractions.clone();
+                let idx = idx.clone();
+                async move {
+                    let n = idx.fetch_add(1, Ordering::SeqCst);
+                    let f = fractions.get(n).copied().unwrap_or_else(|| *fractions.last().unwrap());
+                    let input = body["messages"]
                         .as_array()
                         .and_then(|a| a.last())
                         .and_then(|m| m["content"].as_str())
                         .unwrap_or("")
-                        .to_string()
-                } else {
-                    "Prior turns: the user and the assistant exchanged greetings.".to_string()
-                };
-                Json(serde_json::json!({ "content": content }))
+                        .to_string();
+                    let content = if f >= 1.0 {
+                        input // exact echo — guaranteed not shorter than itself
+                    } else {
+                        let words: Vec<&str> = input.split_whitespace().collect();
+                        let take = (((words.len() as f64) * f).round() as usize).min(words.len());
+                        words[..take].join(" ")
+                    };
+                    Json(serde_json::json!({ "content": content }))
+                }
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3796,12 +3826,6 @@ mod compaction_tests {
         let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };
         boot.ml.base_url = ml_url;
         Some((AppState::new(pg.clone(), redis, Arc::new(boot)), pg))
-    }
-
-    async fn state_or_skip() -> Option<(AppState, sqlx::PgPool)> {
-        let ml_url =
-            std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
-        state_with_ml(ml_url).await
     }
 
     async fn seed_chat(pg: &sqlx::PgPool) -> Uuid {
@@ -3826,7 +3850,7 @@ mod compaction_tests {
     /// aged out fold, and the watermark advances each pass. Must never flake.
     #[tokio::test]
     async fn compaction_folds_and_advances_watermark_deterministic() {
-        let ml = spawn_mock_ml("summary").await;
+        let ml = spawn_mock_ml(vec![0.5]).await;
         let Some((state, pg)) = state_with_ml(ml).await else {
             eprintln!("skip: DATABASE_URL unset");
             return;
@@ -3861,7 +3885,7 @@ mod compaction_tests {
     /// the turns are kept verbatim rather than an inflated echo becoming permanent.
     #[tokio::test]
     async fn compaction_rejects_a_non_shorter_echo() {
-        let ml = spawn_mock_ml("echo").await;
+        let ml = spawn_mock_ml(vec![1.0]).await;
         let Some((state, pg)) = state_with_ml(ml).await else {
             return;
         };
@@ -3880,34 +3904,192 @@ mod compaction_tests {
         let _ = sqlx::query("DELETE FROM chats WHERE id = $1").bind(chat_id).execute(&pg).await;
     }
 
-    /// Live (real model): a real summariser actually produces a summary shorter than
-    /// its input, so the fold is accepted. This is the check that a reasoning model
-    /// at pinned-minimal effort does not emit empty content. Gated on PAI_E2E=1.
+    /// The update branch (second fold onward): the summariser is asked to cover the
+    /// running summary AND the new turns, so its output is legitimately LONGER than
+    /// the new turns alone, yet still shorter than the whole input it replaces. It
+    /// must be accepted and advance the watermark. On the pre-fix code the output was
+    /// compared against the new turns alone, so this legitimate summary was rejected
+    /// and incremental compaction silently stopped after the first fold.
     #[tokio::test]
-    async fn live_compaction_produces_a_real_summary() {
+    async fn compaction_accepts_a_growing_incremental_summary() {
+        // Both folds return 0.9 of the input: on pass 2 that is LONGER than the new
+        // turns (running summary + turns) but shorter than the whole input.
+        let ml = spawn_mock_ml(vec![0.9, 0.9]).await;
+        let Some((state, pg)) = state_with_ml(ml).await else {
+            eprintln!("skip: DATABASE_URL unset");
+            return;
+        };
+        let chat_id = seed_chat(&pg).await;
+        let (tx, _rx) = mpsc::channel::<ServerFrame>(64);
+
+        // Pass 1: first fold (usr == the new turns).
+        let h1: Vec<HistMsg> =
+            (1..=6).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
+        let _ = compact_history(&state, chat_id, Uuid::now_v7(), h1, 40, &tx).await;
+        let (_s1, w1) = load_summary(&pg, chat_id).await.expect("first fold persisted");
+
+        // Pass 2: incremental fold (usr == running summary + new turns).
+        let h2: Vec<HistMsg> =
+            (1..=10).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
+        let _ = compact_history(&state, chat_id, Uuid::now_v7(), h2, 40, &tx).await;
+        let (_s2, w2) = load_summary(&pg, chat_id).await.expect("incremental fold persisted");
+
+        assert!(
+            w2 > w1,
+            "the update-branch summary must be accepted against the whole input it replaces \
+             and advance the watermark ({w1} -> {w2})"
+        );
+
+        let _ = sqlx::query("DELETE FROM chats WHERE id = $1").bind(chat_id).execute(&pg).await;
+        let _ = sqlx::query("DELETE FROM chat_summaries WHERE chat_id = $1").bind(chat_id).execute(&pg).await;
+    }
+
+    /// The update branch still rejects a true echo: a pass-2 summariser that hands
+    /// back the whole input is not shorter than it, so it is refused and the turns
+    /// are kept verbatim (watermark unchanged from the first fold).
+    #[tokio::test]
+    async fn compaction_rejects_an_echo_on_the_update_branch() {
+        // Pass 1 folds (0.9); pass 2 echoes the whole input (1.0) → must be rejected.
+        let ml = spawn_mock_ml(vec![0.9, 1.0]).await;
+        let Some((state, pg)) = state_with_ml(ml).await else {
+            return;
+        };
+        let chat_id = seed_chat(&pg).await;
+        let (tx, _rx) = mpsc::channel::<ServerFrame>(64);
+
+        let h1: Vec<HistMsg> =
+            (1..=6).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
+        let _ = compact_history(&state, chat_id, Uuid::now_v7(), h1, 40, &tx).await;
+        let (_s1, w1) = load_summary(&pg, chat_id).await.expect("first fold persisted");
+
+        let h2: Vec<HistMsg> =
+            (1..=10).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
+        let _ = compact_history(&state, chat_id, Uuid::now_v7(), h2, 40, &tx).await;
+        let (_s2, w2) = load_summary(&pg, chat_id).await.expect("first-fold summary still present");
+
+        assert_eq!(w2, w1, "an echo on the update branch must be rejected, leaving the watermark unmoved");
+
+        let _ = sqlx::query("DELETE FROM chats WHERE id = $1").bind(chat_id).execute(&pg).await;
+        let _ = sqlx::query("DELETE FROM chat_summaries WHERE chat_id = $1").bind(chat_id).execute(&pg).await;
+    }
+
+    /// Live (real model): the two claims a mock cannot cover. (1) A reasoning model
+    /// at pinned-minimal effort produces a real, non-empty summary on the first fold
+    /// (the empty-content premise was right). (2) A real two-pass incremental fold is
+    /// accepted on BOTH passes — the update-branch case, where a real summary grows
+    /// with the input. Also (N2) a skill-test-style scaffolding call returns real
+    /// output, not a blank box. Gated on PAI_E2E=1 + OPENAI_TEST_KEY.
+    ///
+    /// `compact_history` resolves the DEPLOYMENT default provider, whose stored key is
+    /// encrypted with the running host's DEK (unavailable to this process). So this
+    /// test temporarily re-keys that row with a known test DEK, runs the folds, and
+    /// RESTORES the row before any assertion — a failed assert can never leave the
+    /// running backend with an undecryptable provider key.
+    #[tokio::test]
+    async fn live_incremental_compaction_folds_twice() {
         if std::env::var("PAI_E2E").as_deref() != Ok("1") {
             eprintln!("skip: set PAI_E2E=1 with the ML stack up");
             return;
         }
-        let Some((state, pg)) = state_or_skip().await else {
+        let Ok(api_key) = std::env::var("OPENAI_TEST_KEY") else {
+            eprintln!("skip: OPENAI_TEST_KEY unset");
+            return;
+        };
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
             eprintln!("skip: DATABASE_URL unset");
             return;
         };
-        if ml::model_info(&state.http, &state.boot.ml.base_url).await.is_err() {
-            eprintln!("skip: ML unavailable");
+        let redis_url =
+            std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        let pg = db::connect(&db_url, 5).await.unwrap();
+
+        // The deployment default llm row that compact_history will resolve.
+        use sqlx::Row;
+        let row = sqlx::query(
+            "SELECT id, api_key_encrypted, reasoning_mode FROM provider_configs \
+             WHERE role='llm' AND scope='deployment' AND is_default AND enabled LIMIT 1",
+        )
+        .fetch_optional(&pg)
+        .await
+        .unwrap();
+        let Some(row) = row else {
+            eprintln!("skip: no deployment llm provider row to re-key");
             return;
-        }
+        };
+        let row_id: Uuid = row.get("id");
+        let orig_key: Option<String> = row.get("api_key_encrypted");
+        let orig_reasoning: Option<String> = row.get("reasoning_mode");
+
+        // Re-key to our test DEK; clear reasoning_mode so the pinned minimal effort in
+        // the sampling reaches the model rather than an operator override.
+        let enc = crate::crypto::encrypt(&LIVE_TEST_KEY_BYTES, &api_key).unwrap();
+        sqlx::query("UPDATE provider_configs SET api_key_encrypted=$2, reasoning_mode=NULL WHERE id=$1")
+            .bind(row_id)
+            .bind(&enc)
+            .execute(&pg)
+            .await
+            .unwrap();
+
+        // A state whose DEK decrypts the re-keyed row.
+        let redis = cache::create_pool(&redis_url).unwrap();
+        let mut boot = BootConfig {
+            database_url: db_url,
+            redis_url,
+            message_encryption_key: LIVE_TEST_KEY_B64.to_string(),
+            ..BootConfig::default()
+        };
+        boot.ml.base_url =
+            std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        let state = AppState::new(pg.clone(), redis, Arc::new(boot));
+
         let chat_id = seed_chat(&pg).await;
         let (tx, _rx) = mpsc::channel::<ServerFrame>(64);
 
-        let h: Vec<HistMsg> =
+        // Two real folds.
+        let h1: Vec<HistMsg> =
             (1..=6).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
-        let out = compact_history(&state, chat_id, Uuid::now_v7(), h, 40, &tx).await;
-        assert_eq!(out.first().unwrap()["role"], "system", "a real model must actually fold (non-empty summary)");
-        let (s1, _w1) = load_summary(&pg, chat_id).await.expect("summary persisted");
-        assert!(!s1.is_empty());
+        let _ = compact_history(&state, chat_id, Uuid::now_v7(), h1, 40, &tx).await;
+        let after1 = load_summary(&pg, chat_id).await;
+        let h2: Vec<HistMsg> =
+            (1..=10).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
+        let _ = compact_history(&state, chat_id, Uuid::now_v7(), h2, 40, &tx).await;
+        let after2 = load_summary(&pg, chat_id).await;
 
+        // N2: a skill-test-style scaffolding call at pinned minimal effort must return
+        // real output, not a blank box.
+        let n2_sampling = crate::ml::Sampling {
+            max_tokens: Some(512),
+            reasoning_effort: Some("minimal".into()),
+            ..Default::default()
+        };
+        let n2_msgs = vec![
+            json!({ "role": "system", "content": "You are a test skill. Reply with a single short line." }),
+            json!({ "role": "user", "content": "Say the single word READY." }),
+        ];
+        let n2 = ml::chat_step(&state.http, &state.boot.ml.base_url, &n2_msgs, None, &n2_sampling, ml::provider_overrides(&state, None).await).await;
+        let n2_nonempty = n2.map(|s| !s.content.trim().is_empty()).unwrap_or(false);
+
+        // RESTORE the provider row + clean up BEFORE asserting.
+        sqlx::query("UPDATE provider_configs SET api_key_encrypted=$2, reasoning_mode=$3 WHERE id=$1")
+            .bind(row_id)
+            .bind(&orig_key)
+            .bind(&orig_reasoning)
+            .execute(&pg)
+            .await
+            .unwrap();
         let _ = sqlx::query("DELETE FROM chats WHERE id = $1").bind(chat_id).execute(&pg).await;
         let _ = sqlx::query("DELETE FROM chat_summaries WHERE chat_id = $1").bind(chat_id).execute(&pg).await;
+
+        // Now assert.
+        let (s1, w1) =
+            after1.expect("first fold produced a real, non-empty summary (pinned minimal effort works)");
+        assert!(!s1.is_empty(), "the first-fold summary must be non-empty");
+        let (_s2, w2) = after2.expect("incremental fold persisted");
+        assert!(
+            w2 > w1,
+            "a real two-pass incremental fold must be accepted on both passes ({w1} -> {w2})"
+        );
+        assert!(n2_nonempty, "the skill-test scaffolding call must return real output, not a blank box");
+        eprintln!("live incremental compaction: w1={w1} w2={w2} s1_len={} n2_ok={n2_nonempty}", s1.len());
     }
 }
