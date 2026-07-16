@@ -172,3 +172,117 @@ async fn n3_edit_document_asserts_write_permission_when_non_agentic() {
     // gate and reached the permission check: the gates run in order, so a grant,
     // override, or host miss would have short-circuited before rbac.
 }
+
+// ── search_library and generate_artefact: the per-turn injections ─────────────
+// These never live in `agent_tools`; the offered set carries them per turn. If
+// the seam missed either, retrieval or the document drafter would break silently.
+
+/// On a turn that carries a RAG context, `search_library` authorises although it
+/// is in no agent's tool list. This is the retrieval top-up path.
+#[tokio::test]
+async fn search_library_authorises_on_a_rag_turn() {
+    let Some(st) = state().await else {
+        return;
+    };
+    let ctx = user_ctx();
+    // has_rag = true ⇒ the offered set includes search_library.
+    let offered = AuthorisedTools::build(&[], &[], true, &HashMap::new());
+    let overrides: HashMap<String, Override> = HashMap::new();
+    let decision = tools::authorize_native_call(
+        &st,
+        &ctx,
+        Uuid::now_v7(),
+        &offered,
+        &overrides,
+        "search_library",
+        None,
+    )
+    .await;
+    assert!(
+        matches!(decision, NativeDecision::Allowed(_)),
+        "search_library must be authorised on a RAG turn (it is injected per turn)"
+    );
+}
+
+/// Fail-closed: with no RAG context the offered set omits search_library, so a call
+/// is refused, exactly as on a no-knowledge-base turn.
+#[tokio::test]
+async fn search_library_refused_on_a_no_kb_turn() {
+    let Some(st) = state().await else {
+        return;
+    };
+    let ctx = user_ctx();
+    let offered = AuthorisedTools::build(&[], &[], false, &HashMap::new()); // has_rag = false
+    let overrides: HashMap<String, Override> = HashMap::new();
+    let decision = tools::authorize_native_call(
+        &st,
+        &ctx,
+        Uuid::now_v7(),
+        &offered,
+        &overrides,
+        "search_library",
+        None,
+    )
+    .await;
+    assert!(
+        matches!(decision, NativeDecision::Recoverable(_)),
+        "search_library must be refused when the turn has no RAG context"
+    );
+}
+
+/// Fail-closed: an admin who disables search_library blocks it even on a RAG turn.
+#[tokio::test]
+async fn search_library_refused_when_admin_disabled() {
+    let Some(st) = state().await else {
+        return;
+    };
+    let ctx = user_ctx();
+    let offered = AuthorisedTools::build(&[], &[], true, &HashMap::new());
+    let mut overrides: HashMap<String, Override> = HashMap::new();
+    overrides.insert(
+        "search_library".to_string(),
+        Override { enabled: false, description_override: None },
+    );
+    let decision = tools::authorize_native_call(
+        &st,
+        &ctx,
+        Uuid::now_v7(),
+        &offered,
+        &overrides,
+        "search_library",
+        None,
+    )
+    .await;
+    assert!(
+        matches!(decision, NativeDecision::Recoverable(_)),
+        "an admin-disabled search_library must be refused even on a RAG turn"
+    );
+}
+
+/// `generate_artefact` is granted to every agent via the default tool set but is
+/// deliberately never advertised to the model; the drafter fallback reaches it. It
+/// must therefore authorise when the agent holds it, so document generation works.
+#[tokio::test]
+async fn generate_artefact_granted_but_unadvertised_authorises() {
+    let Some(st) = state().await else {
+        return;
+    };
+    let ctx = user_ctx();
+    // agent holds generate_artefact (via defaults); it is NOT in the advertised set.
+    let offered = AuthorisedTools::build(&[], &["generate_artefact".into()], false, &HashMap::new());
+    let overrides: HashMap<String, Override> = HashMap::new();
+    let decision = tools::authorize_native_call(
+        &st,
+        &ctx,
+        Uuid::now_v7(),
+        &offered,
+        &overrides,
+        "generate_artefact",
+        None,
+    )
+    .await;
+    assert!(
+        matches!(decision, NativeDecision::Allowed(_)),
+        "granted-but-unadvertised generate_artefact must authorise for the drafter fallback"
+    );
+}

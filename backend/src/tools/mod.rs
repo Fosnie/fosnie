@@ -1683,6 +1683,31 @@ mod tests {
     }
 
     #[test]
+    fn authorised_set_includes_the_per_turn_injections() {
+        // The authorisation basis for a turn is the OFFERED set, not the Agent's
+        // stored tool list. It must carry the per-turn injections that never live
+        // in `agent_tools`, or the seam would refuse them and break retrieval.
+        let empty: HashMap<String, custom::CustomToolRow> = HashMap::new();
+
+        // `search_library` is injected only when the turn has a RAG context.
+        let with_rag =
+            AuthorisedTools::build(&["read_document".into()], &[], true, &empty);
+        assert!(with_rag.contains("search_library"), "RAG turn must offer search_library");
+        assert!(with_rag.contains("read_document"), "advertised natives are offered");
+
+        // Fail-closed: no RAG context ⇒ search_library is NOT offered (a no-KB turn).
+        let no_rag = AuthorisedTools::build(&["read_document".into()], &[], false, &empty);
+        assert!(!no_rag.contains("search_library"), "no-KB turn must not offer search_library");
+
+        // `generate_artefact` is granted but never advertised; it is offered iff the
+        // Agent holds it (via the default tool set), so the drafter fallback can reach it.
+        let held = AuthorisedTools::build(&[], &["generate_artefact".into()], false, &empty);
+        assert!(held.contains("generate_artefact"), "granted generate_artefact must be offered");
+        let not_held = AuthorisedTools::build(&[], &[], false, &empty);
+        assert!(!not_held.contains("generate_artefact"), "an agent without it does not offer it");
+    }
+
+    #[test]
     fn gating_decision_by_mode_and_gaps() {
         // off (or unknown) → never; always → regardless of gaps; gaps_only → only with gaps.
         assert!(!advertise_search_library("off", true));
