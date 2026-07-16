@@ -46,7 +46,7 @@ function slug(s: string): string {
 }
 
 // Tabular review is always per-document RAG — a short prompt → a short, localisable
-// answer, scoped to one document (08 §B.16). No whole-document stuffing here.
+// answer, scoped to one document. No whole-document stuffing here.
 const MECHANISM: CellMechanism = "per_document_rag";
 
 interface ColumnDraft { name: string; format: CellFormat; prompt: string; }

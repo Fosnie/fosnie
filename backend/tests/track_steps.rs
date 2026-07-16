@@ -45,7 +45,7 @@ async fn track_steps_emits_checklist_frame() {
         { "title": "Summarise", "status": "pending" },
         { "title": "   ", "status": "pending" }
     ]});
-    let out = tools::dispatch(&st, &ctx(), None, Uuid::now_v7(), turn, &tx, None, &[], &std::collections::HashMap::new(), "track_steps", &args)
+    let out = tools::dispatch(&st, &ctx(), None, Uuid::now_v7(), turn, &tx, None, None, &[], &std::collections::HashMap::new(), "track_steps", &args)
         .await
         .unwrap();
     assert!(out.contains("3 step"), "blank-title step dropped → 3 recorded: {out}");
@@ -69,7 +69,7 @@ async fn track_steps_rejects_empty() {
     };
     let (tx, _rx) = mpsc::channel::<ServerFrame>(8);
     let r = tools::dispatch(
-        &st, &ctx(), None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, &[], &std::collections::HashMap::new(), "track_steps",
+        &st, &ctx(), None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, None, &[], &std::collections::HashMap::new(), "track_steps",
         &serde_json::json!({ "steps": [] }),
     )
     .await;

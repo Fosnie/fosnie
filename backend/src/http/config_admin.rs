@@ -191,8 +191,8 @@ pub async fn set_config(
     }
     // Enabling the workflows engine (off → on): stamp a dispatch watermark so the
     // historical event backlog accumulated while the feature was off is
-    // fast-forwarded rather than replayed in one avalanche when the relay resumes
-    // (workflows §12.10, acceptance §3). Stamp only on the transition — re-saving
+    // fast-forwarded rather than replayed in one avalanche when the relay resumes.
+    // Stamp only on the transition — re-saving
     // "true" while already on must not move the watermark forward (that would skip
     // legitimately-queued events).
     if key == "features.workflows" && body.value == "true" {

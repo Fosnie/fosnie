@@ -452,6 +452,15 @@ def _handle_stream_event(obj: dict[str, Any], state: dict[str, Any]) -> list[dic
         u = (obj.get("message") or {}).get("usage")
         if u:
             state["usage"] = _map_usage(u)
+    elif t == "content_block_start":
+        # A tool_use block opens with its id + name; its JSON arguments then arrive
+        # as input_json_delta fragments and close at content_block_stop. Track per
+        # block index so several concurrent calls don't interleave their arguments.
+        cb = obj.get("content_block") or {}
+        if cb.get("type") == "tool_use":
+            state.setdefault("tool_blocks", {})[obj.get("index", 0)] = {
+                "id": cb.get("id"), "name": cb.get("name"), "args": "",
+            }
     elif t == "content_block_delta":
         d = obj.get("delta") or {}
         dt = d.get("type")
@@ -465,11 +474,26 @@ def _handle_stream_event(obj: dict[str, Any], state: dict[str, Any]) -> list[dic
             return []  # round-trip only (handled via the non-stream cache); not displayed
         if dt == "text_delta":
             return [{"type": "token", "delta": d.get("text", "")}]
-        # input_json_delta (tool_use args) — accumulate; final-answer streams
-        # rarely carry one, but keep it from leaking into the answer text.
+        # tool_use arguments — accumulate into the matching open block (kept out of
+        # the answer text); parsed + emitted when the block closes.
         if dt == "input_json_delta":
-            state.setdefault("tool_json", "")
-            state["tool_json"] += d.get("partial_json", "")
+            blocks = state.setdefault("tool_blocks", {})
+            slot = blocks.get(obj.get("index", 0))
+            if slot is not None:
+                slot["args"] += d.get("partial_json", "")
+    elif t == "content_block_stop":
+        slot = (state.get("tool_blocks") or {}).pop(obj.get("index", 0), None)
+        name = (slot or {}).get("name")
+        if slot and name and str(name).strip():
+            try:
+                parsed = json.loads(slot.get("args") or "{}")
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("dropping malformed Anthropic tool_call args for %s", name)
+                return []
+            return [{
+                "type": "tool_call", "id": slot.get("id"), "name": str(name).strip(),
+                "arguments": parsed if isinstance(parsed, dict) else {},
+            }]
     elif t == "message_delta":
         sr = (obj.get("delta") or {}).get("stop_reason")
         if sr:
@@ -487,7 +511,7 @@ def _handle_stream_event(obj: dict[str, Any], state: dict[str, Any]) -> list[dic
     elif t == "error":
         err = obj.get("error") or {}
         raise LlmError(f"Anthropic stream error: {err.get('type')}: {err.get('message')}")
-    # ping / content_block_start / content_block_stop / message_stop -> no token
+    # ping / a non-tool content_block_start / message_stop -> no event
     return []
 
 
@@ -495,13 +519,14 @@ async def a_stream_chat(
     messages: list[dict[str, Any]],
     sampling: dict[str, Any],
     model: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     from . import llm
     from .llm import LlmError
 
     stage = llm._consume_stage()
     model = model or cfg("llm_model", settings.llm_model)
-    body = _build_body(messages, sampling, model, stream=True)
+    body = _build_body(messages, sampling, model, stream=True, tools=tools)
     state: dict[str, Any] = {"usage": None, "finish": None, "trace_on": _trace_on()}
 
     client = http_client.get_client()

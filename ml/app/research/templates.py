@@ -22,7 +22,7 @@ deterministically by the pipeline, never written by the LLM."""
 from dataclasses import dataclass, field
 
 # The cohere pass replaces this placeholder with the executive summary —
-# written LAST, after every findings section exists (§2.1 recipe step 4).
+# written LAST, after every findings section exists.
 EXEC_SUMMARY_PLACEHOLDER = "[[EXECUTIVE-SUMMARY]]"
 
 

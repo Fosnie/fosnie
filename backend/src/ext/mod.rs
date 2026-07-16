@@ -173,7 +173,7 @@ pub trait RetentionPolicy: Send + Sync {
     async fn prune_evidence(&self, state: &AppState) -> u64;
 
     /// Is `doc_id` (or its `project_id`) under an active legal hold? A `true` blocks
-    /// the document's deletion (audit §A.2.3). Core default: `false` (no holds in
+    /// the document's deletion. Core default: `false` (no holds in
     /// Core); a private `fosnie-enterprise` crate queries `legal_holds`.
     async fn is_held(&self, _state: &AppState, _project_id: Uuid, _doc_id: Uuid) -> Result<bool> {
         Ok(false)
@@ -386,7 +386,7 @@ pub trait RbacPolicy: Send + Sync {
     ///
     /// Scope is not a parameter here: an *unscoped* holding answers `true`
     /// globally, while a purely *scoped* holding is resolved by the caller
-    /// against the concrete resource (ТЗ §4). This method answers the global
+    /// against the concrete resource. This method answers the global
     /// question "does the caller hold this permission at all?".
     async fn has_permission(&self, pool: &PgPool, ctx: &AuthContext, permission: &str) -> Result<bool> {
         let _ = (pool, permission);
@@ -403,8 +403,8 @@ pub trait RbacPolicy: Send + Sync {
     }
 
     /// At what scope does `ctx` hold `permission`? A scope-aware Core handler uses
-    /// this to filter its lists and guard its mutations to the delegated set (ТЗ
-    /// §4) — e.g. `users.view@group` returns the groups whose members are visible.
+    /// this to filter its lists and guard its mutations to the delegated set
+    /// — e.g. `users.view@group` returns the groups whose members are visible.
     ///
     /// The Core default has no delegation: an admin holds every permission
     /// [`Global`](crate::auth::permissions::PermissionScope::Global)ly, everyone
@@ -434,7 +434,7 @@ pub trait RbacPolicy: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Document-level access, checked **after** the project gate (ТЗ #4). A
+    /// Document-level access, checked **after** the project gate. A
     /// document imported from a connected source (iManage/NetDocuments/mail)
     /// carries the source's own ACL; under an `enforce` sync-mapping that ACL
     /// restricts which project members may read the document, independently of the
@@ -475,7 +475,7 @@ pub trait RbacPolicy: Send + Sync {
         Ok(doc_ids.iter().copied().collect())
     }
 
-    /// Retrieval-time deny-list for KB documents (ТЗ connector-kb-rag §2). A
+    /// Retrieval-time deny-list for KB documents. A
     /// connector import can land a document into a KB (the RAG corpus); under an
     /// `enforce` sync-mapping the source ACL must also restrict *retrieval*, or RAG
     /// would leak across an ethical wall the workspace read-path already honours.

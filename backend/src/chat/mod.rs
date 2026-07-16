@@ -377,13 +377,21 @@ async fn run_turn_inner(
     // the retrieval Coverage summary, captured from the `summary`
     // progress event and persisted as a completed Agent-activity step (not transient).
     let mut rag_summary: Option<String> = None;
+    // Iterative-retrieval gap signals from the Done `debug` object — decide whether to
+    // offer the model the `search_library` top-up tool. Default = "no gaps" so a turn
+    // without retrieval never advertises the tool.
+    let mut rag_gap_debug: ml::RetrieveDebug = ml::RetrieveDebug::default();
+    // the turn's KB allow-list + source-ACL deny-list, hoisted out of the retrieval block
+    // so the search_library tool + its dispatch can reuse the exact same scoping.
+    let mut turn_kb_ids: Vec<String> = Vec::new();
+    let mut turn_deny_doc_ids: Vec<String> = Vec::new();
     let mut cancelled = false;
     // per-turn phase timer (debug-level table emitted at turn end).
     let mut phases = TurnPhases::new();
     if !allow.is_empty() {
         let retrieve_t = std::time::Instant::now();
         let kb_ids: Vec<String> = allow.iter().map(|id| id.to_string()).collect();
-        // Retrieval-time deny-list (ТЗ connector-kb-rag §2): KB documents in scope
+        // Retrieval-time deny-list: KB documents in scope
         // whose connected-source ACL (under an `enforce` mapping) excludes this
         // caller. Passed to ML as a Qdrant `must_not doc_id` filter so RAG never
         // surfaces a chunk the workspace read-path would 404 — the ethical wall
@@ -392,6 +400,9 @@ async fn run_turn_inner(
         // on its own error. This narrows *within* the allow-list, never widens it.
         let deny_ids = state.rbac.denied_kb_doc_ids(&state.pg, ctx, &allow).await?;
         let deny_doc_ids: Vec<String> = deny_ids.iter().map(|id| id.to_string()).collect();
+        // Hoist for the model-driven search_library tool (same allow-list + deny-list scoping).
+        turn_kb_ids = kb_ids.clone();
+        turn_deny_doc_ids = deny_doc_ids.clone();
         // Audit every retrieval with the resolved allow-list (an investigator can prove which
         // knowledge bases were in scope) and how many documents the source-ACL deny-list hid.
         audit_event(
@@ -428,7 +439,7 @@ async fn run_turn_inner(
             &deny_doc_ids,
             &rag_ov,
             ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel.as_ref()).await,
-            Some(std::time::Duration::from_secs(120)),
+            Some(retrieve_timeout(&state.pg).await),
         )
         .await
         {
@@ -467,12 +478,13 @@ async fn run_turn_inner(
                                     .await;
                             }
                         }
-                        Some(ml::RetrieveEvent::Done { context, citations, parts }) => {
+                        Some(ml::RetrieveEvent::Done { context, citations, parts, debug }) => {
                             if !context.trim().is_empty() {
                                 rag_context = Some(context);
                                 rag_citations = citations;
                                 rag_parts = parts;
                             }
+                            rag_gap_debug = debug;
                             break;
                         }
                         Some(ml::RetrieveEvent::Error { message }) => {
@@ -674,9 +686,76 @@ async fn run_turn_inner(
     // low-reasoning terminal content as the answer; regenerate at full reasoning below,
     // keeping `ready_answer` only as an empty-answer fallback.
     let mut loop_capped = false;
+
+    // Model-driven RAG top-up gating: advertise the `search_library` tool so the MAIN model can
+    // search the library again when the automatic first pass fell short. `gaps_only` (default)
+    // offers it ONLY when the iterative pass left unresolved gaps → healthy turns keep their
+    // byte-identical fast path; `always` offers it on every retrieval turn; `off` never. Injected
+    // here (not via `agent.tools`) because it is a dynamic, gap-driven system tool — but the
+    // deployment `tool_overrides` kill-switch wins, and a no-KB turn never gets it (fail-closed).
+    let mut rag_tool_ctx: Option<crate::tools::RagToolCtx> = None;
+    let mut model_search_commentary = true;
+    // Under the `midstream` locus the tool is withheld from the pre-stream tool loop and handed
+    // to the streaming answer instead; this carries its schema through to the stream.
+    let mut midstream_tool_def: Option<Value> = None;
+    let mut model_search_locus = "loop".to_string();
+    if !turn_kb_ids.is_empty()
+        && tool_overrides.get("search_library").map(|o| o.enabled).unwrap_or(true)
+    {
+        let cfg = |k: &'static str| crate::config::runtime::get(&state.pg, k);
+        let mode = cfg("rag.model_search_mode")
+            .await
+            .ok()
+            .flatten()
+            .map(|e| e.value)
+            .unwrap_or_else(|| "gaps_only".to_string());
+        let gaps_left = rag_gap_debug.gap_needs_exhausted > 0
+            || (!rag_gap_debug.gap_stop_reason.is_empty()
+                && rag_gap_debug.gap_stop_reason != "sufficient");
+        let advertise = crate::tools::advertise_search_library(&mode, gaps_left);
+        if advertise {
+            let geti = |v: Option<crate::config::runtime::ConfigEntry>, d: u64| {
+                v.and_then(|e| e.value.parse::<u64>().ok()).unwrap_or(d)
+            };
+            let max_calls = geti(cfg("rag.model_search_max_calls").await.ok().flatten(), 4) as u32;
+            let deadline = geti(cfg("rag.model_search_deadline_secs").await.ok().flatten(), 20);
+            model_search_commentary = cfg("rag.model_search_show_commentary")
+                .await
+                .ok()
+                .flatten()
+                .map(|e| e.value == "true")
+                .unwrap_or(true);
+            let sl_def = crate::tools::search_library_def(&rag_gap_debug.gap_unresolved);
+            // Locus decides WHERE the tool runs. `loop` (default) advertises it in the pre-stream
+            // tool loop — a non-streamed step before the answer. `midstream` withholds it from
+            // that loop and hands it to the streaming answer, so the model can search between
+            // segments of one bubble, saving a step on gap-turns. Only unified synthesis carries
+            // tools to the stream (checked below); per_part ignores this.
+            model_search_locus = cfg("rag.model_search_locus")
+                .await
+                .ok()
+                .flatten()
+                .map(|e| e.value)
+                .unwrap_or_else(|| "loop".to_string());
+            if model_search_locus == "midstream" {
+                midstream_tool_def = Some(sl_def);
+            } else {
+                tool_defs.push(sl_def);
+            }
+            rag_tool_ctx = Some(crate::tools::RagToolCtx::new(
+                turn_kb_ids.clone(),
+                turn_deny_doc_ids.clone(),
+                max_calls,
+                deadline,
+                rag_context.as_deref(),
+                rag_citations.len(),
+            ));
+        }
+    }
+
     if !tool_defs.is_empty() {
         let outcome = run_tool_loop(
-            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &ci_files, &custom_tools, &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases,
+            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary,
         )
         .await?;
         interrupted = outcome.interrupted;
@@ -684,6 +763,10 @@ async fn run_turn_inner(
         loop_usage = outcome.final_usage;
         loop_capped = outcome.capped;
     }
+
+    // `search_library` citations (from the pre-stream loop AND any mid-stream calls) are merged
+    // into the turn's list after streaming, just before persistence — see below — so both land in
+    // the single ChatCitations frame. `rag_tool_ctx` is kept alive until then.
 
     // attach the retrieval Coverage summary AFTER the tool loop, so `observe`'s
     // wholesale `steps` reassignment can't clobber it. Persisted + rendered as a step.
@@ -795,66 +878,125 @@ async fn run_turn_inner(
                 first["content"] = json!(synth_system);
             }
         }
-        // At most two passes: if a reasoning model spends its whole completion budget
-        // thinking and returns no answer (truncation + empty), retry ONCE with a larger
-        // cap before giving up. A retry only ever hits a turn that already produced
-        // nothing, so good turns keep their TTFT.
-        for attempt in 0..2 {
-            reasoning_acc.clear();
-            let req = GenerateRequest {
-                messages: messages.clone(),
-                sampling: sampling.clone(),
-                model: None,
-                overrides: ml::with_reasoning(ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel.as_ref()).await, answer_reasoning.as_ref()),
-            };
-            let term = stream_generate(state, &req, turn_id, asst_id, tx, &cancel, &mut acc, &mut reasoning_acc, &mut detached, true).await?;
-            prompt_tokens = term.prompt_tokens;
-            completion_tokens = term.completion_tokens;
-            reasoning_tokens = term.reasoning_tokens;
-            model_used = term.model;
-            finish_reason = term.finish;
-            errored = term.errored;
-            if term.interrupted { interrupted = true; }
-
-            let retry = if attempt == 0 {
-                retry_cap(interrupted, errored.is_some(), acc.is_empty(), finish_reason.as_deref(), sampling.max_tokens)
+        // Segmented streaming answer. Usually one pass, but a segment can end three ways and
+        // each folds back into the SAME bubble and DB row (one `acc`, one `asst_id`):
+        //   • empty at the token cap → retry ONCE with a larger cap (a reasoning model that spent
+        //     its whole budget thinking) before giving up — good turns keep their fast first token;
+        //   • tool_calls             → run the library top-up and continue the answer;
+        //   • length                 → auto-continue the truncated answer, bounded by `max_cont`.
+        let max_cont = crate::config::runtime::get(&state.pg, "chat.answer_max_continuations")
+            .await.ok().flatten().and_then(|e| e.value.parse::<usize>().ok()).unwrap_or(4);
+        // One total-budget deadline spanning every segment AND tool execution of this answer, so a
+        // model that keeps searching can't extend the turn without bound.
+        let answer_deadline = tokio::time::Instant::now() + synthesis_max_total(&state.pg).await;
+        // Tools reach the stream only under the midstream locus and unified synthesis.
+        let mut stream_tools: Option<Vec<Value>> =
+            if model_search_locus == "midstream" && synthesis_mode == "unified" {
+                midstream_tool_def.clone().map(|d| vec![d])
             } else {
                 None
             };
-            if let Some(bumped) = retry {
-                tracing::warn!(prev = ?sampling.max_tokens, bumped, "empty answer hit max_tokens while reasoning; retrying with a higher cap");
-                sampling.max_tokens = Some(bumped);
-                continue;
-            }
-            break;
-        }
-
-        // Auto-continue a NON-EMPTY answer that was truncated at the token cap (finish
-        // reason length / max_output_tokens / max_tokens). Each continuation reasons over a
-        // SHORTER remaining answer, so it converges; `max_cont` bounds runaway cost. Works at
-        // any reasoning effort — the fix for a long synthesis silently ending mid-sentence.
-        let max_cont = crate::config::runtime::get(&state.pg, "chat.answer_max_continuations")
-            .await.ok().flatten().and_then(|e| e.value.parse::<usize>().ok()).unwrap_or(4);
-        let mut cont = 0;
-        while is_truncation(finish_reason.as_deref()) && !acc.trim().is_empty()
-            && !interrupted && errored.is_none() && !detached && cont < max_cont
-        {
-            cont += 1;
-            tracing::warn!(cont, finish = ?finish_reason, "answer truncated at token cap; auto-continuing");
+        let base_messages = messages.clone();
+        // `next_messages = Some(..)` replays a tool-result set before continuing; `None` means the
+        // first pass (base messages) or a truncation continuation (rebuilt from the answer so far).
+        let mut next_messages: Option<Vec<Value>> = None;
+        let mut first_pass = true;
+        let mut empty_retry_used = false;
+        let mut cont = 0usize;
+        let mut empty_tool_streak: u8 = 0;
+        loop {
+            reasoning_acc.clear();
+            let seg_messages = match next_messages.take() {
+                Some(m) => m,
+                None if first_pass => base_messages.clone(),
+                None => continuation_messages(&base_messages, &acc),
+            };
             let req = GenerateRequest {
-                messages: continuation_messages(&messages, &acc),
+                messages: seg_messages,
                 sampling: sampling.clone(),
                 model: None,
+                tools: stream_tools.clone(),
                 overrides: ml::with_reasoning(ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel.as_ref()).await, answer_reasoning.as_ref()),
             };
-            let term = stream_generate(state, &req, turn_id, asst_id, tx, &cancel, &mut acc, &mut reasoning_acc, &mut detached, false).await?;
-            finish_reason = term.finish;
-            model_used = term.model.or(model_used);
-            prompt_tokens = sum_opt(prompt_tokens, term.prompt_tokens);
-            completion_tokens = sum_opt(completion_tokens, term.completion_tokens);
-            reasoning_tokens = sum_opt(reasoning_tokens, term.reasoning_tokens);
-            if term.errored.is_some() { errored = term.errored; }
+            let seg_start_len = acc.len();
+            let term = stream_generate(state, &req, turn_id, asst_id, tx, &cancel, &mut acc, &mut reasoning_acc, &mut detached, first_pass, Some(answer_deadline)).await?;
+            finish_reason = term.finish.clone();
+            model_used = term.model.clone().or(model_used);
+            if first_pass {
+                prompt_tokens = term.prompt_tokens;
+                completion_tokens = term.completion_tokens;
+                reasoning_tokens = term.reasoning_tokens;
+            } else {
+                prompt_tokens = sum_opt(prompt_tokens, term.prompt_tokens);
+                completion_tokens = sum_opt(completion_tokens, term.completion_tokens);
+                reasoning_tokens = sum_opt(reasoning_tokens, term.reasoning_tokens);
+            }
+            if term.errored.is_some() { errored = term.errored.clone(); }
             if term.interrupted { interrupted = true; }
+
+            // Empty-at-cap retry (first pass only, once).
+            if first_pass && !empty_retry_used {
+                if let Some(bumped) = retry_cap(interrupted, errored.is_some(), acc.is_empty(), finish_reason.as_deref(), sampling.max_tokens) {
+                    tracing::warn!(prev = ?sampling.max_tokens, bumped, "empty answer hit max_tokens while reasoning; retrying with a higher cap");
+                    sampling.max_tokens = Some(bumped);
+                    empty_retry_used = true;
+                    continue; // redo the first segment (stays first_pass)
+                }
+            }
+            first_pass = false;
+            if interrupted || errored.is_some() || detached { break; }
+
+            // Mid-stream tool call: run the library top-up, replay the results, continue the answer.
+            if finish_reason.as_deref() == Some("tool_calls")
+                && stream_tools.is_some()
+                && !term.tool_calls.is_empty()
+            {
+                let seg_had_text = acc.len() > seg_start_len;
+                empty_tool_streak = if seg_had_text { 0 } else { empty_tool_streak + 1 };
+                let mut calls_json: Vec<Value> = Vec::new();
+                let mut tool_msgs: Vec<Value> = Vec::new();
+                for tc in &term.tool_calls {
+                    let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
+                    calls_json.push(json!({
+                        "id": id, "type": "function",
+                        "function": { "name": tc.name, "arguments": serde_json::to_string(&tc.arguments).unwrap_or_else(|_| "{}".into()) }
+                    }));
+                    // Cancel-aware: the tool dispatch is not itself cancel-wrapped, so race it here.
+                    let result = tokio::select! {
+                        r = crate::tools::dispatch(state, ctx, chat_project_id, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), &[], &custom_tools, &tc.name, &tc.arguments) =>
+                            r.unwrap_or_else(|e| format!("error: {e}")),
+                        _ = cancel.notified() => { interrupted = true; "error: cancelled".to_string() }
+                    };
+                    tool_msgs.push(json!({ "role": "tool", "tool_call_id": id, "content": result }));
+                    if interrupted { break; }
+                }
+                activity.observe(&term.tool_calls);
+                if interrupted { break; }
+                // The answer so far becomes the assistant turn that made the calls; the tool
+                // results follow; the model then continues the same answer.
+                let mut next = base_messages.clone();
+                next.push(json!({ "role": "assistant", "content": acc.clone(), "tool_calls": calls_json }));
+                next.extend(tool_msgs);
+                next_messages = Some(next);
+                // Terminality: once the per-turn search budget is spent, or the model produced two
+                // straight empty tool-only segments, the continuation carries NO tools → it answers.
+                let budget_spent = match rag_tool_ctx.as_ref() {
+                    Some(rc) => rc.state.lock().await.calls >= rc.max_calls,
+                    None => true,
+                };
+                if budget_spent || empty_tool_streak >= 2 {
+                    stream_tools = None;
+                }
+                continue;
+            }
+
+            // Truncated non-empty answer → auto-continue (bounded); converges over a shorter remainder.
+            if is_truncation(finish_reason.as_deref()) && !acc.trim().is_empty() && cont < max_cont {
+                cont += 1;
+                tracing::warn!(cont, finish = ?finish_reason, "answer truncated at token cap; auto-continuing");
+                continue; // next_messages stays None → rebuilt from `acc`
+            }
+            break;
         }
         // Still truncated after the continuation budget → surface it rather than a silent stop.
         if is_truncation(finish_reason.as_deref()) && !acc.is_empty() && !interrupted && errored.is_none() {
@@ -1146,6 +1288,18 @@ async fn run_turn_inner(
         metrics::counter!("llm_tokens_total", "kind" => "completion", "model" => model_label)
             .increment(completion_tokens.unwrap_or(0).max(0) as u64);
 
+        // Fold in every `search_library` citation now — both the pre-stream tool loop's and any
+        // mid-stream calls' — so all documents (auto-RAG + top-ups) land in the single
+        // ChatCitations frame below (the client replaces its list per frame; a second frame would
+        // clobber the first). Draining the context here, after streaming, is what lets a mid-stream
+        // call contribute.
+        if let Some(rc) = rag_tool_ctx {
+            let st = rc.state.into_inner();
+            if !st.tool_citations.is_empty() {
+                rag_citations.extend(st.tool_citations);
+            }
+        }
+
         let mut citations_out: Vec<crate::ws::protocol::CitationOut> = Vec::new();
         if !rag_citations.is_empty() {
             persist_citations(&state.pg, asst_id, &rag_citations).await?;
@@ -1380,6 +1534,7 @@ const CONTINUE_NUDGE: &str =
      written, do not restart, and add no preamble — continue mid-sentence if necessary.";
 
 /// Terminal state of one streamed generation pass.
+#[derive(Default)]
 struct GenTerminal {
     finish: Option<String>,
     model: Option<String>,
@@ -1388,6 +1543,9 @@ struct GenTerminal {
     reasoning_tokens: Option<i32>,
     errored: Option<String>,
     interrupted: bool,
+    /// Tool calls the model made in this segment (empty unless `finish == "tool_calls"`).
+    /// The caller executes them and continues the answer in a follow-up pass.
+    tool_calls: Vec<ml::ToolCall>,
 }
 
 /// Stream ONE generation, appending answer deltas to `acc` and reasoning to `reasoning_acc`,
@@ -1409,6 +1567,21 @@ async fn synthesis_idle_timeout(pg: &sqlx::PgPool) -> std::time::Duration {
         .and_then(|e| e.value.parse::<u64>().ok())
         .unwrap_or(120);
     std::time::Duration::from_secs(if secs == 0 { 86_400 } else { secs })
+}
+
+/// Total reqwest timeout (incl. stream read) for the `/retrieve` call. The iterative-retrieval
+/// phase (ml `rag.gap_deadline_secs`) runs on TOP of ordinary retrieval, so a fixed 120 s ceiling
+/// would kill the turn mid-loop while progress is still live. Budget = 120 s base + the gap
+/// deadline, so the ML-side deadline trips first (fail-soft, honest known-gaps) and the Rust
+/// timeout stays a genuine backstop. Default gap deadline mirrors ml/app/config.py (60 s).
+async fn retrieve_timeout(pg: &sqlx::PgPool) -> std::time::Duration {
+    let gap = crate::config::runtime::get(pg, "rag.gap_deadline_secs")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|e| e.value.parse::<u64>().ok())
+        .unwrap_or(60);
+    std::time::Duration::from_secs(120 + gap)
 }
 
 /// TOTAL wall-clock budget for one answer/part generation (robustness). Unlike the
@@ -1439,13 +1612,14 @@ async fn stream_generate(
     reasoning_acc: &mut String,
     detached: &mut bool,
     lead_gate: bool,
+    // Shared total-budget deadline. `None` ⇒ this segment gets its own fresh budget (the
+    // single-pass callers); `Some` ⇒ one deadline spanning every segment + tool execution of a
+    // multi-segment answer, so mid-stream tool calls can't extend the turn without bound.
+    deadline_arg: Option<tokio::time::Instant>,
 ) -> Result<GenTerminal, crate::error::AppError> {
     let frame_counter = metrics::counter!("ws_token_frames_total");
     let frame_bytes = metrics::counter!("ws_token_frame_bytes_total");
-    let mut out = GenTerminal {
-        finish: None, model: None, prompt_tokens: None, completion_tokens: None,
-        reasoning_tokens: None, errored: None, interrupted: false,
-    };
+    let mut out = GenTerminal::default();
     let mut head_open = lead_gate;
     let mut head_buf = String::new();
     let mut last_flush = std::time::Instant::now();
@@ -1453,7 +1627,10 @@ async fn stream_generate(
     let mut ttft_recorded = false;
     let mut stream = ml::generate(&state.http, &state.boot.ml.base_url, req).await?;
     let idle = synthesis_idle_timeout(&state.pg).await;
-    let deadline = tokio::time::Instant::now() + synthesis_max_total(&state.pg).await;
+    let deadline = match deadline_arg {
+        Some(d) => d,
+        None => tokio::time::Instant::now() + synthesis_max_total(&state.pg).await,
+    };
     loop {
         // Trip on whichever is sooner: the idle gap (silent stall) or the TOTAL budget (a reasoning
         // runaway that streams summary deltas for minutes but never an output token — the idle gap
@@ -1514,6 +1691,11 @@ async fn stream_generate(
                         *detached = true;
                     }
                 }
+                Some(GenEvent::ToolCall { id, name, arguments }) => {
+                    // Collect — the caller runs it and continues the answer. Not framed to the
+                    // client as tokens; the `ChatTool` activity frames come from the dispatch.
+                    out.tool_calls.push(ml::ToolCall { id, name, arguments });
+                }
                 Some(GenEvent::Done { usage, model, finish_reason: fr }) => {
                     out.prompt_tokens = usage.prompt_tokens;
                     out.completion_tokens = usage.completion_tokens;
@@ -1562,6 +1744,7 @@ async fn run_tool_loop(
     tool_defs: &[Value],
     ci_files: &[crate::code_interpreter::InputFile],
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
+    rag_ctx: Option<&crate::tools::RagToolCtx>,
     messages: &mut Vec<Value>,
     activity: &mut Activity,
     reasoning: Option<&crate::reasoning::ReasoningSpec>,
@@ -1569,6 +1752,7 @@ async fn run_tool_loop(
     tx: &mpsc::Sender<ServerFrame>,
     cancel: &Arc<Notify>,
     phases: &mut TurnPhases,
+    show_commentary: bool,
 ) -> Result<ToolLoopOutcome> {
     let sem = Arc::new(Semaphore::new(agent.tool_concurrency.max(1)));
     let mut tokens_used: i64 = 0;
@@ -1673,6 +1857,24 @@ async fn run_tool_loop(
             .collect();
         messages.push(json!({ "role": "assistant", "content": step.content, "tool_calls": calls_json }));
 
+        // Surface the model's brief commentary next to a library top-up as a transient
+        // `reasoning` detail (not persisted chat text). Only when a search_library call is
+        // actually happening this step, so ordinary tool turns are untouched.
+        if show_commentary && step.tool_calls.iter().any(|tc| tc.name == "search_library") {
+            let comment = step.content.trim();
+            if !comment.is_empty() {
+                let snippet: String = comment.chars().take(120).collect();
+                let _ = tx
+                    .send(ServerFrame::ChatTool {
+                        turn_id,
+                        name: "reasoning".into(),
+                        phase: "progress".into(),
+                        detail: Some(snippet),
+                    })
+                    .await;
+            }
+        }
+
         // Classify each call: a side-effecting MCP call (FEATURE B1) takes a sequential
         // human-approval gate (the approvals registry is keyed by run_id); native +
         // read-only-MCP calls auto-run bounded-parallel as before. "Is MCP" is just
@@ -1715,7 +1917,7 @@ async fn run_tool_loop(
             let sem = sem.clone();
             async move {
                 let _permit = sem.acquire().await.expect("semaphore");
-                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, ci_files, custom_tools, tc).await
+                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, ci_files, custom_tools, rag_ctx, tc).await
             }
         }))
         .await;
@@ -1759,6 +1961,7 @@ async fn run_one_call(
     agent: &AgentConfig,
     ci_files: &[crate::code_interpreter::InputFile],
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
+    rag_ctx: Option<&crate::tools::RagToolCtx>,
     tc: &ml::ToolCall,
 ) -> (String, String) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
@@ -1797,7 +2000,7 @@ async fn run_one_call(
             if is_mcp {
                 crate::mcp::dispatch(state, ctx, chat_id, &tc.name, &tc.arguments).await
             } else {
-                crate::tools::dispatch(state, ctx, project_id, chat_id, turn_id, tx, agent.web.as_ref(), ci_files, custom_tools, &tc.name, &tc.arguments).await
+                crate::tools::dispatch(state, ctx, project_id, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, ci_files, custom_tools, &tc.name, &tc.arguments).await
             }
         };
         match tokio::time::timeout(to, fut).await {
@@ -1877,8 +2080,9 @@ async fn gated_call(
         // Approved (REST CAS-approved before resolving us): run it, then return the run
         // to `running` so the loop continues and `complete_if_running` finalises it.
         Ok(Ok(true)) => {
-            // Gated tools are MCP/custom side-effecting calls, never code_interpreter → no files.
-            let (_id, r) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, &[], custom_tools, tc).await;
+            // Gated tools are MCP/custom side-effecting calls, never code_interpreter or
+            // search_library → no CI files, no RAG-tool context.
+            let (_id, r) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, &[], custom_tools, None, tc).await;
             crate::agent::mark_running(state, run_id).await;
             (id, r)
         }
@@ -2624,7 +2828,7 @@ async fn synthesize_per_part(
         );
         let messages: Vec<ml::Message> =
             vec![json!({"role": "system", "content": system}), json!({"role": "user", "content": user})];
-        let req = ml::GenerateRequest { messages, sampling: sampling.clone(), model: None, overrides: base_ov.clone() };
+        let req = ml::GenerateRequest { messages, sampling: sampling.clone(), model: None, tools: None, overrides: base_ov.clone() };
         let (ptx, prx) = mpsc::channel::<ml::GenEvent>(64);
         receivers.push(prx);
         let http = state.http.clone();
@@ -2739,6 +2943,10 @@ async fn synthesize_per_part(
                         if out.finish_reason.is_none() { out.finish_reason = finish_reason; }
                         break;
                     }
+                    Some(ml::GenEvent::ToolCall { .. }) => {
+                        // per_part never advertises tools, so a tool call here is unexpected —
+                        // ignore it rather than mishandle it (mid-stream tools are unified-only).
+                    }
                     Some(ml::GenEvent::Error { message }) => {
                         // The part's task hit an error or the idle-stall guard — record it and
                         // break; the post-loop emits a fail-soft notice and the NEXT part proceeds.
@@ -2768,9 +2976,10 @@ async fn synthesize_per_part(
                 messages: continuation_messages(&base, &part_text),
                 sampling: sampling.clone(),
                 model: None,
+                tools: None,
                 overrides: base_ov.clone(),
             };
-            match stream_generate(state, &req, turn_id, asst_id, tx, cancel, &mut out.acc, &mut out.reasoning, &mut out.detached, false).await {
+            match stream_generate(state, &req, turn_id, asst_id, tx, cancel, &mut out.acc, &mut out.reasoning, &mut out.detached, false, None).await {
                 Ok(term) => {
                     part_finish = term.finish;
                     out.prompt_tokens = sum_opt(out.prompt_tokens, term.prompt_tokens);

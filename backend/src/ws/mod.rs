@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! WebSocket transport — one multiplexed socket per user (topology §6.3).
+//! WebSocket transport — one multiplexed socket per user.
 //!
 //! Auth on upgrade: a single-use `?ticket=<t>` minted over the authenticated
 //! `POST /api/ws-ticket` path (the browser's route — keeps the JWT out of the
 //! URL), a valid Keycloak JWT (`Authorization: Bearer` header or `?token=<jwt>`,
 //! validated by the Pass-mode layer — for programmatic clients), **or** a
 //! `?resume=<token>` within the resume window.
-//! The same validation gates the upgrade, so revocation applies to WS too (§8).
+//! The same validation gates the upgrade, so revocation applies to WS too.
 //! Carries the chat-token stream + cancel + presence; team-messaging replay is
 //! a later slice.
 

@@ -389,7 +389,7 @@ async def run(
     if refinements:
         plan_question = f"{question}\n\nScope refinements: {'; '.join(refinements)}"
 
-    # Budgets from the runtime context window (adaptive scaling, §3a). Runtime
+    # Budgets from the runtime context window (adaptive scaling). Runtime
     # admin knobs (research.max_minutes / research.census_cap) arrive as rag_ctx
     # overrides; None ⇒ ML env defaults.
     from ..main import _resolve_model

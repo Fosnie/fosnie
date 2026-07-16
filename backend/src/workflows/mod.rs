@@ -15,7 +15,7 @@
 //! Event-driven workflow engine.
 //!
 //! The dispatcher [`dispatch_once`] relays undispatched `events` to enabled
-//! `workflows` whose trigger matches, applies the loop guards (§7a), and enqueues
+//! `workflows` whose trigger matches, applies the loop guards, and enqueues
 //! a durable `workflow_run` task per firing (reusing the scheduler's
 //! retry/backoff/dead-letter). [`run`] executes a run's action.
 //!
@@ -35,26 +35,26 @@ use crate::events::{self, ActorType, EventRow};
 use crate::scheduler::TaskType;
 use crate::state::AppState;
 
-/// Loop-guard depth cap (§7a.3) when `workflows.max_depth` is unset.
+/// Loop-guard depth cap when `workflows.max_depth` is unset.
 const DEFAULT_MAX_DEPTH: i32 = 3;
 /// How many undispatched events one relay pass claims.
 const DISPATCH_BATCH: i64 = 64;
 /// Task priority for workflow runs (lower runs first; ingest/automation = 100).
 /// Workflow work sits behind other background work — never starves the hot path.
 const WORKFLOW_TASK_PRIORITY: i32 = 150;
-/// Rolling window for the per-workflow rate cap (§7b.3).
+/// Rolling window for the per-workflow rate cap.
 const RATE_WINDOW_SECS: i64 = 60;
 
-/// Guard outcome for one (event, workflow) pair (§7a — human-only + depth).
+/// Guard outcome for one (event, workflow) pair (human-only + depth).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Fire,
     Skip(&'static str),
 }
 
-/// The loop-guard core (§7a.2 human-only, §7a.3 depth cap). **Pure** → unit-tested.
-/// Idempotency (§7a.6) is enforced structurally by the `workflow_runs` unique
-/// index, not here; explicit cycle-by-resource detection (§7a.4) is a later slice.
+/// The loop-guard core (human-only + depth cap). **Pure** → unit-tested.
+/// Idempotency is enforced structurally by the `workflow_runs` unique
+/// index, not here; explicit cycle-by-resource detection is a later slice.
 pub fn guard_decision(
     actor_type: ActorType,
     trigger_on_system_events: bool,
@@ -100,7 +100,7 @@ fn scope_matches(wf_project: Option<Uuid>, trigger_scope: &Value, ev: &EventRow)
     true
 }
 
-/// Evaluate a SAFE declarative condition (§6) over an event context. `null` ⇒ true.
+/// Evaluate a SAFE declarative condition over an event context. `null` ⇒ true.
 /// Shape: `{ "all": [clause…] }` / `{ "any": [clause…] }` (nestable), or a single
 /// clause `{ "field": "payload.mime", "op": "eq", "value": … }`. Fixed operator set;
 /// anything unknown ⇒ the clause is false (fail-closed). **No code / eval.**
@@ -160,7 +160,7 @@ fn num(v: &Value) -> Option<f64> {
 /// One relay pass: claim undispatched events (`FOR UPDATE SKIP LOCKED`), match
 /// enabled workflows, apply guards + condition, and enqueue a `workflow_run` task
 /// per firing — all in one transaction, so dispatch + enqueue + the dispatched
-/// mark commit together (exactly-once). No-op when the feature is off (§12.10).
+/// mark commit together (exactly-once). No-op when the feature is off.
 /// Returns the number of workflow runs enqueued.
 pub async fn dispatch_once(state: &AppState) -> Result<u64> {
     if !feature_enabled(state).await || paused(state).await {
@@ -201,7 +201,7 @@ pub async fn dispatch_once(state: &AppState) -> Result<u64> {
     let mut dispatched_ids: Vec<Uuid> = Vec::with_capacity(evs.len());
 
     for e in evs {
-        // Fast-forward (§12.10): events older than the enable-watermark are marked
+        // Fast-forward: events older than the enable-watermark are marked
         // dispatched without firing any workflow — preserved as history, never
         // replayed. Prevents an avalanche when the engine is switched back on.
         if let Some(wm) = watermark {
@@ -242,7 +242,7 @@ pub async fn dispatch_once(state: &AppState) -> Result<u64> {
             match guard_decision(ev.actor_type, w.trigger_on_system_events, ev.depth, max_depth) {
                 Decision::Fire => {}
                 Decision::Skip("max workflow depth reached") => {
-                    // The safety-relevant circuit breaker is audited (§7a.3, §10).
+                    // The safety-relevant circuit breaker is audited.
                     let mut a = crate::audit::AuditEvent::action("workflow.depth_exceeded", "system");
                     a.resource_type = Some("workflow".into());
                     a.resource_id = Some(w.id);
@@ -258,7 +258,7 @@ pub async fn dispatch_once(state: &AppState) -> Result<u64> {
                 }
             }
 
-            // Cycle detection (§7a.4): if this (workflow, resource) already appears
+            // Cycle detection: if this (workflow, resource) already appears
             // in the event's lineage, break the cycle and audit it.
             if let Some(res) = ev.resource_id {
                 if cycle_detected(&mut tx, w.id, res, &ev.trigger_chain).await? {
@@ -271,7 +271,7 @@ pub async fn dispatch_once(state: &AppState) -> Result<u64> {
                 }
             }
 
-            // Coalescing (§7b.1): a windowed workflow buffers the event for a
+            // Coalescing: a windowed workflow buffers the event for a
             // batched run; window 0 fires immediately. Either way the rate cap +
             // idempotency apply at run creation.
             if w.coalesce_window_secs > 0 {
@@ -294,7 +294,7 @@ pub async fn dispatch_once(state: &AppState) -> Result<u64> {
     Ok(fired)
 }
 
-/// Fire coalescing buffers whose window has closed (§7b.1). Each buffered bucket
+/// Fire coalescing buffers whose window has closed. Each buffered bucket
 /// becomes **one** run over its accumulated batch. Called from the scheduler tick.
 /// No-op when the feature is off / paused.
 pub async fn scan_coalesced(state: &AppState) -> Result<u64> {
@@ -349,7 +349,7 @@ pub async fn scan_coalesced(state: &AppState) -> Result<u64> {
     Ok(fired)
 }
 
-/// Buffer an event into the workflow's coalescing window (§7b.1). Tumbling: the
+/// Buffer an event into the workflow's coalescing window. Tumbling: the
 /// bucket's `fire_at` is set only on the first event; later events just append.
 async fn buffer_coalesced(
     conn: &mut PgConnection,
@@ -386,11 +386,11 @@ enum RunOutcome {
     Disabled,
 }
 
-/// How many rate-cap trips within the window auto-disable a workflow (§10).
+/// How many rate-cap trips within the window auto-disable a workflow.
 const AUTO_DISABLE_TRIPS: i64 = 20;
 
-/// Create one run for `event_ids` under the per-workflow rate cap (§7b.3) +
-/// idempotency (§7a.6), enqueueing a low-priority durable task. Throttle/auto-disable
+/// Create one run for `event_ids` under the per-workflow rate cap +
+/// idempotency, enqueueing a low-priority durable task. Throttle/auto-disable
 /// are audited in `conn`'s transaction. Returns what happened.
 async fn try_create_run(
     state: &AppState,
@@ -412,7 +412,7 @@ async fn try_create_run(
     .await?;
 
     if over_rate(recent, max_per_window) {
-        // Repeated trips → auto-disable (fail safe, not fail-loud-forever, §10).
+        // Repeated trips → auto-disable (fail safe, not fail-loud-forever).
         let trips_ok = crate::cache::rate_limit_ok(
             &state.redis,
             &format!("wf:trip:{workflow_id}"),
@@ -440,7 +440,7 @@ async fn try_create_run(
         return Ok(RunOutcome::Throttled);
     }
 
-    // Idempotency (§7a.6, §12.8): one run per (workflow, event-set).
+    // Idempotency: one run per (workflow, event-set).
     let run_id = Uuid::now_v7();
     let inserted = sqlx::query_scalar!(
         r#"INSERT INTO workflow_runs
@@ -479,7 +479,7 @@ pub fn over_rate(recent: i64, max_per_window: i32) -> bool {
     max_per_window > 0 && recent >= max_per_window as i64
 }
 
-/// §7a.4 cycle detection: has this (workflow, resource) already fired within the
+/// Cycle detection: has this (workflow, resource) already fired within the
 /// event's lineage chain? `chain` is the ordered workflow_run ids in the lineage.
 async fn cycle_detected(
     conn: &mut PgConnection,
@@ -505,7 +505,7 @@ async fn cycle_detected(
     Ok(hit)
 }
 
-/// Runtime-effective feature gate (§12.10). Reads the admin-toggleable
+/// Runtime-effective feature gate. Reads the admin-toggleable
 /// `features.workflows` override (falling back to the boot flag) through the
 /// resolver seam, so enabling the engine from the Admin console takes effect
 /// without a restart. Keyed with no user (fleet-wide dispatcher), so per-group
@@ -514,7 +514,7 @@ async fn feature_enabled(state: &AppState) -> bool {
     crate::features::enabled_for_user(state, None, "workflows").await
 }
 
-/// The fast-forward watermark (§12.10): events created before this instant are
+/// The fast-forward watermark: events created before this instant are
 /// skip-marked (dispatched, no run) so re-enabling the engine does not replay the
 /// historical backlog that accumulated while it was off. Stamped by the Admin
 /// toggle on each off→on transition. Absent (`None`) ⇒ no watermark — a fresh
@@ -527,7 +527,7 @@ async fn dispatch_watermark(state: &AppState) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(&e.value, &Rfc3339).ok()
 }
 
-/// Fleet kill-switch (§10): `workflows.pause_all=true` halts all dispatch + runs.
+/// Fleet kill-switch: `workflows.pause_all=true` halts all dispatch + runs.
 async fn paused(state: &AppState) -> bool {
     matches!(
         crate::config::runtime::get(&state.pg, "workflows.pause_all").await.ok().flatten(),
@@ -535,7 +535,7 @@ async fn paused(state: &AppState) -> bool {
     )
 }
 
-/// Build the condition-evaluation context from an event (the safe surface §6).
+/// Build the condition-evaluation context from an event (the safe surface).
 fn condition_ctx(ev: &EventRow) -> Value {
     json!({
         "event_type": ev.event_type,
@@ -560,7 +560,7 @@ fn actor_str(a: ActorType) -> &'static str {
 /// outcome. A genuine execution error is returned so the task queue retries /
 /// dead-letters; an unsupported action is a clean `skipped` (no retry).
 pub async fn run(state: &AppState, run_id: Uuid) -> Result<()> {
-    // Fleet kill-switch / mid-flight disable (§10): don't act, don't retry.
+    // Fleet kill-switch / mid-flight disable: don't act, don't retry.
     if !feature_enabled(state).await || paused(state).await {
         finish(state, run_id, "skipped", None, Some("workflows paused / feature disabled")).await?;
         return Ok(());
@@ -623,7 +623,7 @@ pub async fn run(state: &AppState, run_id: Uuid) -> Result<()> {
     }
 }
 
-/// Run a deterministic `system_action` (no LLM, §8). Returns the outcome JSON.
+/// Run a deterministic `system_action` (no LLM). Returns the outcome JSON.
 async fn run_system_action(
     state: &AppState,
     run_id: Uuid,
@@ -685,11 +685,11 @@ async fn run_system_action(
     }
 }
 
-/// Run an `agent_run` action (§8): the workflow's Agent, unattended, **as the
-/// owner** — run-as-owner yields the owner∩scope intersection for free (§7c.1).
+/// Run an `agent_run` action: the workflow's Agent, unattended, **as the
+/// owner** — run-as-owner yields the owner∩scope intersection for free.
 /// Mirrors `run_automation`: drive `chat::run_turn` headless and capture the output
 /// chat id. Output always lands in a reviewable chat — never a silent destructive
-/// change (§7c.4); a gated tool (e.g. artefact generation) still defers to the
+/// change; a gated tool (e.g. artefact generation) still defers to the
 /// owner's approval via the existing agent-run gate.
 async fn run_agent_action(
     state: &AppState,
@@ -766,7 +766,7 @@ async fn run_agent_action(
 }
 
 /// Render the agent prompt: the user template (payload tokens) + a batch/context
-/// preamble when coalesced (§8 — payload + resolved context, incl. the batch list).
+/// preamble when coalesced (payload + resolved context, incl. the batch list).
 fn render_agent_prompt(template: &str, events: &[EventRow]) -> String {
     let body = render_template(template, events.first());
     if events.len() > 1 {
@@ -869,7 +869,7 @@ async fn finish(
     Ok(())
 }
 
-/// Audit a workflow run into the hash-chain (§10 trajectory).
+/// Audit a workflow run into the hash-chain (trajectory).
 async fn audit_run(
     state: &AppState,
     run_id: Uuid,
@@ -885,7 +885,7 @@ async fn audit_run(
     let _ = crate::audit::append(&state.pg, &ev).await;
 }
 
-/// `workflows.max_depth` (runtime-mutable, §11), defaulting to [`DEFAULT_MAX_DEPTH`].
+/// `workflows.max_depth` (runtime-mutable), defaulting to [`DEFAULT_MAX_DEPTH`].
 async fn read_max_depth(state: &AppState) -> i32 {
     crate::config::runtime::get(&state.pg, "workflows.max_depth")
         .await
@@ -907,7 +907,7 @@ mod tests {
 
     #[test]
     fn system_event_skipped_by_default() {
-        // §12.2: a workflow/agent/system-caused event triggers nothing unless opted in.
+        // A workflow/agent/system-caused event triggers nothing unless opted in.
         assert_eq!(
             guard_decision(ActorType::Workflow, false, 0, 3),
             Decision::Skip("system-originated event; workflow is human-only")
@@ -925,7 +925,7 @@ mod tests {
 
     #[test]
     fn depth_cap_breaks_opted_in_cascade() {
-        // §12.3: an opted-in chain halts at the depth cap.
+        // An opted-in chain halts at the depth cap.
         assert_eq!(
             guard_decision(ActorType::Workflow, true, 3, 3),
             Decision::Skip("max workflow depth reached")

@@ -186,7 +186,7 @@ def extract(path: str, mime: str | None = None) -> str:
 
     if suffix == ".docx":
         # Same flattener the tracked-change writer uses, so the assistant's view
-        # matches the viewer's (tracked-changes flow §6 invariant).
+        # matches the viewer's (tracked-change viewer invariant).
         return tracked_changes.extract_body_text(str(p))
 
     if suffix == ".pdf":

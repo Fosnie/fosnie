@@ -15,7 +15,7 @@
 // Per-Library RBAC management (Google-Drive-style). Search a user or group, pick
 // read/manage, add; list current grantees with their permission + a remove
 // control. Widening the audience triggers a confirmation because it is a
-// **disclosure event** (Libraries §9). Rendered only for manage-holders.
+// **disclosure event**. Rendered only for manage-holders.
 
 import { confirmDialog, toast } from "@/components/dialogs";
 import { useState } from "react";

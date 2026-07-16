@@ -158,7 +158,7 @@ pub struct PrepareOut {
 
 /// Side-effect-free plan gate: validate → (web/hybrid) egress gate → resolve
 /// scope + estimate → ambiguity triage. Returns the scope summary the user
-/// confirms with Start, plus any clarifying chips (§3b).
+/// confirms with Start, plus any clarifying chips.
 pub async fn prepare(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,

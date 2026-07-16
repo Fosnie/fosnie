@@ -1869,7 +1869,7 @@ details[open] > .cites-summary .cites-chev { transform: rotate(180deg); }
    unsupported (source silent) = amber wavy underline. */
 .claim-contradicted { background: oklch(55% 0.15 29 / 0.12); color: var(--ink); padding: 1px 3px; border-radius: 3px; text-decoration: underline wavy oklch(55% 0.15 29 / 0.85); text-underline-offset: 2px; }
 .claim-unsupported  { background: oklch(72% 0.125 57 / 0.12); color: var(--ink); padding: 1px 3px; border-radius: 3px; text-decoration: underline wavy oklch(72% 0.125 57 / 0.85); text-underline-offset: 2px; }
-/* Mode-B inline-on-document highlight: annotated extracted-text view (§4.5). */
+/* Mode-B inline-on-document highlight: annotated extracted-text view. */
 .dv-annot-wrap { width: 100%; max-width: 680px; display: flex; flex-direction: column; gap: 10px; }
 .dv-ground-legend { display: flex; gap: 18px; font-size: 11px; color: var(--ink-3); padding: 0 2px; }
 .dv-ground-legend span { display: inline-flex; align-items: center; gap: 6px; }

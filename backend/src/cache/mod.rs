@@ -15,7 +15,7 @@
 //! Redis connection pool + helpers.
 //!
 //! Named `cache` rather than `redis` to avoid shadowing the `redis` crate
-//! (re-exported via `deadpool_redis`). Redis is Rust-only here (topology §3.3):
+//! (re-exported via `deadpool_redis`). Redis is Rust-only here:
 //! pub/sub, socket state, and — once auth lands — the OIDC session cache.
 
 use deadpool_redis::{Config, Pool, Runtime};

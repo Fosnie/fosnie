@@ -30,7 +30,7 @@ from .config import settings
 
 _client: AsyncQdrantClient | None = None
 
-# Per-request source-ACL deny-list (connector-kb-rag §2): `doc_id`s that the
+# Per-request source-ACL deny-list: `doc_id`s that the
 # caller is not entitled to under an `enforce` connector mapping. Set once at the
 # top of `retrieve()` and read by EVERY query filter below, so a denied document
 # can surface through no path (hybrid search, section/neighbour scroll, TOC, or
@@ -356,7 +356,7 @@ async def retrieve_parents(ids: list[str]) -> dict[str, str]:
     {parent_id: text}. This path fetches by point id, not by filter, so the
     source-ACL deny-list is applied as a post-filter on each parent's `doc_id` —
     a denied document's parent (L2) block must not arrive here as a back door
-    around the chunk-level `must_not` (connector-kb-rag §2)."""
+    around the chunk-level `must_not`."""
     if not ids:
         return {}
     c = client()

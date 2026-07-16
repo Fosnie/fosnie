@@ -15,7 +15,7 @@
 // Deep Research home: a centred input — source
 // choice (web | files | hybrid), question and report template (with a structure
 // preview; there is a single deep mode, no depth choice) — then the lightweight
-// plan gate (§3b): ambiguity triage chips when the question is unclear against
+// plan gate: ambiguity triage chips when the question is unclear against
 // the scope, else a one-line scope summary. Corpus modes require an explicit
 // library choice before Start. A dormant web-search connector
 // surfaces as the honest refusal (the 403 from prepare) for web/hybrid; a

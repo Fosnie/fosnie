@@ -318,7 +318,7 @@ async fn audit_custom(state: &AppState, ctx: &AuthContext, action: &str, id: uui
     let _ = audit::append(&state.pg, &ev).await;
 }
 
-/// The defining fields, snapshotted per version for history/diff (ТЗ D5).
+/// The defining fields, snapshotted per version for history/diff.
 fn snapshot_of(b: &CustomToolIn) -> serde_json::Value {
     json!({
         "name": b.name, "display_name": b.display_name, "description": b.description,

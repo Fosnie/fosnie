@@ -56,7 +56,7 @@ async fn require_manage_agent(state: &AppState, ctx: &AuthContext, id: Uuid) -> 
 /// crosses the perimeter (egress) or changes state must be gated by the
 /// classifier — so an agent can never assemble an *unsupervised* lethal trifecta
 /// {untrusted input + private data + egress}; the egress/state leg always pauses
-/// for human approval (agents §8.5). Caught here at config time.
+/// for human approval. Caught here at config time.
 fn validate_toolset(tools: &[String]) -> Result<()> {
     for t in tools {
         // A namespaced entry (`slug__*` / `slug__tool`) assigns an MCP server to the
@@ -264,7 +264,7 @@ pub async fn list_agents(
     // Visibility (personal-only): a non-admin sees the shared/seeded pool
     // (created_by IS NULL) + their own; others' personal agents are hidden. Admin: all.
     // Tools fetched in the same query via a LATERAL aggregate — no per-agent
-    // round-trip (re-audit §9.3 N+1).
+    // round-trip (avoids the N+1 re-audit).
     let rows = sqlx::query!(
         r#"SELECT a.id, a.name, a.description, a.sector, a.modes, a.created_by,
                   COALESCE(t.tools, ARRAY[]::text[]) AS "tools!"

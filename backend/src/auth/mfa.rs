@@ -17,7 +17,7 @@
 //! mandatory (enforced in the login/enrol path, not here). Keycloak-mode 2FA is
 //! Keycloak's own job — nothing in this module runs on the Keycloak path.
 //!
-//! Design (ТЗ D4): SHA-1 / 6 digits / 30s / ±1 step (compatible with every common
+//! Design: SHA-1 / 6 digits / 30s / ±1 step (compatible with every common
 //! authenticator), with **anti-replay** — the last accepted time-step is persisted
 //! (`users.mfa_last_step`) and a code is only accepted for a strictly greater step,
 //! then CAS-advanced, so a code cannot be reused inside its validity window. The
@@ -45,7 +45,7 @@ const DIGITS: usize = 6;
 const SKEW: u8 = 1;
 const RECOVERY_COUNT: usize = 10;
 /// Failed `mfa/verify` attempts (per pending token AND per IP) before the pending
-/// token is burned and the user must log in again (ТЗ D3).
+/// token is burned and the user must log in again.
 pub const VERIFY_FAIL_MAX: i64 = 5;
 pub const VERIFY_FAIL_WINDOW_SECS: u64 = 300;
 /// Two-step login pending-token TTL — the window to enter a code after the

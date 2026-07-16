@@ -18,7 +18,7 @@
 //! codebase sees only [`AuthContext`], [`PlatformRole`], the [`keycloak`]
 //! extractor, [`rbac`] checks and [`breakglass`] — never `axum-keycloak-auth`
 //! directly. Only [`keycloak`] touches that crate, so a future swap to
-//! `jsonwebtoken` + `openid` stays a wrapper-internal change (§A.1). Browser
+//! `jsonwebtoken` + `openid` stays a wrapper-internal change. Browser
 //! login is keycloak-js (PKCE) + Bearer JWT — there is no server-side OIDC flow.
 //! Crate versions are pinned in `Cargo.toml`, updates gated by the auth test.
 
@@ -32,7 +32,7 @@ pub mod rbac;
 
 use uuid::Uuid;
 
-/// The four principals the architecture distinguishes (schema §3.1). The three
+/// The four principals the architecture distinguishes. The three
 /// persistent roles are normalised from Keycloak; `SuperAdmin` is the ephemeral
 /// break-glass principal and is **never** sourced from Keycloak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]

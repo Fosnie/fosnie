@@ -19,7 +19,7 @@
 //! the rest of the codebase uses: it reads that token, normalises roles,
 //! auto-provisions the user, and enforces revocation (a deactivated user is
 //! rejected — the same path gates WebSocket upgrades, so revocation applies to
-//! WS too, §8).
+//! WS too).
 
 use std::sync::Arc;
 

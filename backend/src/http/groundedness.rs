@@ -79,7 +79,7 @@ async fn resolve_target(
             let cur = crate::documents::current_version(&state.pg, &state.boot.storage.workspace_dir, target_id).await?;
             // Project's linked KBs ∩ caller-readable, in ONE query (the `can_read`
             // EXISTS shape from kb/mod.rs inlined) instead of a per-KB round-trip
-            // loop (re-audit §9.3). Admin reads all linked KBs.
+            // loop (avoids the N+1). Admin reads all linked KBs.
             let uid = ctx.user_id;
             let kb: Vec<Uuid> = sqlx::query_scalar!(
                 r#"SELECT l.kb_id AS "kb_id!"
@@ -151,10 +151,10 @@ pub struct ClaimOut {
     pub evidence: String,
     pub section: String,
     pub had_citation: bool,
-    /// The claim's verbatim span in the document (§4.5), or null if unlocatable.
+    /// The claim's verbatim span in the document, or null if unlocatable.
     /// Drives the inline highlight + is the `find` text for ground-or-cut repair.
     pub source_text: Option<String>,
-    /// Set once repaired: 'regenerated' | 'cut' | 'kept' (§4.6).
+    /// Set once repaired: 'regenerated' | 'cut' | 'kept'.
     pub repair_action: Option<String>,
 }
 
@@ -283,7 +283,7 @@ pub async fn latest_for_target(
     }
 }
 
-/// POST /api/verification-runs/{id}/repair — enqueue ground-or-cut repair (§4.6)
+/// POST /api/verification-runs/{id}/repair — enqueue ground-or-cut repair
 /// of a finished verify-draft run on a document. Gated by `features.groundedness`
 /// + the `groundedness.repair` knob; document targets only.
 pub async fn repair(

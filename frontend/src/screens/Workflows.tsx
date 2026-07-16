@@ -40,7 +40,7 @@ import { useBusy } from "@/components/useBusy";
 
 // The trigger catalogue is fetched from `GET /api/workflows/triggers` — the single
 // backend source (event constants + `ALLOWED_TRIGGERS`), so the dropdown never
-// drifts from what the engine actually emits (§4/D4).
+// drifts from what the engine actually emits.
 const triggerLabel = (id: string, list?: WorkflowTrigger[]) =>
   list?.find((t) => t.name === id)?.description ?? id;
 

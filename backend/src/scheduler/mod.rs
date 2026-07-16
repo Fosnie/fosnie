@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Background-task scheduler (topology §7.1, schema §15).
+//! Background-task scheduler.
 //!
 //! Runs on a **second tokio runtime** hosted on a dedicated OS thread so the
 //! hot API/WebSocket path is never starved by background work. Drives the
@@ -492,7 +492,7 @@ async fn handle(
             crate::groundedness::verify_draft(state, payload).await.map_err(|e| e.to_string())
         }
         TaskType::RepairRun => {
-            // Ground-or-cut repair (§4.6) of a finished verify-draft run on a
+            // Ground-or-cut repair of a finished verify-draft run on a
             // document: regenerate/cut each flagged claim, re-verify the new
             // citation, and surface results as tracked-change proposals. Payload
             // is {run_id}.
@@ -640,7 +640,7 @@ async fn run_artefact_cleanup(state: &AppState) -> Result<u64, crate::error::App
 }
 
 /// Generate every (document × column) cell for a review via the Python pool,
-/// persisting + broadcasting each cell as it streams back (tabular-review §3).
+/// persisting + broadcasting each cell as it streams back.
 async fn run_tabular_generate(
     state: &AppState,
     review_id: Uuid,
@@ -911,7 +911,7 @@ async fn run_ingest(state: &AppState, doc_id: Uuid) -> Result<i64, crate::error:
     // the ingestion timestamp.
     let effective_date = result.effective_date.as_deref().and_then(parse_iso_date);
     // Mark ready and emit the `document.ingested` domain event atomically — the
-    // event exists iff the ready-state commits (transactional outbox, §3/§12.1).
+    // event exists iff the ready-state commits (transactional outbox).
     // Human-originated: the uploader (`created_by`) initiated this work, so it can
     // trigger human-only workflows (e.g. "summarise every new matter document").
     let mut tx = state.pg.begin().await?;
@@ -960,9 +960,9 @@ fn parse_iso_date(s: &str) -> Option<OffsetDateTime> {
     Some(date.midnight().assume_utc())
 }
 
-/// Drop audit partitions wholly older than the retention window (audit §A.2.4).
+/// Drop audit partitions wholly older than the retention window.
 /// A hold beats retention: if ANY legal hold is active, skip the sweep entirely
-/// (conservative — never delete potentially-held evidence, §A.2.3). Only oldest
+/// (conservative — never delete potentially-held evidence). Only oldest
 /// (prefix) partitions are dropped, so the chain stays verifiable. Returns the
 /// number of partitions dropped.
 pub async fn run_audit_retention(state: &AppState) -> Result<u64, crate::error::AppError> {
@@ -1034,7 +1034,7 @@ pub async fn run_audit_retention(state: &AppState) -> Result<u64, crate::error::
 /// Enqueue an `AutomationRun` for every active automation whose `next_run_at` is
 /// due, then advance `next_run_at` to the following occurrence (or clear it when
 /// the schedule has no future). Restart-safe — the schedule lives in the DB, not
-/// in-memory cron jobs (automations-calendar §B.17). Returns how many fired.
+/// in-memory cron jobs. Returns how many fired.
 pub async fn scan_due_automations(state: &AppState) -> Result<u64, crate::error::AppError> {
     let due = sqlx::query!(
         "SELECT id, schedule FROM automations \

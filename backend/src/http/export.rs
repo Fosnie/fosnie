@@ -158,7 +158,7 @@ pub async fn build_chat_export(state: &AppState, chat_id: Uuid, format: &str) ->
 
 /// Build the administrative project-DB export (Postgres-scoped JSON; no vectors).
 /// `viewer` is the admin the export runs *as* — documents hidden from them by an
-/// enforced connector ACL are omitted (ТЗ #4 D5: with `acl.admin_override=false` a
+/// enforced connector ACL are omitted (with `acl.admin_override=false` a
 /// strict-walls firm's admin does not receive walled documents even in an export).
 /// Core's default seam allows all, so a Core-only export is byte-identical.
 pub async fn build_project_db_export(
@@ -223,7 +223,7 @@ pub async fn build_project_db_export(
         "documents": documents.iter().map(|d| json!({ "id": d.id, "filename": d.original_filename, "mime": d.mime, "current_version_id": d.current_version_id })).collect::<Vec<_>>(),
         "documents_excluded_by_source_acl": excluded_documents,
         "tabular_reviews": reviews.iter().map(|r| json!({ "id": r.id, "name": r.name, "status": r.status })).collect::<Vec<_>>(),
-        "note": "Qdrant vectors are intentionally NOT exported (embedding-inversion risk — §B.19)."
+        "note": "Qdrant vectors are intentionally NOT exported (embedding-inversion risk)."
     });
     let bytes = to_vec(&dump)?;
     Ok(ExportFile { bytes, mime: "application/json".into(), filename: format!("{}.json", safe(&project.name)) })

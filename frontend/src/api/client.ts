@@ -1773,7 +1773,7 @@ export interface WorkflowTrigger {
 export function useWorkflows() {
   return useQuery({ queryKey: ["workflows"], queryFn: () => apiFetch<Workflow[]>("/api/workflows") });
 }
-/// The trigger catalogue — the single source for the create-form dropdown (D4).
+/// The trigger catalogue — the single source for the create-form dropdown.
 export function useWorkflowTriggers() {
   return useQuery({ queryKey: ["workflow-triggers"], queryFn: () => apiFetch<WorkflowTrigger[]>("/api/workflows/triggers") });
 }
@@ -2277,9 +2277,9 @@ export interface VerifyClaim {
   evidence: string;
   section: string;
   had_citation: boolean;
-  /** The claim's verbatim span in the document (§4.5); null if unlocatable. */
+  /** The claim's verbatim span in the document; null if unlocatable. */
   source_text: string | null;
-  /** Set once ground-or-cut repair has run on this claim (§4.6). */
+  /** Set once ground-or-cut repair has run on this claim. */
   repair_action: RepairAction | null;
 }
 
@@ -2310,7 +2310,7 @@ export function startVerifyDraft(
   });
 }
 
-/** Ground-or-cut repair of a finished verification run (§4.6). Enqueues a durable
+/** Ground-or-cut repair of a finished verification run. Enqueues a durable
  *  job that proposes tracked changes; surfaced in the accept/reject panel. */
 export function startRepair(runId: string): Promise<{ status: string }> {
   return apiFetch(`/api/verification-runs/${runId}/repair`, { method: "POST" });
@@ -2592,7 +2592,7 @@ export interface KnowledgeDoc {
   status: DocStatus;
   created_at: string;
   /** How the doc entered the KB: "upload" | "connector_import". Optional — only
-   *  the KB detail endpoint returns it (connector-kb-rag §6). */
+   *  the KB detail endpoint returns it. */
   source?: string;
 }
 

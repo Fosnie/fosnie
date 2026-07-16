@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Annotated-text marker for the Mode-B inline-on-document highlight (§4.5). Given
+// Annotated-text marker for the Mode-B inline-on-document highlight. Given
 // the document's extracted text and a verification run's flagged claims, it wraps
 // each claim's located verbatim span (`source_text`) in a <mark>, colour-coded by
 // verdict and carrying the verdict + evidence as a tooltip — reusing the same

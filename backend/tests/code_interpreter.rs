@@ -196,6 +196,7 @@ async fn disabled_capability_is_refused() {
         Uuid::now_v7(),
         &tx,
         None,
+        None,
         &[],
         &std::collections::HashMap::new(),
         "code_interpreter",

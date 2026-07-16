@@ -190,6 +190,11 @@ pub struct GenerateRequest {
     pub sampling: Sampling,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Tool schemas the answering model may call while streaming (currently only the
+    /// library top-up). Omitted ⇒ a plain answer stream. Serialized only when present
+    /// so a turn that advertises no tools stays byte-identical on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<serde_json::Value>>,
     /// Provider overrides. Empty ⇒ omitted ⇒ ML uses its defaults.
     #[serde(default, skip_serializing_if = "omap_is_empty")]
     pub overrides: ProviderOverrides,
@@ -217,6 +222,16 @@ pub enum GenEvent {
     /// reasoning panel, kept out of the answer.
     Reasoning {
         delta: String,
+    },
+    /// A tool call the model made mid-answer. Emitted only once the arguments have
+    /// fully accumulated + parsed (never partial), followed by a `Done` carrying
+    /// `finish_reason:"tool_calls"`. The caller runs the tool and continues the answer.
+    ToolCall {
+        #[serde(default)]
+        id: Option<String>,
+        name: String,
+        #[serde(default)]
+        arguments: serde_json::Value,
     },
     Done {
         #[serde(default)]
@@ -335,7 +350,7 @@ pub struct SynthPart {
 struct RetrieveRequest<'a> {
     prompt: &'a str,
     kb_ids: &'a [String],
-    /// Source-ACL deny-list (connector-kb-rag §2): `kb_documents.id`s to exclude
+    /// Source-ACL deny-list: `kb_documents.id`s to exclude
     /// from retrieval via a Qdrant `must_not doc_id`. Omitted from the wire when
     /// empty so a request with no denials serialises byte-identically to before the
     /// feature (ML defaults it to `[]`).
@@ -372,8 +387,26 @@ pub enum RetrieveEvent {
         /// Per-part synthesis slices; omitted/empty on non-numbered prompts.
         #[serde(default)]
         parts: Vec<SynthPart>,
+        /// Retrieval telemetry — only the fields the backend acts on are typed; the
+        /// rest of the Python `debug` dict is ignored (serde drops unknown keys).
+        /// Decides whether to offer the model the `search_library` top-up tool.
+        #[serde(default)]
+        debug: RetrieveDebug,
     },
     Error { message: String },
+}
+
+/// The subset of the ML `debug` object the backend reads. `gap_needs_exhausted` /
+/// `gap_stop_reason` say whether the iterative first pass gave up; `gap_unresolved`
+/// lists the needs it could not satisfy (surfaced to the model as known gaps).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RetrieveDebug {
+    #[serde(default)]
+    pub gap_needs_exhausted: i64,
+    #[serde(default)]
+    pub gap_stop_reason: String,
+    #[serde(default)]
+    pub gap_unresolved: Vec<String>,
 }
 
 /// Live event stream for a retrieval. Dropping it aborts the reader (which
@@ -443,6 +476,12 @@ pub struct RagOverrides {
     pub gap_rounds: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gap_reserve: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap_deadline_secs: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap_diminishing_unseen: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap_escalate: Option<bool>,
 }
 
 /// Build the RAG overrides from the runtime config (super-admin knobs). Unset
@@ -485,6 +524,13 @@ pub async fn rag_overrides(pg: &sqlx::PgPool) -> RagOverrides {
             .map(|e| e.value == "true"),
         gap_rounds: geti(pg, "rag.gap_rounds").await,
         gap_reserve: geti(pg, "rag.gap_reserve").await,
+        gap_deadline_secs: geti(pg, "rag.gap_deadline_secs").await,
+        gap_diminishing_unseen: getf(pg, "rag.gap_diminishing_unseen").await,
+        gap_escalate: runtime::get(pg, "rag.gap_escalate")
+            .await
+            .ok()
+            .flatten()
+            .map(|e| e.value == "true"),
     }
 }
 
@@ -2184,10 +2230,14 @@ mod tests {
         )
         .unwrap();
         match done {
-            RetrieveEvent::Done { context, citations, parts } => {
+            RetrieveEvent::Done { context, citations, parts, debug } => {
                 assert_eq!(context, "[1] ctx");
                 assert_eq!(citations.len(), 1);
                 assert!(parts.is_empty(), "parts defaults to empty when omitted");
+                // `debug` defaults when the ML line omits it (older/streamed payloads).
+                assert_eq!(debug.gap_needs_exhausted, 0);
+                assert_eq!(debug.gap_stop_reason, "");
+                assert!(debug.gap_unresolved.is_empty());
             }
             _ => panic!("expected Done"),
         }

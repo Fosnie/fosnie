@@ -340,7 +340,7 @@ pub async fn delete_document(
         return Err(AppError::Conflict("document is under legal hold".into()));
     }
     // Soft-delete and emit the `document.deleted` domain event atomically
-    // (transactional outbox, §3/§12.1).
+    // (transactional outbox).
     let mut tx = state.pg.begin().await?;
     sqlx::query!("UPDATE documents SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL", doc_id)
         .execute(&mut *tx)

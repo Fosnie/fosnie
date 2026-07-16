@@ -16,8 +16,8 @@
 //! activate/deactivate), group management, sharing (AccessGrants over
 //! `rbac::grant`/`revoke_grant`), and usage analytics. Identity stays
 //! Keycloak-owned — the `users` table is a cache and deactivation is enforced at
-//! the auth boundary. Group *creation* is also a power-user right (REQUIREMENTS
-//! §3.5); the rest is client-admin.
+//! the auth boundary. Group *creation* is also a power-user right; the rest is
+//! client-admin.
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -65,7 +65,7 @@ async fn require_manage_group(state: &AppState, ctx: &AuthContext, group_id: Uui
     }
 }
 
-// --- Delegated-admin scope helpers (ТЗ §4) -----------------------------------
+// --- Delegated-admin scope helpers -------------------------------------------
 //
 // A permission may be held globally (a full admin) or narrowed to a set of groups
 // / projects (a delegated admin). These helpers resolve the scope through the
@@ -207,7 +207,7 @@ pub async fn list_users(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
 ) -> Result<Json<Vec<UserOut>>> {
-    // `users.view`, narrowed to the delegated groups when scoped (§4).
+    // `users.view`, narrowed to the delegated groups when scoped.
     let scope = scope_or_forbid(&state, &ctx, permissions::USERS_VIEW).await?;
     let unrestricted = scope.is_global();
     let groups: Vec<Uuid> = scope.group_ids().map(<[Uuid]>::to_vec).unwrap_or_default();
@@ -251,7 +251,7 @@ pub async fn deactivate_user(
         return Err(AppError::Validation("cannot deactivate your own account".into()));
     }
     // Deactivate and emit the `directory.user_deactivated` domain event atomically
-    // (transactional outbox, §12.1) — only when the user was actually active.
+    // (transactional outbox) — only when the user was actually active.
     let mut tx = state.pg.begin().await?;
     let res = sqlx::query!("UPDATE users SET deactivated_at = now() WHERE id = $1 AND deactivated_at IS NULL", user_id)
         .execute(&mut *tx)
@@ -419,7 +419,7 @@ pub async fn add_group_member(
     match state.group_policy.gate_add(&state, &ctx, group_id, body.user_id).await? {
         crate::ext::AddOutcome::Direct => {
             // Add the member and emit the `project.member_added` domain event
-            // atomically (transactional outbox, §3/§12.1).
+            // atomically (transactional outbox).
             let mut tx = state.pg.begin().await?;
             sqlx::query!(
                 "INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -435,7 +435,7 @@ pub async fn add_group_member(
             .resource("group", group_id)
             .payload(serde_json::json!({ "group_id": group_id.to_string(), "user_id": body.user_id.to_string() }));
             crate::events::emit_with(&mut tx, &ev).await?;
-            // Also the group-scoped name (§4 catalogue expansion) — a stable trigger
+            // Also the group-scoped name (catalogue expansion) — a stable trigger
             // distinct from the legacy `project.member_added`; both ride this tx.
             let gev = crate::events::NewEvent::new(
                 crate::events::GROUP_MEMBER_ADDED,
@@ -465,7 +465,7 @@ pub async fn remove_group_member(
 ) -> Result<Json<serde_json::Value>> {
     require_manage_group(&state, &ctx, group_id).await?;
     // Remove the member and emit the `group.member_removed` domain event atomically
-    // (transactional outbox, §12.1) — only when a row was actually removed.
+    // (transactional outbox) — only when a row was actually removed.
     let mut tx = state.pg.begin().await?;
     let res = sqlx::query!("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2", group_id, user_id)
         .execute(&mut *tx)

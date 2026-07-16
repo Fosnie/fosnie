@@ -99,7 +99,7 @@ async fn custom_http_tool_end_to_end() {
     // Dispatch: substitution + JSON-Pointer extraction → the rate string.
     let (tx, _rx) = mpsc::channel::<ServerFrame>(8);
     let out = tools::dispatch(
-        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, &[], &map, "itest_fx",
+        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, None, &[], &map, "itest_fx",
         &serde_json::json!({ "pair": "GBPUSD" }),
     )
     .await
@@ -110,7 +110,7 @@ async fn custom_http_tool_end_to_end() {
     let id2 = insert_tool(&pg, "itest_ssrf", &url, true, true).await;
     let (_defs2, map2) = tools::custom::load_enabled_custom(&pg, &["itest_ssrf".to_string()]).await;
     let blocked = tools::dispatch(
-        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, &[], &map2, "itest_ssrf",
+        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, None, &[], &map2, "itest_ssrf",
         &serde_json::json!({ "pair": "X" }),
     )
     .await
@@ -159,7 +159,7 @@ async fn custom_script_tool_refuses_without_sandbox() {
 
     let (tx, _rx) = mpsc::channel::<ServerFrame>(8);
     let out = tools::dispatch(
-        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, &[], &map, "itest_script",
+        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, None, &[], &map, "itest_script",
         &serde_json::json!({}),
     )
     .await

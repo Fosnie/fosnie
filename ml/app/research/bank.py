@@ -42,7 +42,7 @@ class DocSource:
     chunks: list[str] = field(default_factory=list)
     # Anchor for a citation row — set only on the retrieval-sampling path (which
     # has real chunk/page anchors); the whole-document census leaves them None
-    # (a whole-text note has no single page anchor — honest, see §D1).
+    # (a whole-text note has no single page anchor — honest).
     page_number: int | None = None
     chunk_index: int | None = None
     clause_section_ref: str | None = None
