@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::error::{AppError, Result};
 use crate::mcp::client::{connect, McpConn, Transport};
-use crate::mcp::ToolCatalogEntry;
+use crate::mcp::{AuthorizedCall, ToolCatalogEntry};
 
 /// The cache key for a live connection. A server's slug plus, for an OAuth server, the id
 /// of the connection whose token authenticates it — different users (and the service
@@ -62,8 +62,14 @@ impl McpManager {
         Ok(tools)
     }
 
-    /// Inject a pre-built connection (the OAuth path, tests, the `FakeConn` demo path).
-    pub async fn insert_conn(&self, slug: &str, connection_id: Option<Uuid>, conn: Arc<dyn McpConn>) {
+    /// Inject a pre-built connection (the OAuth path, tests). Sealed to `mcp`: only the
+    /// authorisation seam and its helpers may register a live connection.
+    pub(in crate::mcp) async fn insert_conn(
+        &self,
+        slug: &str,
+        connection_id: Option<Uuid>,
+        conn: Arc<dyn McpConn>,
+    ) {
         self.conns.write().await.insert(key(slug, connection_id), conn);
     }
 
@@ -82,25 +88,18 @@ impl McpManager {
         self.conns.read().await.contains_key(&key(slug, connection_id))
     }
 
-    pub async fn list_tools(&self, slug: &str, connection_id: Option<Uuid>) -> Result<Vec<ToolCatalogEntry>> {
-        self.get(slug, connection_id).await?.list_tools().await
+    /// Discover a server's live catalogue. Gated by an [`AuthorizedCall`] witness — only
+    /// the authorisation seam (`mcp::authorize_system_call`) can mint one — so no code path
+    /// reaches the transport without passing the gates.
+    pub async fn list_tools(&self, call: &AuthorizedCall) -> Result<Vec<ToolCatalogEntry>> {
+        self.get(call.slug(), call.connection_id()).await?.list_tools().await
     }
 
-    pub async fn call_tool(
-        &self,
-        slug: &str,
-        connection_id: Option<Uuid>,
-        tool: &str,
-        args: Value,
-    ) -> Result<String> {
-        self.get(slug, connection_id).await?.call_tool(tool, args).await
-    }
-
-    pub async fn ping(&self, slug: &str, connection_id: Option<Uuid>) -> bool {
-        match self.get(slug, connection_id).await {
-            Ok(c) => c.ping().await,
-            Err(_) => false,
-        }
+    /// Invoke a tool. Gated by an [`AuthorizedCall`] witness — only the authorisation seam
+    /// (`mcp::authorize_call` / `authorize_system_call`) can mint one, and the witness has
+    /// no public constructor — so the transport is unreachable without passing every gate.
+    pub async fn call_tool(&self, call: &AuthorizedCall, args: Value) -> Result<String> {
+        self.get(call.slug(), call.connection_id()).await?.call_tool(call.tool(), args).await
     }
 
     async fn get(&self, slug: &str, connection_id: Option<Uuid>) -> Result<Arc<dyn McpConn>> {

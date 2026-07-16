@@ -4,8 +4,6 @@
 //! default, and AccessGrants default-deny) without a live MCP server or the network.
 //! The live ≥2-server e2e over real rmcp transports is a staging step.
 
-use std::sync::Arc;
-
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -13,8 +11,7 @@ use uuid::Uuid;
 use fosnie_backend::auth::rbac::{self, Permission, ResourceType};
 use fosnie_backend::auth::{AuthContext, PlatformRole};
 use fosnie_backend::db;
-use fosnie_backend::mcp::client::FakeConn;
-use fosnie_backend::mcp::{self, McpManager, ToolCatalogEntry};
+use fosnie_backend::mcp::{self, ToolCatalogEntry};
 
 fn entry(name: &str, desc: &str, side_effecting: bool) -> ToolCatalogEntry {
     ToolCatalogEntry {
@@ -98,30 +95,10 @@ fn validate_endpoint_remote_allows_public_https() {
     assert!(validate_endpoint("https://user:pw@example.com/mcp", true).is_err()); // credentials
 }
 
-#[tokio::test]
-async fn manager_two_servers_discovery_and_dispatch() {
-    let mgr = McpManager::new();
-    let files = Arc::new(FakeConn { catalog: vec![entry("read_file", "read", false)] });
-    let db = Arc::new(FakeConn { catalog: vec![entry("query", "run a query", true)] });
-    mgr.insert_conn("files", None, files).await;
-    mgr.insert_conn("db", None, db).await;
-
-    // Discovery across both servers.
-    assert_eq!(mgr.list_tools("files", None).await.unwrap().len(), 1);
-    assert_eq!(mgr.list_tools("db", None).await.unwrap().len(), 1);
-    assert!(mgr.is_connected("files", None).await && mgr.is_connected("db", None).await);
-
-    // Dispatch on each (namespaced calls resolve to the right handle).
-    let r = mgr.call_tool("files", None, "read_file", json!({ "path": "/x" })).await.unwrap();
-    assert!(r.contains("read_file"));
-    let r2 = mgr.call_tool("db", None, "query", json!({ "sql": "select 1" })).await.unwrap();
-    assert!(r2.contains("query"));
-
-    // Unknown tool errors; disconnect drops the handle.
-    assert!(mgr.call_tool("files", None, "nope", json!({})).await.is_err());
-    mgr.disconnect("files", None).await;
-    assert!(!mgr.is_connected("files", None).await);
-}
+// The manager discovery + dispatch test moved in-crate (see `mcp::tests`): sealing the
+// transport behind the `AuthorizedCall` witness makes `insert_conn` / `list_tools` /
+// `call_tool` / `FakeConn` unreachable from an external integration crate — which is the
+// point. The unit test constructs the witness from inside the module.
 
 #[tokio::test]
 async fn accessgrants_default_deny_then_allow() {

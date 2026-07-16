@@ -43,6 +43,15 @@ async fn audit_server(state: &AppState, ctx: &AuthContext, action: &str, id: Uui
     let _ = audit::append(&state.pg, &ev).await;
 }
 
+/// One tool of a server's catalogue, for the agent editor's per-tool grant UI. Admin-only
+/// (this endpoint is `MCP_MANAGE`-gated), so exposing names + descriptions here is no new
+/// disclosure — unlike `/api/tools/catalog`, which is authentication-only.
+#[derive(Serialize)]
+pub struct McpToolBrief {
+    pub name: String,
+    pub description: String,
+}
+
 #[derive(Serialize)]
 pub struct ServerOut {
     pub id: Uuid,
@@ -54,6 +63,9 @@ pub struct ServerOut {
     pub enabled: bool,
     pub connected: bool,
     pub tool_count: i64,
+    /// The server's pinned catalogue (name + description per tool), so an agent can be
+    /// granted individual tools rather than the whole server.
+    pub tools: Vec<McpToolBrief>,
     pub last_health_at: Option<String>,
     pub created_at: String,
     /// `none | bearer | api_key | header` — the auth scheme injected into requests.
@@ -76,12 +88,25 @@ pub async fn list(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> Res
     .await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
-        let tool_count = r
+        let tools: Vec<McpToolBrief> = r
             .tools_catalog
             .as_ref()
             .and_then(|v| v.as_array())
-            .map(|a| a.len() as i64)
-            .unwrap_or(0);
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| {
+                        let name = t.get("name")?.as_str()?.to_string();
+                        let description = t
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        Some(McpToolBrief { name, description })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tool_count = tools.len() as i64;
         out.push(ServerOut {
             connected: state.mcp.is_connected(&r.slug, None).await,
             id: r.id,
@@ -92,6 +117,7 @@ pub async fn list(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> Res
             status: r.status,
             enabled: r.enabled,
             tool_count,
+            tools,
             last_health_at: r.last_health_at.map(|t| t.to_string()),
             created_at: r.created_at.to_string(),
             auth_type: r.auth_type,

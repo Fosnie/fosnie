@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM mcp_oauth_connections\n                     WHERE mcp_server_id = $1 AND is_catalog_source AND status = 'active'",
+  "query": "SELECT id FROM mcp_oauth_connections\n                         WHERE mcp_server_id = $1 AND is_catalog_source AND status = 'active'",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "4e7ddabcb99ff5133349b9b5106566e9c489588d59f110e072ebd058525217af"
+  "hash": "b928aec51092596337072ca61648c7033772b6a1dead1d858baff095ae13f790"
 }

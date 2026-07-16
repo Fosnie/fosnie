@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, status, auth_type, url FROM mcp_servers WHERE slug = $1",
+  "query": "SELECT id, status, auth_type, url, tools_catalog FROM mcp_servers WHERE slug = $1",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "url"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "tools_catalog",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "tools_catalog"
+          }
+        }
       }
     ],
     "parameters": {
@@ -57,8 +68,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "e751cf659e4ad440cdf84dc512b9f208d09d30d308a6f7f0a99b2d3829aa52e5"
+  "hash": "3044f5f6d1fdbcfa5aa3e6949d6de532b31e9f0c5f9e82b7f569dc279f1a045e"
 }

@@ -350,10 +350,11 @@ pub async fn approve_oauth(
         )
     })?;
 
-    let conn = oauth_flow::connect_oauth_conn(state, &server.url, &client, cs.id).await?;
-    let catalog = conn.list_tools().await?;
-    state.mcp.insert_conn(slug, Some(cs.id), conn).await;
-    crate::mcp::record_catalog(&state.pg, server_id, &catalog).await?;
+    // The transport touch (connect, discover, register, pin) is owned by `mcp` so this
+    // layer never holds a raw connection; `client` above is only the pre-check that a
+    // client is configured.
+    let _ = &client;
+    let catalog = crate::mcp::approve_oauth_catalog(state, server_id, slug, &server.url, cs.id).await?;
     sqlx::query!("UPDATE mcp_servers SET enabled = true WHERE id = $1", server_id)
         .execute(&state.pg)
         .await?;

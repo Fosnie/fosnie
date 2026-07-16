@@ -1054,6 +1054,10 @@ export function setIntegrationEnabled(kind: string, enabled: boolean): Promise<u
 
 // MCP servers (FEATURE B1) — admin registry
 export type McpAuthType = "none" | "bearer" | "api_key" | "header" | "oauth";
+export interface McpToolBrief {
+  name: string;
+  description: string;
+}
 export interface McpServer {
   id: string;
   slug: string;
@@ -1064,6 +1068,7 @@ export interface McpServer {
   enabled: boolean;
   connected: boolean;
   tool_count: number;
+  tools: McpToolBrief[];
   last_health_at: string | null;
   created_at: string;
   auth_type: McpAuthType;

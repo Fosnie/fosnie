@@ -347,8 +347,8 @@ async fn run_turn_inner(
     // Per-agent MCP scoping: only servers assigned to this agent (namespaced `slug__*`
     // entries in its tool list) are in scope this turn — so one agent's servers never
     // leak into another's catalogue.
-    let mcp_allowed = crate::mcp::allowed_slugs(&agent.tools);
-    let mcp_defs = crate::mcp::session_tool_defs(state, ctx, &mcp_allowed).await;
+    let mcp_grants = crate::mcp::parse_grants(&agent.tools);
+    let mcp_defs = crate::mcp::session_tool_defs(state, ctx, &mcp_grants).await;
     let agentic = (chat_agent_id.is_some()
         && agent.tools.iter().any(|t| crate::tools::gated(t) && t != "generate_artefact"))
         || !mcp_defs.is_empty();
@@ -1998,7 +1998,11 @@ async fn run_one_call(
         };
         let fut = async {
             if is_mcp {
-                crate::mcp::dispatch(state, ctx, chat_id, &tc.name, &tc.arguments).await
+                // Grant enforcement lives on the dispatch path itself, not inside the
+                // run-id gate above: a plain-chat agent (no run) could otherwise reach a
+                // fabricated namespaced name. Parsed from this agent's tool list.
+                let grants = crate::mcp::parse_grants(&agent.tools);
+                crate::mcp::dispatch(state, ctx, &grants, chat_id, &tc.name, &tc.arguments, false).await
             } else {
                 crate::tools::dispatch(state, ctx, project_id, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, ci_files, custom_tools, &tc.name, &tc.arguments).await
             }

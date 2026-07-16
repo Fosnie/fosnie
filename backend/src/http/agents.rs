@@ -57,14 +57,33 @@ async fn require_manage_agent(state: &AppState, ctx: &AuthContext, id: Uuid) -> 
 /// classifier — so an agent can never assemble an *unsupervised* lethal trifecta
 /// {untrusted input + private data + egress}; the egress/state leg always pauses
 /// for human approval. Caught here at config time.
-fn validate_toolset(tools: &[String]) -> Result<()> {
+async fn validate_toolset(pg: &sqlx::PgPool, tools: &[String]) -> Result<()> {
+    let mut catalogues: std::collections::HashMap<String, Option<Vec<crate::mcp::ToolCatalogEntry>>> =
+        std::collections::HashMap::new();
     for t in tools {
-        // A namespaced entry (`slug__*` / `slug__tool`) assigns an MCP server to the
-        // agent (FEATURE B1). It is not in the native closed registry; MCP tools always
-        // cross `guard_egress` and side-effecting ones pause for HITL at dispatch, so the
-        // Rule-of-Two leg is enforced there. Which servers are actually in scope is
-        // decided per-turn by `mcp::session_tool_defs` (active + enabled + RBAC + assigned).
+        // A namespaced entry (`slug__*` / `slug__tool`) grants an MCP server's tools to the
+        // agent (FEATURE B1). `slug__*` = the whole (pinned) catalogue; `slug__tool` = one
+        // tool, which must be in that catalogue. Validate the grant here at write time
+        // (unknown server, or a tool absent from the catalogue, is refused); a stored grant
+        // is tolerated on read even if the tool later vanishes. Which servers are actually
+        // in scope for a given turn is still decided by the per-turn authorisation seam
+        // (active + enabled + RBAC + grant + connection).
         if crate::mcp::is_namespaced(t) {
+            let Some((slug, tool)) = crate::mcp::split(t) else { continue };
+            if !catalogues.contains_key(slug) {
+                let cat = crate::mcp::server_catalogue(pg, slug).await?;
+                catalogues.insert(slug.to_string(), cat);
+            }
+            let Some(catalogue) = catalogues.get(slug).and_then(|c| c.as_ref()) else {
+                return Err(AppError::Validation(format!(
+                    "unknown MCP server '{slug}' in tool grant '{t}'"
+                )));
+            };
+            if tool != "*" && !catalogue.iter().any(|e| e.name == tool) {
+                return Err(AppError::Validation(format!(
+                    "tool '{tool}' is not in MCP server '{slug}' catalogue (grant '{t}')"
+                )));
+            }
             continue;
         }
         if !crate::tools::ALL.contains(&t.as_str()) {
@@ -139,7 +158,7 @@ pub async fn create_agent(
     // Personal-only: any authenticated user may create an agent — it becomes THEIRS
     // (created_by), and only the owner (or an admin) can later edit/delete it.
     let me = ctx.user_id.ok_or_else(|| AppError::Forbidden("a user is required".into()))?;
-    validate_toolset(&body.tools)?;
+    validate_toolset(&state.pg, &body.tools).await?;
     validate_modes(&body.modes)?;
     let id = db::new_id();
     let params = body.params.unwrap_or_else(|| serde_json::json!({}));
@@ -405,7 +424,7 @@ pub async fn update_agent(
 ) -> Result<Json<serde_json::Value>> {
     require_manage_agent(&state, &ctx, id).await?;
     if let Some(tools) = &body.tools {
-        validate_toolset(tools)?;
+        validate_toolset(&state.pg, tools).await?;
     }
     if let Some(modes) = &body.modes {
         validate_modes(modes)?;
@@ -600,6 +619,9 @@ pub async fn rollback_agent_version(
     .ok_or_else(|| AppError::Validation("agent version not found".into()))?;
 
     let tools: Vec<String> = serde_json::from_value(v.tools).unwrap_or_default();
+    // Restore is a write: re-validate the snapshot's tool-set so a rollback cannot
+    // reintroduce a grant naming a now-unknown server or an off-catalogue tool.
+    validate_toolset(&state.pg, &tools).await?;
     let pk_strs: Vec<String> = serde_json::from_value(v.project_knowledge_ids).unwrap_or_default();
     let pks: Vec<Uuid> = pk_strs.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect();
 

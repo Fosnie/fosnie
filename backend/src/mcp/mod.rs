@@ -34,6 +34,8 @@ pub mod validate;
 
 pub use manager::McpManager;
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -81,16 +83,96 @@ fn parse_catalog(v: Option<Value>) -> Vec<ToolCatalogEntry> {
     v.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
 }
 
-/// The set of server slugs an agent is allowed to use, derived from its `tools` list:
-/// any entry that is namespaced (`slug__*` for a whole server, or `slug__tool`) grants
-/// that server. Server-level grain — the tool part is not enforced here. An agent with
-/// no namespaced entries gets NO MCP tools (so e.g. General Assistant sees none unless
-/// a server is explicitly assigned to it).
-pub fn allowed_slugs(agent_tools: &[String]) -> std::collections::HashSet<String> {
-    agent_tools
-        .iter()
-        .filter_map(|t| split(t).map(|(slug, _)| slug.to_string()))
-        .collect()
+/// The pinned catalogue of the server `slug`, or `None` if no such server exists. Used at
+/// config time to validate an agent's MCP tool grants against the catalogue (validate on
+/// write; a stored grant is tolerated on read even if the tool later vanishes).
+pub async fn server_catalogue(
+    pg: &sqlx::PgPool,
+    slug: &str,
+) -> Result<Option<Vec<ToolCatalogEntry>>> {
+    let row = sqlx::query!("SELECT tools_catalog FROM mcp_servers WHERE slug = $1", slug)
+        .fetch_optional(pg)
+        .await?;
+    Ok(row.map(|r| parse_catalog(r.tools_catalog)))
+}
+
+/// What an agent is granted on one MCP server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrantScope {
+    /// Every tool in the server's pinned catalogue, including ones added later. A server
+    /// that adds a tool is quarantined until an admin re-approves the changed catalogue,
+    /// so growth is human-mediated — `All` never silently widens to an unreviewed tool.
+    All,
+    /// A specific, explicit set of tool names. Each must be present in the pinned
+    /// catalogue at read time to actually grant.
+    Tools(HashSet<String>),
+}
+
+/// An agent's MCP grants, parsed from its `tools` list: one entry per server slug.
+///
+/// Grammar (`slug` cannot contain the `__` delimiter, per the DB CHECK, so the first
+/// `__` splits unambiguously):
+/// - `slug__*` grants [`GrantScope::All`] — the whole (pinned) catalogue.
+/// - `slug__toolname` grants that one tool.
+/// - Both present ⇒ `All` wins, regardless of order.
+/// - A tool literally named `*` is indistinguishable from the wildcard and is treated as
+///   the wildcard by design (asserted in the unit tests).
+///
+/// Crucially, [`GrantScope::All`] does NOT mean "any string": [`McpGrants::permits`]
+/// resolves it against the pinned catalogue, so the catalogue is the authority for both
+/// grant shapes. A malicious server honouring an unadvertised name is refused because the
+/// name is not in the catalogue.
+#[derive(Debug, Clone, Default)]
+pub struct McpGrants(HashMap<String, GrantScope>);
+
+impl McpGrants {
+    /// Whether `tool` on `slug` is granted, given the server's pinned `catalogue`. `All`
+    /// still requires catalogue membership; an explicit tool requires both membership and
+    /// an explicit grant. A stored grant whose tool has since vanished from the catalogue
+    /// simply does not grant (tolerated on read — catalogues drift, configs are long-lived).
+    pub fn permits(&self, slug: &str, tool: &str, catalogue: &[ToolCatalogEntry]) -> bool {
+        let in_catalogue = catalogue.iter().any(|e| e.name == tool);
+        match self.0.get(slug) {
+            None => false,
+            Some(GrantScope::All) => in_catalogue,
+            Some(GrantScope::Tools(set)) => in_catalogue && set.contains(tool),
+        }
+    }
+
+    /// Whether the agent has any grant on `slug` (server-grain pre-filter, before the more
+    /// expensive per-server RBAC + catalogue work).
+    pub fn grants_server(&self, slug: &str) -> bool {
+        self.0.contains_key(slug)
+    }
+
+    /// The server slugs this agent holds any grant on.
+    pub fn slugs(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Parse an agent's `tools` list into per-server [`McpGrants`]. Non-namespaced entries
+/// (native + custom tools) are ignored. See [`McpGrants`] for the grammar.
+pub fn parse_grants(agent_tools: &[String]) -> McpGrants {
+    let mut map: HashMap<String, GrantScope> = HashMap::new();
+    for t in agent_tools {
+        let Some((slug, tool)) = split(t) else { continue };
+        if tool == "*" {
+            map.insert(slug.to_string(), GrantScope::All);
+        } else {
+            match map.entry(slug.to_string()).or_insert_with(|| GrantScope::Tools(HashSet::new())) {
+                GrantScope::All => {} // wildcard already won; keep it
+                GrantScope::Tools(set) => {
+                    set.insert(tool.to_string());
+                }
+            }
+        }
+    }
+    McpGrants(map)
 }
 
 /// The namespaced OpenAI tool defs the caller may use this turn: from servers that
@@ -100,9 +182,9 @@ pub fn allowed_slugs(agent_tools: &[String]) -> std::collections::HashSet<String
 pub async fn session_tool_defs(
     state: &AppState,
     ctx: &AuthContext,
-    allowed: &std::collections::HashSet<String>,
+    grants: &McpGrants,
 ) -> Vec<Value> {
-    if !state.boot.features.mcp || allowed.is_empty() {
+    if !state.boot.features.mcp || grants.is_empty() {
         return Vec::new();
     }
     if !integrations::is_enabled(&state.pg, ConnectorKind::Mcp).await.unwrap_or(false) {
@@ -119,7 +201,7 @@ pub async fn session_tool_defs(
     };
     let mut defs = Vec::new();
     for r in rows {
-        if !allowed.contains(&r.slug) {
+        if !grants.grants_server(&r.slug) {
             continue; // not assigned to this agent
         }
         if !state.rbac.can(&state.pg, ctx, ResourceType::McpServer, r.id, Permission::Read)
@@ -128,16 +210,21 @@ pub async fn session_tool_defs(
         {
             continue;
         }
-        // OAuth servers need this user's own active connection. Without one, omit the
-        // server's tools silently (the UI surfaces a Connect prompt); do not error the turn.
-        if r.auth_type == "oauth" && !user_has_active_connection(state, ctx, r.id).await {
+        // OAuth servers need a usable connection (this user's own, or the service
+        // connection for an unattended run). Without one, omit the server's tools silently
+        // (the UI surfaces a Connect prompt); do not error the turn.
+        if r.auth_type == "oauth" && !has_active_oauth_connection(state, ctx.user_id, r.id).await {
             continue;
         }
-        for t in parse_catalog(r.tools_catalog) {
+        let catalogue = parse_catalog(r.tools_catalog);
+        for t in &catalogue {
+            if !grants.permits(&r.slug, &t.name, &catalogue) {
+                continue; // granted the server, but not this specific tool
+            }
             let schema = if t.schema.is_null() {
                 json!({ "type": "object", "properties": {} })
             } else {
-                t.schema
+                t.schema.clone()
             };
             defs.push(json!({
                 "type": "function",
@@ -152,20 +239,30 @@ pub async fn session_tool_defs(
     defs
 }
 
-/// Whether `ctx`'s user holds an active OAuth connection to `server_id`.
-async fn user_has_active_connection(state: &AppState, ctx: &AuthContext, server_id: Uuid) -> bool {
-    let Some(uid) = ctx.user_id else { return false };
-    sqlx::query_scalar!(
-        r#"SELECT 1 FROM mcp_oauth_connections
-             WHERE mcp_server_id = $1 AND user_id = $2 AND status = 'active'"#,
-        server_id,
-        uid
-    )
-    .fetch_optional(&state.pg)
-    .await
-    .ok()
-    .flatten()
-    .is_some()
+/// Whether there is an active OAuth connection usable by a caller with the given
+/// `user_id` to `server_id`. `Some(uid)` looks for that user's own connection; `None`
+/// (an unattended run) falls back to the service connection (`user_id IS NULL`), matching
+/// [`resolve_oauth_connection`], so the defs offered and the connection actually resolved
+/// at dispatch agree.
+async fn has_active_oauth_connection(state: &AppState, user_id: Option<Uuid>, server_id: Uuid) -> bool {
+    let found = match user_id {
+        Some(uid) => sqlx::query_scalar!(
+            r#"SELECT 1 FROM mcp_oauth_connections
+                 WHERE mcp_server_id = $1 AND user_id = $2 AND status = 'active'"#,
+            server_id,
+            uid
+        )
+        .fetch_optional(&state.pg)
+        .await,
+        None => sqlx::query_scalar!(
+            r#"SELECT 1 FROM mcp_oauth_connections
+                 WHERE mcp_server_id = $1 AND user_id IS NULL AND status = 'active'"#,
+            server_id
+        )
+        .fetch_optional(&state.pg)
+        .await,
+    };
+    matches!(found, Ok(Some(_)))
 }
 
 /// Resolve which OAuth connection a caller's tool call should run under, ensuring the
@@ -210,27 +307,6 @@ async fn resolve_oauth_connection(
     Ok(connection_id)
 }
 
-/// Resolve the connection id a call to `slug` on behalf of `user_id` should use, and
-/// ensure it is live. Returns `None` for non-OAuth servers (their single shared
-/// connection is keyed `None`). Used by the durable-resume / unattended path, which does
-/// not go through `dispatch`.
-pub async fn connection_for_slug(
-    state: &AppState,
-    slug: &str,
-    user_id: Option<Uuid>,
-) -> Result<Option<Uuid>> {
-    let server = sqlx::query!("SELECT id, auth_type, url FROM mcp_servers WHERE slug = $1", slug)
-        .fetch_optional(&state.pg)
-        .await?;
-    let Some(server) = server else { return Ok(None) };
-    if server.auth_type != "oauth" {
-        return Ok(None);
-    }
-    let url = server.url.unwrap_or_default();
-    let cid = resolve_oauth_connection(state, server.id, slug, &url, user_id).await?;
-    Ok(Some(cid))
-}
-
 /// True iff a tool-call error is an OAuth reauthorisation signal (expired/revoked token
 /// that could not be refreshed, or an insufficient-scope 403).
 fn is_reauth_error(msg: &str) -> bool {
@@ -238,14 +314,225 @@ fn is_reauth_error(msg: &str) -> bool {
     m.contains("authorization required") || m.contains("insufficient scope")
 }
 
-/// Is at least one MCP server in scope for this caller (so the turn must run as a
-/// gated agent run)? Cheap pre-check mirroring `session_tool_defs`' gating.
-pub async fn any_in_scope(
+/// Proof that a specific MCP tool call passed every authorisation gate. Its fields are
+/// private and there is no public constructor, so a call cannot reach the transport
+/// (`McpManager::call_tool` / `list_tools`) without first obtaining one from
+/// [`authorize_call`] or [`authorize_system_call`] — bypass is a compile error.
+pub struct AuthorizedCall {
+    server_id: Uuid,
+    slug: String,
+    tool: String,
+    connection_id: Option<Uuid>,
+}
+
+impl AuthorizedCall {
+    pub(in crate::mcp) fn slug(&self) -> &str {
+        &self.slug
+    }
+    pub(in crate::mcp) fn tool(&self) -> &str {
+        &self.tool
+    }
+    pub(in crate::mcp) fn connection_id(&self) -> Option<Uuid> {
+        self.connection_id
+    }
+}
+
+/// The outcome of authorising an MCP call. Three outcomes, all pre-existing in the
+/// original code and all preserved so behaviour is unchanged:
+/// - `Allowed` — proceed with the witnessed call.
+/// - `Recoverable` — return the string to the model as `Ok("error: …")` so it can recover
+///   (unavailable server, missing connection, ungranted or off-catalogue tool).
+/// - `Denied` — a hard error (egress refused, RBAC denied, unknown server) → `Err`.
+pub enum CallDecision {
+    Allowed(AuthorizedCall),
+    Recoverable(String),
+    Denied(AppError),
+}
+
+/// Authorise one namespaced MCP tool call for an agent turn. The single place every
+/// pre-call gate lives: egress → server exists → active → RBAC → grant (resolved against
+/// the pinned catalogue) → a usable connection. A recoverable refusal is audited as a
+/// failed `mcp.call` carrying a `denied` marker (`server` | `grant` | `catalogue`) so a
+/// SOC can see a model reaching for a tool it was never offered — the tell for injection.
+pub async fn authorize_call(
     state: &AppState,
     ctx: &AuthContext,
-    allowed: &std::collections::HashSet<String>,
-) -> bool {
-    !session_tool_defs(state, ctx, allowed).await.is_empty()
+    grants: &McpGrants,
+    chat_id: Uuid,
+    slug: &str,
+    tool: &str,
+) -> CallDecision {
+    // Zero-egress choke-point (dormant ⇒ refuse + audit `integration.blocked`).
+    if let Err(e) = integrations::guard_egress(state, ctx, ConnectorKind::Mcp).await {
+        return CallDecision::Denied(e);
+    }
+    let server = match sqlx::query!(
+        "SELECT id, status, auth_type, url, tools_catalog FROM mcp_servers WHERE slug = $1",
+        slug
+    )
+    .fetch_optional(&state.pg)
+    .await
+    {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return CallDecision::Denied(AppError::Validation(format!("unknown MCP server '{slug}'")))
+        }
+        Err(e) => return CallDecision::Denied(e.into()),
+    };
+    if server.status != "active" {
+        audit_denied(state, ctx, chat_id, server.id, slug, tool, "server").await;
+        return CallDecision::Recoverable(format!(
+            "error: MCP server '{slug}' is {} (unavailable)",
+            server.status
+        ));
+    }
+    if let Err(e) =
+        state.rbac.require(&state.pg, ctx, ResourceType::McpServer, server.id, Permission::Read).await
+    {
+        audit_denied(state, ctx, chat_id, server.id, slug, tool, "rbac").await;
+        return CallDecision::Denied(e);
+    }
+    // Grant + pinned-catalogue check. The model may name any string (our own text-tool
+    // fallback can even manufacture one from a remote result), so this is where an
+    // ungranted, cross-server, or off-catalogue tool is stopped.
+    let catalogue = parse_catalog(server.tools_catalog);
+    if !grants.permits(slug, tool, &catalogue) {
+        let marker = if catalogue.iter().any(|e| e.name == tool) { "grant" } else { "catalogue" };
+        audit_denied(state, ctx, chat_id, server.id, slug, tool, marker).await;
+        return CallDecision::Recoverable(format!(
+            "error: tool '{tool}' is not available to this agent"
+        ));
+    }
+    // OAuth servers run under the caller's connection (their own, or the service
+    // connection for an unattended run); resolve it and connect lazily. No connection is a
+    // recoverable error, not a broken turn.
+    let connection_id = if server.auth_type == "oauth" {
+        let url = server.url.clone().unwrap_or_default();
+        match resolve_oauth_connection(state, server.id, slug, &url, ctx.user_id).await {
+            Ok(cid) => Some(cid),
+            Err(_) => {
+                audit_denied(state, ctx, chat_id, server.id, slug, tool, "connection").await;
+                return CallDecision::Recoverable(format!(
+                    "error: you are not connected to MCP server '{slug}'. Connect it under \
+                     Profile then Connections, then try again."
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    CallDecision::Allowed(AuthorizedCall {
+        server_id: server.id,
+        slug: slug.to_string(),
+        tool: tool.to_string(),
+        connection_id,
+    })
+}
+
+/// Why a system path (no agent, no user) is touching the transport. The deliberate,
+/// enumerable hole in the authorisation wall — kept small and easy to review.
+pub enum SystemPurpose {
+    /// The periodic health sweep, reading a server's live catalogue to diff against the
+    /// pin. Requires the server to be `active`.
+    HealthSweep,
+    /// Admin approval of an OAuth server: read the catalogue from the just-connected
+    /// designated connection. Does NOT require `active` (approval is what makes it active).
+    Approve { connection_id: Uuid },
+}
+
+/// The single system entry point to the transport for callers with no `AuthContext` and
+/// no agent grant. Resolves the connection to use and audits every use. It deliberately
+/// does NOT check an agent grant (there is none) and, for `Approve`, does NOT require the
+/// server to be active.
+pub async fn authorize_system_call(
+    state: &AppState,
+    slug: &str,
+    purpose: SystemPurpose,
+) -> Result<AuthorizedCall> {
+    let server = sqlx::query!("SELECT id, status, auth_type FROM mcp_servers WHERE slug = $1", slug)
+        .fetch_optional(&state.pg)
+        .await?
+        .ok_or_else(|| AppError::Validation(format!("unknown MCP server '{slug}'")))?;
+    let connection_id = match &purpose {
+        SystemPurpose::Approve { connection_id } => Some(*connection_id),
+        SystemPurpose::HealthSweep => {
+            if server.status != "active" {
+                return Err(AppError::Validation(format!("MCP server '{slug}' is not active")));
+            }
+            if server.auth_type == "oauth" {
+                let cid = sqlx::query_scalar!(
+                    r#"SELECT id FROM mcp_oauth_connections
+                         WHERE mcp_server_id = $1 AND is_catalog_source AND status = 'active'"#,
+                    server.id
+                )
+                .fetch_optional(&state.pg)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Validation(format!("no catalogue-source connection for '{slug}'"))
+                })?;
+                Some(cid)
+            } else {
+                None
+            }
+        }
+    };
+    let purpose_label = match purpose {
+        SystemPurpose::HealthSweep => "health_sweep",
+        SystemPurpose::Approve { .. } => "approve",
+    };
+    let mut ev = AuditEvent::action("mcp.system_call", "system");
+    ev.resource_type = Some("mcp_server".into());
+    ev.resource_id = Some(server.id);
+    ev.payload = Some(json!({ "server": slug, "purpose": purpose_label }));
+    let _ = audit::append(&state.pg, &ev).await;
+    Ok(AuthorizedCall {
+        server_id: server.id,
+        slug: slug.to_string(),
+        tool: String::new(),
+        connection_id,
+    })
+}
+
+/// The approval path's transport touch, owned by `mcp` so the HTTP layer never holds a raw
+/// connection: authorise (system) → connect the designated OAuth connection → register it
+/// → read + pin the catalogue. Returns the discovered catalogue.
+pub async fn approve_oauth_catalog(
+    state: &AppState,
+    server_id: Uuid,
+    slug: &str,
+    url: &str,
+    connection_id: Uuid,
+) -> Result<Vec<ToolCatalogEntry>> {
+    let call = authorize_system_call(state, slug, SystemPurpose::Approve { connection_id }).await?;
+    let client = oauth_flow::load_oauth_client_row(&state.pg, server_id)
+        .await?
+        .ok_or_else(|| AppError::Validation("configure an OAuth client before approving".into()))?;
+    let conn = oauth_flow::connect_oauth_conn(state, url, &client, connection_id).await?;
+    state.mcp.insert_conn(slug, Some(connection_id), conn).await;
+    let catalog = state.mcp.list_tools(&call).await?;
+    record_catalog(&state.pg, server_id, &catalog).await?;
+    Ok(catalog)
+}
+
+/// Audit a recoverable authorisation refusal as a failed `mcp.call` with a `denied`
+/// marker, so injection attempts (a model calling something it was never offered) are
+/// visible to a SOC.
+async fn audit_denied(
+    state: &AppState,
+    ctx: &AuthContext,
+    chat_id: Uuid,
+    server_id: Uuid,
+    slug: &str,
+    tool: &str,
+    marker: &str,
+) {
+    let mut ev = AuditEvent::action("mcp.call", ctx.role.as_str());
+    ev.actor_user_id = ctx.user_id;
+    ev.resource_type = Some("mcp_server".into());
+    ev.resource_id = Some(server_id);
+    ev.outcome = AuditOutcome::Failure;
+    ev.payload = Some(json!({ "chat_id": chat_id, "server": slug, "tool": tool, "denied": marker }));
+    let _ = audit::append(&state.pg, &ev).await;
 }
 
 /// Whether a namespaced MCP tool is side-effecting (⇒ HITL). Unknown ⇒ true (safe).
@@ -264,53 +551,35 @@ pub async fn is_side_effecting(state: &AppState, slug: &str, tool: &str) -> bool
         .unwrap_or(true)
 }
 
-/// Dispatch a namespaced MCP tool call: egress gate → resolve server → RBAC →
-/// call via the manager → normalise → audit. Errors come back as `"error: …"` so
-/// the model can recover, exactly like native tools.
+/// Dispatch a namespaced MCP tool call: authorise (one seam) → call via the manager →
+/// normalise → audit. Errors come back as `"error: …"` so the model can recover, exactly
+/// like native tools. `grants` are the calling agent's, threaded from the turn. `durable`
+/// marks the durable/unattended resume of an already-approved call (audited as such); the
+/// authorisation gates are identical either way, so a since-revoked grant, RBAC entitlement,
+/// or quarantined server refuses the resume rather than executing on stale state.
 pub async fn dispatch(
     state: &AppState,
     ctx: &AuthContext,
+    grants: &McpGrants,
     chat_id: Uuid,
     name: &str,
     args: &Value,
+    durable: bool,
 ) -> Result<String> {
     let (slug, tool) =
         split(name).ok_or_else(|| AppError::Validation("not a namespaced MCP tool".into()))?;
-    // Zero-egress choke-point (dormant ⇒ refuse + audit `integration.blocked`).
-    integrations::guard_egress(state, ctx, ConnectorKind::Mcp).await?;
-
-    let server = sqlx::query!("SELECT id, status, auth_type, url FROM mcp_servers WHERE slug = $1", slug)
-        .fetch_optional(&state.pg)
-        .await?
-        .ok_or_else(|| AppError::Validation(format!("unknown MCP server '{slug}'")))?;
-    if server.status != "active" {
-        return Ok(format!("error: MCP server '{slug}' is {} (unavailable)", server.status));
-    }
-    state.rbac.require(&state.pg, ctx, ResourceType::McpServer, server.id, Permission::Read).await?;
-
-    // OAuth servers run under the caller's own connection; resolve it (and connect lazily).
-    // A caller with no active connection gets a recoverable error, not a broken turn.
-    let connection_id = if server.auth_type == "oauth" {
-        let url = server.url.clone().unwrap_or_default();
-        match resolve_oauth_connection(state, server.id, slug, &url, ctx.user_id).await {
-            Ok(cid) => Some(cid),
-            Err(_) => {
-                return Ok(format!(
-                    "error: you are not connected to MCP server '{slug}'. Connect it under \
-                     Profile then Connections, then try again."
-                ))
-            }
-        }
-    } else {
-        None
+    let call = match authorize_call(state, ctx, grants, chat_id, slug, tool).await {
+        CallDecision::Allowed(c) => c,
+        CallDecision::Recoverable(msg) => return Ok(msg),
+        CallDecision::Denied(e) => return Err(e),
     };
 
     let started = OffsetDateTime::now_utc();
-    let result = state.mcp.call_tool(slug, connection_id, tool, args.clone()).await;
+    let result = state.mcp.call_tool(&call, args.clone()).await;
     let ms = (OffsetDateTime::now_utc() - started).whole_milliseconds();
 
     // Map an OAuth reauth signal to a durable state change + a recoverable message.
-    if let (Some(cid), Err(e)) = (connection_id, &result) {
+    if let (Some(cid), Err(e)) = (call.connection_id, &result) {
         if is_reauth_error(&e.to_string()) {
             let _ = sqlx::query!(
                 "UPDATE mcp_oauth_connections SET status = 'reauth_required' WHERE id = $1",
@@ -322,11 +591,11 @@ pub async fn dispatch(
             let mut ev = AuditEvent::action("mcp.oauth.reauth_required", ctx.role.as_str());
             ev.actor_user_id = ctx.user_id;
             ev.resource_type = Some("mcp_server".into());
-            ev.resource_id = Some(server.id);
+            ev.resource_id = Some(call.server_id);
             ev.payload = Some(json!({ "server": slug, "tool": tool }));
             let _ = audit::append(&state.pg, &ev).await;
             let body = format!("error: {e}");
-            audit_call(state, ctx, chat_id, server.id, slug, tool, args, &body, ms, AuditOutcome::Failure).await;
+            audit_call(state, ctx, chat_id, call.server_id, slug, tool, args, &body, ms, AuditOutcome::Failure, durable).await;
             return Ok(format!(
                 "error: your connection to MCP server '{slug}' needs re-authorisation. Reconnect \
                  it under Profile then Connections, then try again."
@@ -338,7 +607,7 @@ pub async fn dispatch(
         Ok(s) => (AuditOutcome::Success, s.clone()),
         Err(e) => (AuditOutcome::Failure, format!("error: {e}")),
     };
-    audit_call(state, ctx, chat_id, server.id, slug, tool, args, &body, ms, outcome).await;
+    audit_call(state, ctx, chat_id, call.server_id, slug, tool, args, &body, ms, outcome, durable).await;
     Ok(match result {
         Ok(s) => s,
         Err(e) => format!("error: {e}"),
@@ -357,6 +626,7 @@ async fn audit_call(
     result: &str,
     ms: i128,
     outcome: AuditOutcome,
+    durable: bool,
 ) {
     // Hash args + result rather than storing raw text in the chain (A2 hygiene: no
     // raw PII in audit_events). Identity/server/tool/latency are recorded in clear.
@@ -367,11 +637,17 @@ async fn audit_call(
     ev.resource_type = Some("mcp_server".into());
     ev.resource_id = Some(server_id);
     ev.outcome = outcome;
-    ev.payload = Some(json!({
+    let mut payload = json!({
         "chat_id": chat_id, "server": slug, "tool": tool,
         "args_hash": args_hash, "result_hash": result_hash,
         "result_bytes": result.len(), "latency_ms": ms,
-    }));
+    });
+    if durable {
+        // The durable/unattended resume of a call a human already approved.
+        payload["approved"] = json!(true);
+        payload["durable"] = json!(true);
+    }
+    ev.payload = Some(payload);
     let _ = audit::append(&state.pg, &ev).await;
 }
 
@@ -430,25 +706,16 @@ pub async fn health_sweep(state: &AppState) -> Result<u64> {
     .await?;
     let mut checked = 0u64;
     for r in rows {
-        // For an OAuth server the catalogue is pinned against ONE designated connection,
-        // so different users' legitimately-differing tool sets are never read as a
-        // rug-pull. A missing/dead catalogue source is not an attack — skip or mark
-        // unreachable, never quarantine.
-        let conn_id = if r.auth_type == "oauth" {
-            match sqlx::query_scalar!(
-                r#"SELECT id FROM mcp_oauth_connections
-                     WHERE mcp_server_id = $1 AND is_catalog_source AND status = 'active'"#,
-                r.id
-            )
-            .fetch_optional(&state.pg)
-            .await
-            {
-                Ok(Some(id)) => Some(id),
-                _ => continue, // no catalogue source connected → nothing to sweep
-            }
-        } else {
-            None
+        // The single audited system entry point: resolves the catalogue-source connection
+        // (for an OAuth server the catalogue is pinned against ONE designated connection,
+        // so users' legitimately-differing tool sets are never read as a rug-pull) and
+        // refuses when the server is not active or has no catalogue source. A missing/dead
+        // source is not an attack — skip, never quarantine.
+        let call = match authorize_system_call(state, &r.slug, SystemPurpose::HealthSweep).await {
+            Ok(c) => c,
+            Err(_) => continue, // not active / no catalogue source → nothing to sweep
         };
+        let conn_id = call.connection_id();
 
         if !state.mcp.is_connected(&r.slug, conn_id).await {
             if let Some(cid) = conn_id {
@@ -477,7 +744,7 @@ pub async fn health_sweep(state: &AppState) -> Result<u64> {
             }
         }
 
-        match state.mcp.list_tools(&r.slug, conn_id).await {
+        match state.mcp.list_tools(&call).await {
             Ok(live) => {
                 if let Some(pins) = r.pinned_tools.as_ref().and_then(|v| v.as_object()) {
                     if let Some(reason) = pin::diff(pins, &live) {
@@ -506,4 +773,143 @@ pub async fn health_sweep(state: &AppState) -> Result<u64> {
         checked += 1;
     }
     Ok(checked)
+}
+
+/// Compile-time proof that the transport is sealed (these must NOT compile).
+///
+/// `AuthorizedCall` has private fields and no public constructor, so it cannot be forged
+/// outside `mcp` — and `McpManager::call_tool` cannot be reached without one:
+/// ```compile_fail
+/// let _c = fosnie_backend::mcp::AuthorizedCall {
+///     server_id: todo!(), slug: todo!(), tool: todo!(), connection_id: todo!(),
+/// };
+/// ```
+///
+/// The `client` transport module is sealed to `mcp`:
+/// ```compile_fail
+/// use fosnie_backend::mcp::client::connect;
+/// ```
+///
+/// And `connect_oauth_conn`, which returns a raw connection, is no longer public:
+/// ```compile_fail
+/// use fosnie_backend::mcp::oauth_flow::connect_oauth_conn;
+/// ```
+#[cfg(doc)]
+pub struct TransportSealProof;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::client::FakeConn;
+    use std::sync::Arc;
+
+    fn entry(name: &str, side_effecting: bool) -> ToolCatalogEntry {
+        ToolCatalogEntry {
+            name: name.into(),
+            description: String::new(),
+            schema: json!({ "type": "object", "properties": {} }),
+            side_effecting,
+        }
+    }
+    fn catalogue(names: &[&str]) -> Vec<ToolCatalogEntry> {
+        names.iter().map(|n| entry(n, false)).collect()
+    }
+
+    // ── Grant grammar ─────────────────────────────────────────────────────────
+    #[test]
+    fn wildcard_grants_the_whole_catalogue() {
+        let g = parse_grants(&["files__*".into()]);
+        let c = catalogue(&["read", "write"]);
+        assert!(g.grants_server("files"));
+        assert!(g.permits("files", "read", &c));
+        assert!(g.permits("files", "write", &c));
+    }
+
+    #[test]
+    fn explicit_tools_grant_only_those() {
+        // Hole A: `files__read` must not confer `files__delete`.
+        let g = parse_grants(&["files__read".into(), "files__list".into()]);
+        let c = catalogue(&["read", "list", "delete"]);
+        assert!(g.permits("files", "read", &c));
+        assert!(g.permits("files", "list", &c));
+        assert!(!g.permits("files", "delete", &c));
+    }
+
+    #[test]
+    fn wildcard_wins_over_explicit_in_either_order() {
+        let c = catalogue(&["read", "delete"]);
+        let a = parse_grants(&["files__read".into(), "files__*".into()]);
+        let b = parse_grants(&["files__*".into(), "files__read".into()]);
+        assert!(a.permits("files", "delete", &c));
+        assert!(b.permits("files", "delete", &c));
+    }
+
+    #[test]
+    fn all_refuses_an_off_catalogue_tool() {
+        // `All` is bounded by the pinned catalogue, NOT "any string" — a malicious server
+        // honouring an unadvertised name is still refused.
+        let g = parse_grants(&["files__*".into()]);
+        let c = catalogue(&["read"]);
+        assert!(!g.permits("files", "delete_everything", &c));
+    }
+
+    #[test]
+    fn explicit_refuses_an_off_catalogue_tool() {
+        let g = parse_grants(&["files__ghost".into()]);
+        let c = catalogue(&["read"]);
+        assert!(!g.permits("files", "ghost", &c));
+    }
+
+    #[test]
+    fn ungranted_server_is_denied() {
+        // Hole B cross-server: a grant on `files` confers nothing on `other`.
+        let g = parse_grants(&["files__*".into()]);
+        let c = catalogue(&["read"]);
+        assert!(!g.grants_server("other"));
+        assert!(!g.permits("other", "read", &c));
+    }
+
+    #[test]
+    fn non_namespaced_entries_are_ignored() {
+        let g = parse_grants(&["web_search".into(), "generate_artefact".into()]);
+        assert!(g.is_empty());
+    }
+
+    #[test]
+    fn a_tool_literally_named_star_is_the_wildcard() {
+        // Deliberate: `*` as a tool name is indistinguishable from the wildcard.
+        let g = parse_grants(&["files__*".into()]);
+        assert!(matches!(g.0.get("files"), Some(GrantScope::All)));
+    }
+
+    // ── Manager discovery + dispatch through the witness ──────────────────────
+    fn witness(slug: &str, tool: &str) -> AuthorizedCall {
+        AuthorizedCall {
+            server_id: Uuid::nil(),
+            slug: slug.into(),
+            tool: tool.into(),
+            connection_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn manager_two_servers_discovery_and_dispatch() {
+        let mgr = McpManager::new();
+        mgr.insert_conn("files", None, Arc::new(FakeConn { catalog: vec![entry("read_file", false)] }))
+            .await;
+        mgr.insert_conn("db", None, Arc::new(FakeConn { catalog: vec![entry("query", true)] })).await;
+
+        assert_eq!(mgr.list_tools(&witness("files", "")).await.unwrap().len(), 1);
+        assert_eq!(mgr.list_tools(&witness("db", "")).await.unwrap().len(), 1);
+        assert!(mgr.is_connected("files", None).await && mgr.is_connected("db", None).await);
+
+        let r = mgr.call_tool(&witness("files", "read_file"), json!({ "path": "/x" })).await.unwrap();
+        assert!(r.contains("read_file"));
+        let r2 = mgr.call_tool(&witness("db", "query"), json!({ "sql": "select 1" })).await.unwrap();
+        assert!(r2.contains("query"));
+
+        assert!(mgr.call_tool(&witness("files", "nope"), json!({})).await.is_err());
+        mgr.disconnect("files", None).await;
+        assert!(!mgr.is_connected("files", None).await);
+    }
 }

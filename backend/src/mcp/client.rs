@@ -58,16 +58,18 @@ pub enum Transport {
     Http { url: String, auth: Option<HttpAuth> },
 }
 
-/// A live MCP connection — list its tools, call one, check liveness.
+/// A live MCP connection — list its tools, call one, check liveness. Sealed to `mcp`: a
+/// raw connection is never handed to code outside the module, so the transport can only be
+/// reached through the manager, which is gated by an `AuthorizedCall` witness.
 #[async_trait]
-pub trait McpConn: Send + Sync {
+pub(in crate::mcp) trait McpConn: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<ToolCatalogEntry>>;
     async fn call_tool(&self, tool: &str, args: Value) -> Result<String>;
-    async fn ping(&self) -> bool;
 }
 
-/// Open a real connection over `transport` (handshake + protocol negotiation).
-pub async fn connect(transport: Transport) -> Result<Arc<dyn McpConn>> {
+/// Open a real connection over `transport` (handshake + protocol negotiation). Sealed to
+/// `mcp` (returns a raw connection).
+pub(in crate::mcp) async fn connect(transport: Transport) -> Result<Arc<dyn McpConn>> {
     let conn = RmcpConn::connect(transport).await?;
     Ok(Arc::new(conn))
 }
@@ -108,7 +110,7 @@ pub fn hardened_client() -> Result<reqwest::Client> {
 /// SDK's `AuthClient` wrapper fetches (and refreshes) the access token per request, so the
 /// connection survives token rotation. The manager is built by the OAuth flow layer, which
 /// has the database and deployment key; this function owns only the transport handshake.
-pub async fn serve_oauth(
+pub(in crate::mcp) async fn serve_oauth(
     url: &str,
     auth_manager: rmcp::transport::auth::AuthorizationManager,
     http: reqwest::Client,
@@ -230,20 +232,19 @@ impl McpConn for RmcpConn {
         }
         Ok(out)
     }
-
-    async fn ping(&self) -> bool {
-        self.service.peer().list_tools(Default::default()).await.is_ok()
-    }
 }
 
-// ── Deterministic fake (tests / demos) ───────────────────────────────────────
+// ── Deterministic fake (tests) ────────────────────────────────────────────────
 /// An in-process fake connection: a fixed catalog and an echoing `call_tool`.
 /// Lets the whole MCP pipeline (registry → namespace → dispatch → result, RBAC,
-/// HITL, rug-pull) be tested without a live server or the rmcp transport.
-pub struct FakeConn {
+/// HITL, rug-pull) be tested without a live server or the rmcp transport. Sealed to `mcp`
+/// (constructs a raw connection); the in-crate MCP tests use it.
+#[cfg(test)]
+pub(in crate::mcp) struct FakeConn {
     pub catalog: Vec<ToolCatalogEntry>,
 }
 
+#[cfg(test)]
 #[async_trait]
 impl McpConn for FakeConn {
     async fn list_tools(&self) -> Result<Vec<ToolCatalogEntry>> {
@@ -255,8 +256,5 @@ impl McpConn for FakeConn {
         } else {
             Err(AppError::Validation(format!("unknown tool '{tool}'")))
         }
-    }
-    async fn ping(&self) -> bool {
-        true
     }
 }

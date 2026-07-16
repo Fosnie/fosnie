@@ -204,13 +204,24 @@ pub async fn complete_if_running(state: &AppState, run_id: Uuid) {
     drop_token(state, run_id).await;
 }
 
+/// Audit a durable-resume refusal (fail-closed) so a blocked resume is visible rather than
+/// silently dropped.
+async fn refuse_resume(state: &AppState, run_id: Uuid, chat_id: Uuid, tool: &str, reason: &str) {
+    let mut ev = AuditEvent::action("tool.resume_denied", "system");
+    ev.resource_type = Some("agent_run".into());
+    ev.resource_id = Some(run_id);
+    ev.outcome = crate::audit::AuditOutcome::Failure;
+    ev.payload = Some(json!({ "chat_id": chat_id, "tool": tool, "denied": "resume", "reason": reason }));
+    let _ = audit::append(&state.pg, &ev).await;
+}
+
 /// Execute the approved pending call **verbatim** — read the persisted
 /// `pending_args` and generate exactly that artefact. Never re-infers with the
 /// model (the human approved these specific arguments). Idempotent: a second call
 /// (crash-replay) is a no-op once the artefact exists for the turn.
 pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<()> {
     let r = sqlx::query!(
-        "SELECT chat_id, turn_id, acting_user_id, pending_tool, pending_args FROM agent_runs WHERE id = $1",
+        "SELECT chat_id, turn_id, acting_user_id, agent_id, pending_tool, pending_args FROM agent_runs WHERE id = $1",
         run_id
     )
     .fetch_optional(&state.pg)
@@ -220,51 +231,72 @@ pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<()> {
     let (Some(chat_id), Some(turn_id)) = (r.chat_id, r.turn_id) else { return Ok(()) };
     let args = r.pending_args.unwrap_or_else(|| json!({}));
 
-    // Approved custom tool — durable resume. Custom names
-    // are neither namespaced (MCP) nor native, so they must be checked BEFORE the
-    // MCP split branch or they would be swallowed. `load_by_name` re-applies the
-    // enabled + approved-version gate (anti-rug-pull at resume time).
-    if let Some(name) = r.pending_tool.as_deref() {
-        if !crate::mcp::is_namespaced(name) && !crate::tools::ALL.contains(&name) {
-            if let Some(row) = crate::tools::custom::load_by_name(&state.pg, name).await {
-                crate::tools::custom::dispatch_custom_durable(state, r.acting_user_id, chat_id, &row, &args)
-                    .await;
+    // The egress/permission-bearing tools (MCP + custom) resume through the SAME
+    // authorisation gates as the live loop — the approval that queued this call is NOT a
+    // substitute for re-checking. A grant, RBAC entitlement, connector, or server status
+    // can have changed since approval, and the resume must fail closed when it has.
+    if let Some(pending) = r.pending_tool.as_deref() {
+        let is_mcp = crate::mcp::is_namespaced(pending);
+        let is_custom = !is_mcp && !crate::tools::ALL.contains(&pending);
+        if is_mcp || is_custom {
+            // No agent ⇒ no grants to scope to; no user ⇒ no identity to authorise
+            // against. Either way, refuse the resume (and audit it) rather than run it
+            // unscoped. A NULL-agent run can never legitimately carry such a call.
+            let (Some(agent_id), Some(user_id)) = (r.agent_id, r.acting_user_id) else {
+                refuse_resume(state, run_id, chat_id, pending, "no agent or acting user").await;
                 return Ok(());
-            }
-        }
-    }
-
-    // Approved MCP tool call (FEATURE B1) — run it verbatim via the connection manager.
-    // RBAC was enforced when the tool was offered + the human approved THIS exact call;
-    // this is the durable/unattended resume (no live loop to feed the result back into).
-    if let Some((slug, tool)) = r.pending_tool.as_deref().and_then(crate::mcp::split) {
-        if crate::integrations::is_enabled(&state.pg, crate::integrations::ConnectorKind::Mcp)
-            .await
-            .unwrap_or(false)
-        {
-            // For an OAuth server, run under the originating user's connection (the
-            // approval and the identity match); never fall back to another user's token.
-            let res = match crate::mcp::connection_for_slug(state, slug, r.acting_user_id).await {
-                Ok(connection_id) => state.mcp.call_tool(slug, connection_id, tool, args.clone()).await,
-                Err(e) => Err(e),
             };
-            let mut ev = AuditEvent::action("mcp.call", "user");
-            ev.actor_user_id = r.acting_user_id;
-            ev.resource_type = Some("mcp_server".into());
-            if res.is_err() {
-                ev.outcome = crate::audit::AuditOutcome::Failure;
+            let ctx = match crate::auth::load_context(&state.pg, user_id).await {
+                Ok(c) => c,
+                Err(_) => {
+                    refuse_resume(state, run_id, chat_id, pending, "acting user unavailable").await;
+                    return Ok(());
+                }
+            };
+            // The agent's granted tools are the source of truth for both grant shapes.
+            let agent_tools: Vec<String> =
+                sqlx::query_scalar!("SELECT tool_name FROM agent_tools WHERE agent_id = $1", agent_id)
+                    .fetch_all(&state.pg)
+                    .await
+                    .unwrap_or_default();
+
+            if is_mcp {
+                // Route through the one MCP dispatch path (durable = true): egress, server
+                // status, RBAC, agent grant, pinned catalogue, and connection are all
+                // re-checked, and the call + any refusal are audited.
+                let grants = crate::mcp::parse_grants(&agent_tools);
+                let res =
+                    crate::mcp::dispatch(state, &ctx, &grants, chat_id, pending, &args, true).await;
+                let status = match &res {
+                    Ok(s) if !s.starts_with("error:") => "ok",
+                    _ => "error",
+                };
+                metrics::counter!("tool_calls_total", "tool" => pending.to_string(), "kind" => "mcp", "status" => status)
+                    .increment(1);
+            } else {
+                // Custom tool: enforce the agent grant, then reuse the live loader's
+                // enabled + approved + agent-scoped filter so live and resume agree, then
+                // dispatch (which runs `guard_egress` for http). A grant-blind lookup here
+                // was the resume-time bypass.
+                if !agent_tools.iter().any(|t| t == pending) {
+                    refuse_resume(state, run_id, chat_id, pending, "tool not granted to agent").await;
+                    return Ok(());
+                }
+                let (_defs, map) =
+                    crate::tools::custom::load_enabled_custom(&state.pg, &agent_tools).await;
+                match map.get(pending) {
+                    Some(row) => {
+                        crate::tools::custom::dispatch_custom_durable(state, &ctx, chat_id, row, &args)
+                            .await
+                    }
+                    None => {
+                        refuse_resume(state, run_id, chat_id, pending, "tool disabled or unapproved")
+                            .await
+                    }
+                }
             }
-            ev.payload = Some(json!({
-                "chat_id": chat_id, "server": slug, "tool": tool, "approved": true, "durable": true,
-            }));
-            let _ = audit::append(&state.pg, &ev).await;
-            // Mirror the tool-call metric on the durable-resume path (this bypasses
-            // `run_one_call`, where the live-loop calls are counted).
-            let status = if res.is_err() { "error" } else { "ok" };
-            metrics::counter!("tool_calls_total", "tool" => r.pending_tool.clone().unwrap_or_default(), "kind" => "mcp", "status" => status)
-                .increment(1);
+            return Ok(());
         }
-        return Ok(());
     }
 
     // Only `generate_artefact` is gated today; other gated tools reuse this hook.

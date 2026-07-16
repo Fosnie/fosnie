@@ -407,8 +407,9 @@ where
 
 /// Build a live, OAuth-authenticated connection for the runtime tool path. The SDK's
 /// `AuthClient` injects (and refreshes) the token per request from the bound credential
-/// store, so the connection survives rotation.
-pub async fn connect_oauth_conn(
+/// store, so the connection survives rotation. Sealed to `mcp`: it returns a raw
+/// connection, so only the authorisation seam and its helpers may call it.
+pub(in crate::mcp) async fn connect_oauth_conn(
     state: &AppState,
     server_url: &str,
     client: &OAuthClientRow,
