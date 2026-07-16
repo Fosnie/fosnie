@@ -265,9 +265,11 @@ export interface NativeToolEntry {
   name: string;
   label: string;
   hint: string;
-  /** State effect — mirrors the backend classifier. */
-  effect: "read" | "proposal" | "approval";
-  /** Crosses the zero-egress perimeter (always gated). */
+  /** State effect — mirrors the backend classifier. "run" = mutates state /
+   *  runs code, so it makes the turn agentic (opens an agent run); it does NOT
+   *  pause for approval. */
+  effect: "read" | "proposal" | "run";
+  /** Crosses the zero-egress perimeter. */
   egress: boolean;
   /** Host capability required to run this tool, else null. */
   capability: string | null;

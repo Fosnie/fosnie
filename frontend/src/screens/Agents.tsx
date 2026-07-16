@@ -424,7 +424,7 @@ function AgentEditor({
                     <span className="tool-name">
                       {t.label}
                       {t.default && <span className="tool-badge default">always on</span>}
-                      {t.effect === "approval" && <span className="tool-badge approval">needs approval</span>}
+                      {t.effect === "run" && <span className="tool-badge approval">agent run</span>}
                       {t.effect === "proposal" && <span className="tool-badge proposal">proposal</span>}
                       {t.egress && <span className="tool-badge egress">egress</span>}
                     </span>

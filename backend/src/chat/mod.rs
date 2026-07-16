@@ -350,7 +350,7 @@ async fn run_turn_inner(
     let mcp_grants = crate::mcp::parse_grants(&agent.tools);
     let mcp_defs = crate::mcp::session_tool_defs(state, ctx, &mcp_grants).await;
     let agentic = (chat_agent_id.is_some()
-        && agent.tools.iter().any(|t| crate::tools::gated(t) && t != "generate_artefact"))
+        && agent.tools.iter().any(|t| crate::tools::needs_agent_run(t) && t != "generate_artefact"))
         || !mcp_defs.is_empty();
     let run_id: Option<Uuid> = if agentic {
         Some(
@@ -753,9 +753,24 @@ async fn run_turn_inner(
         }
     }
 
+    // The set of tools we are willing to let the model call THIS turn — the basis
+    // for authorisation at dispatch. Built from the same inputs as the tool defs
+    // (never re-reading them) plus the per-turn injections that never sit in the
+    // Agent's stored list: `search_library` (only when the turn carries a RAG
+    // context, in the loop OR handed to the mid-stream answer) and
+    // `generate_artefact` (granted, never advertised, reached via the drafter
+    // fallback). This is a NEW, separate structure and does not touch how
+    // `tool_defs` was built (prefix-cache stability).
+    let authorised = crate::tools::AuthorisedTools::build(
+        &enabled_tools,
+        &agent.tools,
+        rag_tool_ctx.is_some(),
+        &custom_tools,
+    );
+
     if !tool_defs.is_empty() {
         let outcome = run_tool_loop(
-            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary,
+            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary,
         )
         .await?;
         interrupted = outcome.interrupted;
@@ -961,11 +976,23 @@ async fn run_turn_inner(
                         "id": id, "type": "function",
                         "function": { "name": tc.name, "arguments": serde_json::to_string(&tc.arguments).unwrap_or_else(|_| "{}".into()) }
                     }));
-                    // Cancel-aware: the tool dispatch is not itself cancel-wrapped, so race it here.
-                    let result = tokio::select! {
-                        r = crate::tools::dispatch(state, ctx, chat_project_id, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), &[], &custom_tools, &tc.name, &tc.arguments) =>
-                            r.unwrap_or_else(|e| format!("error: {e}")),
-                        _ = cancel.notified() => { interrupted = true; "error: cancelled".to_string() }
+                    // Authorise on the dispatch path (same gate as the pre-stream loop): the
+                    // mid-stream tool is `search_library`, present in `authorised` because the
+                    // turn carries a RAG context — so a legitimate top-up passes, while a
+                    // fabricated or admin-disabled name is refused and audited.
+                    let result = match crate::tools::authorize_native_call(
+                        state, ctx, chat_id, &authorised, &tool_overrides, &tc.name, chat_project_id,
+                    )
+                    .await
+                    {
+                        // Cancel-aware: the tool dispatch is not itself cancel-wrapped, so race it here.
+                        crate::tools::NativeDecision::Allowed(w) => tokio::select! {
+                            r = crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), &[], &custom_tools, &w, &tc.arguments) =>
+                                r.unwrap_or_else(|e| format!("error: {e}")),
+                            _ = cancel.notified() => { interrupted = true; "error: cancelled".to_string() }
+                        },
+                        crate::tools::NativeDecision::Recoverable(m) => m,
+                        crate::tools::NativeDecision::Denied(e) => format!("error: {e}"),
                     };
                     tool_msgs.push(json!({ "role": "tool", "tool_call_id": id, "content": result }));
                     if interrupted { break; }
@@ -1742,6 +1769,8 @@ async fn run_tool_loop(
     agent: &AgentConfig,
     run_id: Option<Uuid>,
     tool_defs: &[Value],
+    authorised: &crate::tools::AuthorisedTools,
+    overrides: &std::collections::HashMap<String, crate::tools::Override>,
     ci_files: &[crate::code_interpreter::InputFile],
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     rag_ctx: Option<&crate::tools::RagToolCtx>,
@@ -1917,7 +1946,7 @@ async fn run_tool_loop(
             let sem = sem.clone();
             async move {
                 let _permit = sem.acquire().await.expect("semaphore");
-                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, ci_files, custom_tools, rag_ctx, tc).await
+                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, authorised, overrides, ci_files, custom_tools, rag_ctx, tc).await
             }
         }))
         .await;
@@ -1926,7 +1955,7 @@ async fn run_tool_loop(
         }
         for tc in gated {
             let (id, r) = gated_call(
-                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, custom_tools, tc,
+                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, tc,
             )
             .await;
             by_id.insert(id, r);
@@ -1959,6 +1988,8 @@ async fn run_one_call(
     turn_id: Uuid,
     tx: &mpsc::Sender<ServerFrame>,
     agent: &AgentConfig,
+    authorised: &crate::tools::AuthorisedTools,
+    overrides: &std::collections::HashMap<String, crate::tools::Override>,
     ci_files: &[crate::code_interpreter::InputFile],
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     rag_ctx: Option<&crate::tools::RagToolCtx>,
@@ -1973,13 +2004,14 @@ async fn run_one_call(
     let is_mcp = crate::mcp::is_namespaced(&tc.name);
     let custom_row = custom_tools.get(&tc.name);
 
-    // Pre-dispatch gates: the per-run kill-token + constrained delegation (native
-    // tools); MCP enforces its own RBAC + egress inside `mcp::dispatch`.
+    // Pre-dispatch: the per-run kill-token still gates an agentic run. Native-tool
+    // authorisation (grant, override, host, constrained-delegation RBAC) now lives
+    // on the dispatch path itself in `authorize_native_call`, so it runs on EVERY
+    // native call whether or not the turn is agentic; MCP enforces its own gates
+    // inside `mcp::dispatch`.
     let blocked = if let Some(rid) = run_id {
         if !crate::agent::alive(state, rid).await {
             Some("error: agent run halted (killed, expired, or agents disabled)".to_string())
-        } else if let Err(e) = crate::tools::tool_permitted(state, ctx, &tc.name, project_id).await {
-            Some(format!("error: {e}"))
         } else {
             None
         }
@@ -2004,7 +2036,21 @@ async fn run_one_call(
                 let grants = crate::mcp::parse_grants(&agent.tools);
                 crate::mcp::dispatch(state, ctx, &grants, chat_id, &tc.name, &tc.arguments, false).await
             } else {
-                crate::tools::dispatch(state, ctx, project_id, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, ci_files, custom_tools, &tc.name, &tc.arguments).await
+                // Native / custom: authorise on the dispatch path (grant ∩ override ∩
+                // host ∩ RBAC), then dispatch under the unforgeable witness. This runs
+                // unconditionally — a plain-chat turn (no run) passes here too, closing
+                // the gap where a fabricated native name reached its arm ungated.
+                match crate::tools::authorize_native_call(
+                    state, ctx, chat_id, authorised, overrides, &tc.name, project_id,
+                )
+                .await
+                {
+                    crate::tools::NativeDecision::Allowed(w) => {
+                        crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, ci_files, custom_tools, &w, &tc.arguments).await
+                    }
+                    crate::tools::NativeDecision::Recoverable(m) => Ok(m),
+                    crate::tools::NativeDecision::Denied(e) => Err(e),
+                }
             }
         };
         match tokio::time::timeout(to, fut).await {
@@ -2046,6 +2092,8 @@ async fn gated_call(
     turn_id: Uuid,
     tx: &mpsc::Sender<ServerFrame>,
     agent: &AgentConfig,
+    authorised: &crate::tools::AuthorisedTools,
+    overrides: &std::collections::HashMap<String, crate::tools::Override>,
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     tc: &ml::ToolCall,
 ) -> (String, String) {
@@ -2086,7 +2134,7 @@ async fn gated_call(
         Ok(Ok(true)) => {
             // Gated tools are MCP/custom side-effecting calls, never code_interpreter or
             // search_library → no CI files, no RAG-tool context.
-            let (_id, r) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, &[], custom_tools, None, tc).await;
+            let (_id, r) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, tc).await;
             crate::agent::mark_running(state, run_id).await;
             (id, r)
         }

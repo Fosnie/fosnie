@@ -31,6 +31,35 @@ fn ctx() -> AuthContext {
     }
 }
 
+/// Mint an authorisation witness through the real seam, then dispatch — the only
+/// way to reach the witness-gated `tools::dispatch`. Grants the single tool under
+/// test so authorisation passes (production assembles this set per turn).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_via_seam(
+    st: &AppState,
+    ctx: &AuthContext,
+    project_id: Option<Uuid>,
+    chat_id: Uuid,
+    turn: Uuid,
+    tx: &mpsc::Sender<ServerFrame>,
+    custom: &std::collections::HashMap<String, tools::custom::CustomToolRow>,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<String, fosnie_backend::AppError> {
+    let authorised =
+        tools::AuthorisedTools::build(&[name.to_string()], &[name.to_string()], false, custom);
+    let overrides = std::collections::HashMap::new();
+    match tools::authorize_native_call(st, ctx, chat_id, &authorised, &overrides, name, project_id)
+        .await
+    {
+        tools::NativeDecision::Allowed(w) => {
+            tools::dispatch(st, ctx, chat_id, turn, tx, None, None, &[], custom, &w, args).await
+        }
+        tools::NativeDecision::Recoverable(m) => Ok(m),
+        tools::NativeDecision::Denied(e) => Err(e),
+    }
+}
+
 #[tokio::test]
 async fn track_steps_emits_checklist_frame() {
     let Some(st) = state().await else {
@@ -45,7 +74,7 @@ async fn track_steps_emits_checklist_frame() {
         { "title": "Summarise", "status": "pending" },
         { "title": "   ", "status": "pending" }
     ]});
-    let out = tools::dispatch(&st, &ctx(), None, Uuid::now_v7(), turn, &tx, None, None, &[], &std::collections::HashMap::new(), "track_steps", &args)
+    let out = dispatch_via_seam(&st, &ctx(), None, Uuid::now_v7(), turn, &tx, &std::collections::HashMap::new(), "track_steps", &args)
         .await
         .unwrap();
     assert!(out.contains("3 step"), "blank-title step dropped → 3 recorded: {out}");
@@ -68,8 +97,8 @@ async fn track_steps_rejects_empty() {
         return;
     };
     let (tx, _rx) = mpsc::channel::<ServerFrame>(8);
-    let r = tools::dispatch(
-        &st, &ctx(), None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, None, &[], &std::collections::HashMap::new(), "track_steps",
+    let r = dispatch_via_seam(
+        &st, &ctx(), None, Uuid::now_v7(), Uuid::now_v7(), &tx, &std::collections::HashMap::new(), "track_steps",
         &serde_json::json!({ "steps": [] }),
     )
     .await;

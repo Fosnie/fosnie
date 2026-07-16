@@ -1956,7 +1956,7 @@ function ToolsSection() {
                 <tr>
                   <td className={TD}>{t.label} <span className="text-xs text-slate/60">({t.name})</span></td>
                   <td className={TD}>
-                    <Badge tone={t.effect === "approval" ? "gold" : "slate"}>{t.effect}</Badge>
+                    <Badge tone={t.effect === "run" ? "gold" : "slate"}>{t.effect}</Badge>
                     {t.egress && <span className="ml-1"><Badge tone="red">egress</Badge></span>}
                     {t.capability && <span className="ml-1"><Badge>host cap</Badge></span>}
                     {t.default && <span className="ml-1"><Badge>always on</Badge></span>}

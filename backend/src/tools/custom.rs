@@ -147,6 +147,20 @@ pub async fn load_by_id(pg: &sqlx::PgPool, id: Uuid) -> Option<CustomToolRow> {
     })
 }
 
+/// Does a custom tool with this name exist (in any state)? Used to validate an
+/// Agent's tool grant at write time. The enabled/approved gate is re-applied at
+/// read time by [`load_enabled_custom`], so a stored grant to a later-disabled
+/// tool degrades quietly rather than erroring the Agent save.
+pub async fn exists_by_name(pg: &sqlx::PgPool, name: &str) -> crate::error::Result<bool> {
+    let exists = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM custom_tools WHERE name = $1)",
+        name
+    )
+    .fetch_one(pg)
+    .await?;
+    Ok(exists.unwrap_or(false))
+}
+
 /// Admin Test-run: execute the tool with hand-entered args under the same egress +
 /// SSRF gates as a real call, but WITHOUT the enabled/approved gate (the admin is
 /// validating it pre-approval). Returns the result/error text.

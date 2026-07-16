@@ -20,7 +20,7 @@
 
 pub mod custom;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -83,8 +83,6 @@ pub enum ToolType {
     Artefact,
     /// Memory write.
     Memory,
-    /// External DMS connector (only when enabled).
-    Dms,
     /// External web connector (only when enabled).
     Web,
     /// Code interpreter (Firecracker).
@@ -100,7 +98,6 @@ impl ToolType {
             ToolType::Rag => "rag",
             ToolType::Artefact => "artefact",
             ToolType::Memory => "memory",
-            ToolType::Dms => "dms",
             ToolType::Web => "web",
             ToolType::Code => "code",
         }
@@ -154,9 +151,11 @@ pub enum ToolEffect {
     /// (tracked-change accept/reject) or writes the caller's own moderatable
     /// data — auto-runs, the human resolves it afterwards.
     Proposal,
-    /// Mutates state or runs code; the agentic run pauses for explicit approval
-    /// before this dispatches.
-    RequiresApproval,
+    /// Mutates state or runs code. This class opens an agent run (for the
+    /// kill-token) so the turn is agentic; it does NOT pause for human
+    /// approval — no native tool does. Named for what it triggers (a run),
+    /// not a pause that does not exist.
+    RequiresRun,
 }
 
 /// The state-effect of a tool. Every entry in [`ALL`] maps to one
@@ -169,8 +168,12 @@ pub fn effect(name: &str) -> ToolEffect {
             ToolEffect::ReadOnly
         }
         "edit_document" | "remember_fact" => ToolEffect::Proposal,
-        "generate_artefact" | "code_interpreter" => ToolEffect::RequiresApproval,
-        _ => ToolEffect::RequiresApproval, // unknown ⇒ safest: gate it
+        "generate_artefact" | "code_interpreter" => ToolEffect::RequiresRun,
+        // Unknown ⇒ safest classification. Unreachable in practice: an unknown
+        // name is refused by `authorize_native_call` before it can dispatch, so
+        // this is defence-in-depth only. (It deliberately disagrees with
+        // `tool_type`'s System default; effect fails cautious, timeout stays cheap.)
+        _ => ToolEffect::RequiresRun,
     }
 }
 
@@ -181,11 +184,13 @@ pub fn egress(name: &str) -> bool {
     matches!(name, "web_search")
 }
 
-/// Should this tool run automatically inside an agent loop, or pause for human
-/// approval first? Auto-run iff it neither mutates state (RequiresApproval) nor
-/// crosses the perimeter. Proposal + ReadOnly internal tools auto-run.
-pub fn gated(name: &str) -> bool {
-    matches!(effect(name), ToolEffect::RequiresApproval) || egress(name)
+/// Does this tool make the turn agentic — i.e. open an `agent_run` (for the
+/// kill-token) when it is present in an Agent's toolset? True iff it mutates
+/// state / runs code ([`ToolEffect::RequiresRun`]) or crosses the perimeter
+/// ([`egress`]). This decides agenticity ONLY; it is NOT a human-approval
+/// gate — no native tool pauses for approval.
+pub fn needs_agent_run(name: &str) -> bool {
+    matches!(effect(name), ToolEffect::RequiresRun) || egress(name)
 }
 
 /// Constrained delegation: the agent run acts under the invoking
@@ -210,6 +215,162 @@ pub async fn tool_permitted(
     }
 }
 
+/// The set of tools the model is allowed to call THIS turn. Built once next to
+/// the turn's tool definitions from the same filter chain, then consulted at
+/// dispatch so a call is checked against what was actually offered — not against
+/// the Agent's stored tool list, which omits per-turn injections (`search_library`)
+/// and includes a granted-but-never-advertised marker (`generate_artefact`).
+///
+/// MCP names are deliberately excluded: they authorise through their own seam.
+#[derive(Debug, Clone, Default)]
+pub struct AuthorisedTools(HashSet<String>);
+
+impl AuthorisedTools {
+    /// Assemble the per-turn offered set:
+    /// - `enabled`: the advertised natives (Agent grant ∩ host ∩ per-group ∩ override), sans `generate_artefact`;
+    /// - `generate_artefact` when the Agent holds it (granted, never advertised, reached via the drafter fallback);
+    /// - `search_library` when the turn carries a RAG context (injected per turn, in the loop OR handed to the stream);
+    /// - every enabled custom tool (already grant-filtered by [`custom::load_enabled_custom`]).
+    pub fn build(
+        enabled: &[String],
+        agent_tools: &[String],
+        has_rag: bool,
+        custom: &HashMap<String, custom::CustomToolRow>,
+    ) -> Self {
+        let mut s: HashSet<String> = enabled.iter().cloned().collect();
+        if agent_tools.iter().any(|t| t == "generate_artefact") {
+            s.insert("generate_artefact".to_string());
+        }
+        if has_rag {
+            s.insert("search_library".to_string());
+        }
+        for name in custom.keys() {
+            s.insert(name.clone());
+        }
+        Self(s)
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.contains(name)
+    }
+}
+
+/// Proof that a specific native or custom tool call passed every authorisation
+/// gate: it is in the turn's offered set, its admin override is enabled, its host
+/// capability is on, and the caller holds the tool's required permission. Fields
+/// are private and there is no public constructor, so [`dispatch`] cannot be
+/// reached without first obtaining one from [`authorize_native_call`] — bypass is
+/// a compile error.
+pub struct AuthorizedTool {
+    name: String,
+    project_id: Option<Uuid>,
+}
+
+impl AuthorizedTool {
+    pub(in crate::tools) fn name(&self) -> &str {
+        &self.name
+    }
+    /// The chat's project, bound at authorisation time (document tools scope to it).
+    pub(in crate::tools) fn project_id(&self) -> Option<Uuid> {
+        self.project_id
+    }
+}
+
+/// Compile-time proof that a native tool cannot be dispatched without passing
+/// [`authorize_native_call`]. [`AuthorizedTool`] has private fields and no public
+/// constructor, so this must NOT compile:
+///
+/// ```compile_fail
+/// let _w = fosnie_backend::tools::AuthorizedTool {
+///     name: todo!(),
+///     project_id: todo!(),
+/// };
+/// ```
+///
+/// And [`dispatch`] takes `&AuthorizedTool`, so it is unreachable without a witness.
+#[cfg(doc)]
+pub struct NativeAuthSealProof;
+
+/// The outcome of authorising a native or custom tool call. Three outcomes,
+/// mirroring the MCP seam: `Recoverable` is fed back to the model as
+/// `Ok("error: …")` so it can recover (a grant/override/unknown miss — the
+/// prompt-injection tell); `Denied` is a hard `Err` (host disabled, or an RBAC
+/// failure the model must not paper over).
+pub enum NativeDecision {
+    Allowed(AuthorizedTool),
+    Recoverable(String),
+    Denied(AppError),
+}
+
+/// Authorise a native or custom tool call on the dispatch path itself — the single
+/// gate every such call passes, agentic turn or not. Gate order: the name is known
+/// (a native in [`ALL`] or a granted custom tool) → it is in the turn's offered set
+/// (`authorised`) → its admin override is enabled → its host capability is on → the
+/// caller holds the tool's required permission ([`tool_permitted`]). A refusal is
+/// audited as `tool.denied` with a reason so injection attempts (a model calling
+/// something it was never offered) are visible to a SOC. On success this mints the
+/// [`AuthorizedTool`] witness that [`dispatch`] requires.
+#[allow(clippy::too_many_arguments)]
+pub async fn authorize_native_call(
+    state: &AppState,
+    ctx: &AuthContext,
+    chat_id: Uuid,
+    authorised: &AuthorisedTools,
+    overrides: &HashMap<String, Override>,
+    name: &str,
+    project_id: Option<Uuid>,
+) -> NativeDecision {
+    // Known name: a native in the closed registry, or a custom tool the agent was
+    // granted (customs enter `authorised` via `load_enabled_custom`, already filtered).
+    if !ALL.contains(&name) && !authorised.contains(name) {
+        audit_denied(state, ctx, chat_id, name, "unknown").await;
+        return NativeDecision::Recoverable(format!("error: unknown tool '{name}'"));
+    }
+    // In the set we were willing to offer this turn (closes grant-blind dispatch).
+    if !authorised.contains(name) {
+        audit_denied(state, ctx, chat_id, name, "grant").await;
+        return NativeDecision::Recoverable(format!(
+            "error: tool '{name}' is not available to this agent"
+        ));
+    }
+    // The admin kill-switch is an authorisation boundary, not only an advertise-time
+    // filter: a disabled tool must not run even if the name reaches dispatch some
+    // other way (history replay, a fabricated call, the mid-stream path).
+    if !overrides.get(name).map(|o| o.enabled).unwrap_or(true) {
+        audit_denied(state, ctx, chat_id, name, "override").await;
+        return NativeDecision::Recoverable(format!(
+            "error: tool '{name}' is disabled by an administrator"
+        ));
+    }
+    // Host capability (e.g. code_interpreter off on a host that cannot run it).
+    if !host_enabled(name, &state.boot.features) {
+        audit_denied(state, ctx, chat_id, name, "host").await;
+        return NativeDecision::Denied(AppError::Validation(format!(
+            "capability '{name}' is disabled on this host"
+        )));
+    }
+    // Constrained delegation: the caller must hold the tool's required permission.
+    // Runs on EVERY call now, not only inside the agentic run-id gate, so a
+    // plain-chat turn cannot slip a write-class tool (e.g. edit_document) past RBAC.
+    if let Err(e) = tool_permitted(state, ctx, name, project_id).await {
+        audit_denied(state, ctx, chat_id, name, "rbac").await;
+        return NativeDecision::Denied(e);
+    }
+    NativeDecision::Allowed(AuthorizedTool { name: name.to_string(), project_id })
+}
+
+/// Audit a tool-call authorisation refusal as a failed `tool.denied` with a reason
+/// marker (`grant` | `override` | `host` | `rbac` | `unknown`), matching the `denied`
+/// marker the MCP seam emits, so a SOC sees both halves of an injection attempt.
+async fn audit_denied(state: &AppState, ctx: &AuthContext, chat_id: Uuid, tool: &str, marker: &str) {
+    let mut ev = crate::audit::AuditEvent::action("tool.denied", ctx.role.as_str());
+    ev.actor_user_id = ctx.user_id;
+    ev.outcome = crate::audit::AuditOutcome::Failure;
+    ev.outcome_reason = Some(marker.to_string());
+    ev.payload = Some(json!({ "chat_id": chat_id, "tool": tool, "denied": marker }));
+    let _ = crate::audit::append(&state.pg, &ev).await;
+}
+
 /// Per-tool-type timeout (defaults by type, configurable).
 /// A per-deployment override (keyed by tool-type, e.g. widened for a slower
 /// llama.cpp profile) wins over the code default.
@@ -220,7 +381,6 @@ pub fn timeout_for(name: &str, overrides: &HashMap<String, u64>) -> Duration {
     }
     let secs = match ty {
         ToolType::System | ToolType::Memory => 10,
-        ToolType::Dms => 30,
         ToolType::DocumentRead => 60,
         // Web is generous by design: the ML pipeline paces SERP/fetch calls
         // politely (never risk an engine IP ban), so the budget is pacing-sized, not snappy.
@@ -301,7 +461,7 @@ fn effect_str(name: &str) -> &'static str {
     match effect(name) {
         ToolEffect::ReadOnly => "read",
         ToolEffect::Proposal => "proposal",
-        ToolEffect::RequiresApproval => "approval",
+        ToolEffect::RequiresRun => "run",
     }
 }
 
@@ -749,11 +909,9 @@ pub fn clamp_depth(requested: Option<&str>, max: Option<&str>) -> String {
 /// for agent-less contexts). Returns the tool result content (fed back to the
 /// model).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub async fn dispatch(
     state: &AppState,
     ctx: &AuthContext,
-    project_id: Option<Uuid>,
     chat_id: Uuid,
     turn_id: Uuid,
     tx: &mpsc::Sender<ServerFrame>,
@@ -761,11 +919,15 @@ pub async fn dispatch(
     rag_ctx: Option<&RagToolCtx>,
     ci_files: &[crate::code_interpreter::InputFile],
     custom: &HashMap<String, custom::CustomToolRow>,
-    name: &str,
+    call: &AuthorizedTool,
     args: &Value,
 ) -> Result<String> {
+    // Name and project come from the witness: it is unforgeable and was minted by
+    // `authorize_native_call`, so reaching this point means every gate passed.
+    let name = call.name();
+    let project_id = call.project_id();
     // Defence in depth: a capability-gated tool must not run if its host feature
-    // is off (the advertise filter already hides it, but never trust the model).
+    // is off (already checked at authorisation; never trust a single layer).
     if !host_enabled(name, &state.boot.features) {
         return Err(AppError::Validation(format!("capability '{name}' is disabled on this host")));
     }
@@ -1515,7 +1677,7 @@ mod tests {
         // Auto-runs (no HITL), never crosses the perimeter, RAG timeout class.
         assert_eq!(effect("search_library"), ToolEffect::ReadOnly);
         assert!(!egress("search_library"));
-        assert!(!gated("search_library"));
+        assert!(!needs_agent_run("search_library"));
         assert_eq!(tool_type("search_library"), ToolType::Rag);
         assert!(def("search_library").is_some());
     }
@@ -1589,27 +1751,27 @@ mod tests {
     }
 
     #[test]
-    fn classifier_covers_all_and_gates_correctly() {
+    fn classifier_covers_all_and_agenticity_correct() {
         // Every tool maps (no silent default reached for a known tool).
         for name in ALL {
             let _ = effect(name);
             let _ = egress(name);
         }
-        // Read-only internal tools auto-run.
-        assert!(!gated("read_document"));
-        assert!(!gated("list_documents"));
-        // Proposal tools auto-run (own downstream HITL).
-        assert!(!gated("edit_document"));
-        assert!(!gated("remember_fact"));
-        // State-changing tools are gated.
-        assert!(gated("generate_artefact"));
-        assert!(gated("code_interpreter"));
-        // Egress is ALWAYS gated even though web_search "only reads".
+        // Read-only internal tools do not force an agent run.
+        assert!(!needs_agent_run("read_document"));
+        assert!(!needs_agent_run("list_documents"));
+        // Proposal tools do not either (own downstream tracked-change HITL).
+        assert!(!needs_agent_run("edit_document"));
+        assert!(!needs_agent_run("remember_fact"));
+        // State-changing / code tools make the turn agentic.
+        assert!(needs_agent_run("generate_artefact"));
+        assert!(needs_agent_run("code_interpreter"));
+        // Egress ALWAYS makes the turn agentic even though web_search "only reads".
         assert_eq!(effect("web_search"), ToolEffect::ReadOnly);
         assert!(egress("web_search"));
-        assert!(gated("web_search"));
-        // Unknown tool ⇒ gated (fail-safe).
-        assert!(gated("totally_new_connector"));
+        assert!(needs_agent_run("web_search"));
+        // Unknown tool ⇒ agentic (fail-safe classification).
+        assert!(needs_agent_run("totally_new_connector"));
     }
 
     #[tokio::test]

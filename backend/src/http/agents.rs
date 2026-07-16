@@ -51,12 +51,11 @@ async fn require_manage_agent(state: &AppState, ctx: &AuthContext, id: Uuid) -> 
     }
 }
 
-/// Closed-registry + Rule-of-Two validation of an Agent's tool whitelist.
-/// (1) Every tool must be in the platform's closed registry. (2) Any tool that
-/// crosses the perimeter (egress) or changes state must be gated by the
-/// classifier — so an agent can never assemble an *unsupervised* lethal trifecta
-/// {untrusted input + private data + egress}; the egress/state leg always pauses
-/// for human approval. Caught here at config time.
+/// Validate an Agent's tool whitelist against the closed set of grantable tools,
+/// at config time. Every entry must resolve to one of: a native tool in the
+/// platform's closed registry; an MCP grant (`slug__*` / `slug__tool`) whose
+/// server and tool are in the server's pinned catalogue; or a custom tool that
+/// exists. An unknown name is refused here rather than silently ignored at dispatch.
 async fn validate_toolset(pg: &sqlx::PgPool, tools: &[String]) -> Result<()> {
     let mut catalogues: std::collections::HashMap<String, Option<Vec<crate::mcp::ToolCatalogEntry>>> =
         std::collections::HashMap::new();
@@ -86,19 +85,20 @@ async fn validate_toolset(pg: &sqlx::PgPool, tools: &[String]) -> Result<()> {
             }
             continue;
         }
-        if !crate::tools::ALL.contains(&t.as_str()) {
-            return Err(AppError::Validation(format!(
-                "unknown tool '{t}' — not in the closed registry"
-            )));
+        // Native tool in the closed registry.
+        if crate::tools::ALL.contains(&t.as_str()) {
+            continue;
         }
-        if (crate::tools::egress(t)
-            || matches!(crate::tools::effect(t), crate::tools::ToolEffect::RequiresApproval))
-            && !crate::tools::gated(t)
-        {
-            return Err(AppError::Validation(format!(
-                "tool '{t}' crosses the perimeter or changes state but is not gated — refusing (Rule-of-Two)"
-            )));
+        // Otherwise a custom HTTP/script tool the agent selects by name: valid iff a
+        // row exists. Its enabled + approved-version gate is re-applied at read time
+        // by `load_enabled_custom`, so a stored grant to a later-disabled tool
+        // degrades quietly rather than breaking the Agent save.
+        if crate::tools::custom::exists_by_name(pg, t).await? {
+            continue;
         }
+        return Err(AppError::Validation(format!(
+            "unknown tool '{t}' — not in the closed registry"
+        )));
     }
     Ok(())
 }
