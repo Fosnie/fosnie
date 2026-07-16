@@ -912,4 +912,338 @@ mod tests {
         mgr.disconnect("files", None).await;
         assert!(!mgr.is_connected("files", None).await);
     }
+
+    // ── DB-backed authorisation matrix ────────────────────────────────────────
+    // These drive the real seam (authorize_call / session_tool_defs / dispatch /
+    // authorize_system_call) against seeded rows. They skip when DATABASE_URL is
+    // unset. Each builds its own AppState (Core defaults: real rbac + manager).
+    use crate::auth::PlatformRole;
+    use crate::state::AppState;
+
+    async fn authz_state() -> Option<(sqlx::PgPool, AppState)> {
+        let db_url = std::env::var("DATABASE_URL").ok()?;
+        let redis_url =
+            std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        let pg = crate::db::connect(&db_url, 5).await.ok()?;
+        let redis = crate::cache::create_pool(&redis_url).ok()?;
+        let boot = crate::config::BootConfig {
+            database_url: db_url,
+            redis_url,
+            ..Default::default()
+        };
+        let state = AppState::new(pg.clone(), redis, std::sync::Arc::new(boot));
+        // The MCP connector must be enabled or every call is refused at the egress gate.
+        let _ = crate::config::runtime::set(
+            &pg,
+            "integration.mcp.enabled",
+            "true",
+            crate::config::runtime::ConfigValueType::Bool,
+            "deployment",
+            None,
+            "system",
+        )
+        .await;
+        Some((pg, state))
+    }
+
+    fn mcp_ctx(uid: Uuid) -> AuthContext {
+        AuthContext {
+            user_id: Some(uid),
+            email: None,
+            display_name: None,
+            role: PlatformRole::User,
+            break_glass: false,
+            mfa_enroll_only: false,
+        }
+    }
+
+    async fn seed_server(
+        pg: &sqlx::PgPool,
+        slug: &str,
+        auth_type: &str,
+        status: &str,
+        tools: &[&str],
+    ) -> Uuid {
+        let id = Uuid::now_v7();
+        let cat = Value::Array(
+            tools
+                .iter()
+                .map(|t| json!({ "name": t, "description": "", "schema": {}, "side_effecting": false }))
+                .collect(),
+        );
+        sqlx::query(
+            "INSERT INTO mcp_servers (id, slug, name, transport, url, status, enabled, auth_type, tools_catalog) \
+             VALUES ($1,$2,$2,'http','https://example.test/mcp',$3,true,$4,$5)",
+        )
+        .bind(id)
+        .bind(slug)
+        .bind(status)
+        .bind(auth_type)
+        .bind(cat)
+        .execute(pg)
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn grant_read(pg: &sqlx::PgPool, server_id: Uuid, uid: Uuid) {
+        sqlx::query(
+            "INSERT INTO access_grants (id, resource_type, resource_id, principal_type, principal_id, permission) \
+             VALUES ($1,'mcp_server'::grant_resource_type,$2,'user'::principal_type,$3,'read'::permission) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(Uuid::now_v7())
+        .bind(server_id)
+        .bind(uid)
+        .execute(pg)
+        .await
+        .unwrap();
+    }
+
+    /// Count failed `mcp.call` audit rows carrying a specific `denied` marker.
+    async fn call_denials(pg: &sqlx::PgPool, slug: &str, tool: &str, marker: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events WHERE action_type='mcp.call' \
+             AND payload->>'server'=$1 AND payload->>'tool'=$2 AND payload->>'denied'=$3",
+        )
+        .bind(slug)
+        .bind(tool)
+        .bind(marker)
+        .fetch_one(pg)
+        .await
+        .unwrap()
+    }
+
+    async fn cleanup_server(pg: &sqlx::PgPool, id: Uuid) {
+        let _ = sqlx::query("DELETE FROM access_grants WHERE resource_id=$1").bind(id).execute(pg).await;
+        let _ = sqlx::query("DELETE FROM mcp_servers WHERE id=$1").bind(id).execute(pg).await;
+    }
+
+    /// Hole A: a `slug__read_file` grant offers exactly that tool from the server's
+    /// catalogue, never its siblings. `slug__delete_everything` must be absent.
+    #[tokio::test]
+    async fn hole_a_session_defs_offer_only_the_granted_tool() {
+        let Some((pg, state)) = authz_state().await else {
+            eprintln!("skip: DATABASE_URL unset");
+            return;
+        };
+        let uid = Uuid::now_v7();
+        let slug = format!("ha{}", Uuid::now_v7().simple());
+        let sid = seed_server(&pg, &slug, "none", "active", &["read_file", "delete_everything"]).await;
+        grant_read(&pg, sid, uid).await;
+
+        let grants = parse_grants(&[format!("{slug}__read_file")]);
+        let defs = session_tool_defs(&state, &mcp_ctx(uid), &grants).await;
+        let names: Vec<String> = defs
+            .iter()
+            .filter_map(|d| d["function"]["name"].as_str().map(String::from))
+            .collect();
+        assert!(names.contains(&format!("{slug}__read_file")), "granted tool must be offered: {names:?}");
+        assert!(
+            !names.contains(&format!("{slug}__delete_everything")),
+            "an ungranted sibling tool must NOT be offered: {names:?}"
+        );
+        cleanup_server(&pg, sid).await;
+    }
+
+    /// Hole B (cross-tool): a grant on one tool confers nothing on another tool of the
+    /// same server. Refused recoverably, audited denied=grant.
+    #[tokio::test]
+    async fn hole_b_cross_tool_call_refused_and_audited() {
+        let Some((pg, state)) = authz_state().await else {
+            return;
+        };
+        let uid = Uuid::now_v7();
+        let slug = format!("hb{}", Uuid::now_v7().simple());
+        let sid = seed_server(&pg, &slug, "none", "active", &["read_file", "delete_everything"]).await;
+        grant_read(&pg, sid, uid).await;
+
+        let grants = parse_grants(&[format!("{slug}__read_file")]);
+        let before = call_denials(&pg, &slug, "delete_everything", "grant").await;
+        let d = authorize_call(&state, &mcp_ctx(uid), &grants, Uuid::now_v7(), &slug, "delete_everything").await;
+        assert!(matches!(d, CallDecision::Recoverable(_)), "cross-tool call must be refused recoverably");
+        assert!(
+            call_denials(&pg, &slug, "delete_everything", "grant").await > before,
+            "the refusal must be audited denied=grant"
+        );
+        cleanup_server(&pg, sid).await;
+    }
+
+    /// Hole B (cross-server): a grant on server A confers nothing on server B, even
+    /// though the user can RBAC-read B. The bigger blast radius the original framing
+    /// of the bug would have missed.
+    #[tokio::test]
+    async fn hole_b_cross_server_call_refused() {
+        let Some((pg, state)) = authz_state().await else {
+            return;
+        };
+        let uid = Uuid::now_v7();
+        let a = format!("hba{}", Uuid::now_v7().simple());
+        let b = format!("hbb{}", Uuid::now_v7().simple());
+        let sa = seed_server(&pg, &a, "none", "active", &["read_file"]).await;
+        let sb = seed_server(&pg, &b, "none", "active", &["read_file"]).await;
+        grant_read(&pg, sa, uid).await;
+        grant_read(&pg, sb, uid).await; // user CAN read B; only the grant is missing
+
+        // Agent is granted server A only.
+        let grants = parse_grants(&[format!("{a}__*")]);
+        let d = authorize_call(&state, &mcp_ctx(uid), &grants, Uuid::now_v7(), &b, "read_file").await;
+        assert!(matches!(d, CallDecision::Recoverable(_)), "a never-granted server must be refused");
+        assert!(
+            call_denials(&pg, &b, "read_file", "grant").await > 0,
+            "the cross-server refusal must be audited"
+        );
+        cleanup_server(&pg, sa).await;
+        cleanup_server(&pg, sb).await;
+    }
+
+    /// Hole B (off-catalogue): a wildcard grant is still bounded by the pinned
+    /// catalogue. A name the server never advertised is refused, audited denied=catalogue.
+    #[tokio::test]
+    async fn hole_b_off_catalogue_call_refused() {
+        let Some((pg, state)) = authz_state().await else {
+            return;
+        };
+        let uid = Uuid::now_v7();
+        let slug = format!("hbo{}", Uuid::now_v7().simple());
+        let sid = seed_server(&pg, &slug, "none", "active", &["read_file"]).await;
+        grant_read(&pg, sid, uid).await;
+
+        let grants = parse_grants(&[format!("{slug}__*")]); // wildcard
+        let before = call_denials(&pg, &slug, "ghost_tool", "catalogue").await;
+        let d = authorize_call(&state, &mcp_ctx(uid), &grants, Uuid::now_v7(), &slug, "ghost_tool").await;
+        assert!(matches!(d, CallDecision::Recoverable(_)), "an off-catalogue tool must be refused");
+        assert!(
+            call_denials(&pg, &slug, "ghost_tool", "catalogue").await > before,
+            "the refusal must be audited denied=catalogue"
+        );
+        cleanup_server(&pg, sid).await;
+    }
+
+    /// Hole C, the one that matters: a durable resume of an approved call against a
+    /// server that has since been QUARANTINED is refused at the status gate and
+    /// audited, rather than executing against rug-pulled state. On the pre-fix code
+    /// the resume path did not pass through `authorize_call` at all (it resolved the
+    /// connection directly with no status predicate and rebuilt the dropped
+    /// connection), so the call executed; this cannot be demonstrated against the
+    /// pre-fix binary from here, so the refusal + audit is asserted directly.
+    #[tokio::test]
+    async fn hole_c_quarantined_server_refuses_durable_resume() {
+        let Some((pg, state)) = authz_state().await else {
+            return;
+        };
+        // A real, loadable user (execute_pending rebuilds its context) + a throwaway agent.
+        let uid: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM users WHERE deactivated_at IS NULL LIMIT 1")
+                .fetch_optional(&pg)
+                .await
+                .unwrap();
+        let Some(uid) = uid else {
+            eprintln!("skip: no seeded user");
+            return;
+        };
+        let slug = format!("hc{}", Uuid::now_v7().simple());
+        let sid = seed_server(&pg, &slug, "oauth", "active", &["read"]).await;
+        grant_read(&pg, sid, uid).await;
+
+        let agent_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO agents (id,name,system_prompt,params,modes) VALUES ($1,'authz test','x','{}'::jsonb,'{}'::text[])")
+            .bind(agent_id).execute(&pg).await.unwrap();
+        sqlx::query("INSERT INTO agent_tools (agent_id, tool_name) VALUES ($1,$2)")
+            .bind(agent_id).bind(format!("{slug}__*")).execute(&pg).await.unwrap();
+
+        let run_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO agent_runs (id, agent_id, acting_user_id, chat_id, turn_id, status, pending_tool, pending_args) \
+             VALUES ($1,$2,$3,$4,$5,'approved'::agent_run_status,$6,'{}'::jsonb)",
+        )
+        .bind(run_id).bind(agent_id).bind(uid).bind(Uuid::now_v7()).bind(Uuid::now_v7())
+        .bind(format!("{slug}__read"))
+        .execute(&pg).await.unwrap();
+
+        // The rug-pull: quarantine the server AFTER the call was approved.
+        quarantine(&state, sid, &slug, "test rug-pull").await;
+
+        let before = call_denials(&pg, &slug, "read", "server").await;
+        crate::agent::execute_pending(&state, run_id).await.unwrap();
+        assert!(
+            call_denials(&pg, &slug, "read", "server").await > before,
+            "a quarantined server must refuse the durable resume at the status gate, audited denied=server"
+        );
+
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE id=$1").bind(run_id).execute(&pg).await;
+        let _ = sqlx::query("DELETE FROM agent_tools WHERE agent_id=$1").bind(agent_id).execute(&pg).await;
+        let _ = sqlx::query("DELETE FROM agents WHERE id=$1").bind(agent_id).execute(&pg).await;
+        cleanup_server(&pg, sid).await;
+    }
+
+    /// Hole D: the custom-tool durable resume enforces the agent grant. A pending
+    /// custom call whose tool the agent does not hold is refused and audited, rather
+    /// than executed on the grant-blind lookup the pre-fix resume used.
+    #[tokio::test]
+    async fn hole_d_custom_resume_refused_when_ungranted() {
+        let Some((pg, state)) = authz_state().await else {
+            return;
+        };
+        let uid: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM users WHERE deactivated_at IS NULL LIMIT 1")
+                .fetch_optional(&pg)
+                .await
+                .unwrap();
+        let Some(uid) = uid else {
+            return;
+        };
+
+        let agent_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO agents (id,name,system_prompt,params,modes) VALUES ($1,'authz test','x','{}'::jsonb,'{}'::text[])")
+            .bind(agent_id).execute(&pg).await.unwrap();
+        // Note: NO agent_tools row — the agent does not hold this custom tool.
+
+        let run_id = Uuid::now_v7();
+        let tool = format!("ghost_custom_{}", Uuid::now_v7().simple());
+        sqlx::query(
+            "INSERT INTO agent_runs (id, agent_id, acting_user_id, chat_id, turn_id, status, pending_tool, pending_args) \
+             VALUES ($1,$2,$3,$4,$5,'approved'::agent_run_status,$6,'{}'::jsonb)",
+        )
+        .bind(run_id).bind(agent_id).bind(uid).bind(Uuid::now_v7()).bind(Uuid::now_v7())
+        .bind(&tool)
+        .execute(&pg).await.unwrap();
+
+        crate::agent::execute_pending(&state, run_id).await.unwrap();
+
+        let denied: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events WHERE action_type='tool.resume_denied' \
+             AND resource_id=$1 AND payload->>'reason'='tool not granted to agent'",
+        )
+        .bind(run_id)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert!(denied > 0, "an ungranted custom resume must be refused and audited");
+
+        let _ = sqlx::query("DELETE FROM agent_runs WHERE id=$1").bind(run_id).execute(&pg).await;
+        let _ = sqlx::query("DELETE FROM agents WHERE id=$1").bind(agent_id).execute(&pg).await;
+    }
+
+    /// The system seam: the health sweep authorises an active server and refuses a
+    /// non-active one (it must not sweep a quarantined server).
+    #[tokio::test]
+    async fn system_seam_health_sweep_gates_on_active_status() {
+        let Some((pg, state)) = authz_state().await else {
+            return;
+        };
+        let slug = format!("hs{}", Uuid::now_v7().simple());
+        let sid = seed_server(&pg, &slug, "none", "active", &["read"]).await;
+
+        assert!(
+            authorize_system_call(&state, &slug, SystemPurpose::HealthSweep).await.is_ok(),
+            "health sweep must authorise an active server"
+        );
+        quarantine(&state, sid, &slug, "test").await;
+        assert!(
+            authorize_system_call(&state, &slug, SystemPurpose::HealthSweep).await.is_err(),
+            "health sweep must refuse a quarantined server"
+        );
+        cleanup_server(&pg, sid).await;
+    }
 }
