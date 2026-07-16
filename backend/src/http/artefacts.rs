@@ -258,9 +258,12 @@ pub async fn create_page(
         serde_json::json!({ "role": "user", "content": md }),
     ];
     // A full page needs a generous ceiling (well above the chat default).
+    // Scaffolding call: pin minimal reasoning effort — rendering markdown into HTML
+    // needs no reasoning, and the user's effort belongs to their answer, not this.
     let sampling = crate::ml::Sampling {
         temperature: Some(0.0),
         max_tokens: Some(8192),
+        reasoning_effort: Some("minimal".into()),
         ..Default::default()
     };
     let step =

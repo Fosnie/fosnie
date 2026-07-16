@@ -543,7 +543,7 @@ async fn run_turn_inner(
     // Notify the user as the chat approaches the budget (compaction still runs).
     maybe_warn_context(chat_id, est_tokens(&system), &history, budget_total, answer_reserve, tx).await;
     let history =
-        compact_history(state, chat_id, turn_id, history, alloc.history_budget, &agent.sampling, tx).await;
+        compact_history(state, chat_id, turn_id, history, alloc.history_budget, tx).await;
     let mut messages = compose::build_messages(system, history);
 
     // Only advertise tools this host can actually run (capability gate) — a
@@ -3147,7 +3147,6 @@ async fn compact_history(
     turn_id: Uuid,
     history: Vec<HistMsg>,
     history_budget: i64,
-    sampling: &Sampling,
     tx: &mpsc::Sender<ServerFrame>,
 ) -> Vec<Value> {
     const KEEP_MIN: usize = 2;
@@ -3172,6 +3171,16 @@ async fn compact_history(
             .map(|m| format!("{}: {}", m.role, m.content))
             .collect::<Vec<_>>()
             .join("\n");
+        // The size the summary must beat. Captured before `joined` may be moved below.
+        let joined_tokens = est_tokens(&joined);
+        // Scaffolding call: pin minimal reasoning effort so a thinking-capable model
+        // does not spend this budget on reasoning tokens and emit nothing (which would
+        // silently disable compaction). The user's full effort is for their answer.
+        let sum_sampling = Sampling {
+            max_tokens: Some(1024),
+            reasoning_effort: Some("minimal".into()),
+            ..Default::default()
+        };
         let (sys, usr) = if summary.is_empty() {
             (
                 "Summarise this earlier conversation concisely, preserving names, facts, \
@@ -3188,16 +3197,25 @@ async fn compact_history(
         };
         let sum_msgs =
             vec![json!({ "role": "system", "content": sys }), json!({ "role": "user", "content": usr })];
-        match ml::chat_step(&state.http, &state.boot.ml.base_url, &sum_msgs, None, sampling, ml::provider_overrides(state, None).await).await {
-            Ok(s) if !s.content.trim().is_empty() => {
+        match ml::chat_step(&state.http, &state.boot.ml.base_url, &sum_msgs, None, &sum_sampling, ml::provider_overrides(state, None).await).await {
+            // Accept only a real fold: non-empty AND objectively shorter than its
+            // source. A string that is not shorter is not a summary (an echo of the
+            // input) — accepting it would inflate the prompt and, since earlier turns
+            // are never re-summarised, make that inflation permanent.
+            Ok(s) if !s.content.trim().is_empty() && est_tokens(&s.content) < joined_tokens => {
                 summary = s.content;
                 watermark = to_fold.last().map(|m| m.seq).unwrap_or(watermark);
                 let _ = upsert_summary(&state.pg, chat_id, &summary, watermark).await;
                 let _ = tx.send(ServerFrame::ChatCompacted { turn_id, summarised: to_fold.len() as u32 }).await;
             }
             _ => {
-                // Summary failed — keep the turns verbatim (better an over-long
-                // prompt than dropped context). Restore them at the front.
+                // Summary empty, errored, or not shorter than its input — keep the
+                // turns verbatim (better an over-long prompt than dropped context).
+                // Log so this is visible instead of silently disabling compaction.
+                tracing::warn!(
+                    chat_id = %chat_id,
+                    "compaction summary rejected (empty, errored, or not shorter than the folded turns); keeping them verbatim"
+                );
                 to_fold.reverse();
                 for m in to_fold {
                     verbatim.insert(0, m);
@@ -3737,12 +3755,42 @@ mod compaction_tests {
     use crate::{cache, db};
     use std::sync::Arc;
 
-    async fn state_or_skip() -> Option<(AppState, sqlx::PgPool)> {
+    /// A tiny local stand-in for the ML `/chat-step` endpoint, so the fold /
+    /// watermark logic is exercised with NO live model. `reply = "summary"` returns
+    /// a short canned summary (shorter than its input, so it is accepted);
+    /// `reply = "echo"` returns the folded input verbatim (NOT shorter, so the
+    /// output-validation must reject it). Mirrors `tests/custom_tools.rs::spawn_echo`.
+    async fn spawn_mock_ml(reply: &'static str) -> String {
+        use axum::routing::post;
+        use axum::Json;
+        let app = axum::Router::new().route(
+            "/chat-step",
+            post(move |Json(body): Json<serde_json::Value>| async move {
+                let content = if reply == "echo" {
+                    body["messages"]
+                        .as_array()
+                        .and_then(|a| a.last())
+                        .and_then(|m| m["content"].as_str())
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    "Prior turns: the user and the assistant exchanged greetings.".to_string()
+                };
+                Json(serde_json::json!({ "content": content }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    async fn state_with_ml(ml_url: String) -> Option<(AppState, sqlx::PgPool)> {
         let db_url = std::env::var("DATABASE_URL").ok()?;
         let redis_url =
             std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
-        let ml_url =
-            std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
         let pg = db::connect(&db_url, 5).await.ok()?;
         let redis = cache::create_pool(&redis_url).ok()?;
         let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };
@@ -3750,41 +3798,46 @@ mod compaction_tests {
         Some((AppState::new(pg.clone(), redis, Arc::new(boot)), pg))
     }
 
-    fn msg(seq: i32, role: &str) -> HistMsg {
-        HistMsg { seq, role: role.into(), content: format!("turn {seq}: ") + &"word ".repeat(40) }
+    async fn state_or_skip() -> Option<(AppState, sqlx::PgPool)> {
+        let ml_url =
+            std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        state_with_ml(ml_url).await
     }
 
-    /// The rolling summary is persisted and only the turns that NEWLY aged out
-    /// of the verbatim window are folded — the watermark advances each pass and
-    /// earlier turns are never re-summarised.
-    #[tokio::test]
-    async fn incremental_summary_persists_and_advances_watermark() {
-        let Some((state, pg)) = state_or_skip().await else {
-            eprintln!("skip: DATABASE_URL unset");
-            return;
-        };
-        if ml::model_info(&state.http, &state.boot.ml.base_url).await.is_err() {
-            eprintln!("skip: ML unavailable");
-            return;
-        }
-
+    async fn seed_chat(pg: &sqlx::PgPool) -> Uuid {
         let owner: Uuid =
-            sqlx::query_scalar("SELECT id FROM users LIMIT 1").fetch_one(&pg).await.unwrap();
+            sqlx::query_scalar("SELECT id FROM users LIMIT 1").fetch_one(pg).await.unwrap();
         let chat_id = Uuid::now_v7();
         sqlx::query("INSERT INTO chats (id, owner_user_id, title) VALUES ($1, $2, 'compaction test')")
             .bind(chat_id)
             .bind(owner)
-            .execute(&pg)
+            .execute(pg)
             .await
             .unwrap();
+        chat_id
+    }
 
+    fn msg(seq: i32, role: &str) -> HistMsg {
+        HistMsg { seq, role: role.into(), content: format!("turn {seq}: ") + &"word ".repeat(40) }
+    }
+
+    /// Deterministic (no live model): with a mock summariser that returns a real,
+    /// shorter summary, the rolling summary is persisted, only the turns that NEWLY
+    /// aged out fold, and the watermark advances each pass. Must never flake.
+    #[tokio::test]
+    async fn compaction_folds_and_advances_watermark_deterministic() {
+        let ml = spawn_mock_ml("summary").await;
+        let Some((state, pg)) = state_with_ml(ml).await else {
+            eprintln!("skip: DATABASE_URL unset");
+            return;
+        };
+        let chat_id = seed_chat(&pg).await;
         let (tx, _rx) = mpsc::channel::<ServerFrame>(64);
-        let sampling = Sampling::default();
 
         // Tiny budget forces the oldest turns to fold; the newest stay verbatim.
         let h1: Vec<HistMsg> =
             (1..=6).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
-        let out1 = compact_history(&state, chat_id, Uuid::now_v7(), h1, 40, &sampling, &tx).await;
+        let out1 = compact_history(&state, chat_id, Uuid::now_v7(), h1, 40, &tx).await;
         assert_eq!(out1.first().unwrap()["role"], "system");
         assert!(out1.first().unwrap()["content"].as_str().unwrap().contains("Earlier conversation summary"));
 
@@ -3795,10 +3848,66 @@ mod compaction_tests {
         // More turns arrive: only the new overflow (seq > watermark) folds.
         let h2: Vec<HistMsg> =
             (1..=10).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
-        let _ = compact_history(&state, chat_id, Uuid::now_v7(), h2, 40, &sampling, &tx).await;
+        let _ = compact_history(&state, chat_id, Uuid::now_v7(), h2, 40, &tx).await;
         let (_s2, w2) = load_summary(&pg, chat_id).await.expect("summary persisted");
         assert!(w2 > w1, "incremental fold advanced the watermark further ({w1} -> {w2})");
 
         let _ = sqlx::query("DELETE FROM chats WHERE id = $1").bind(chat_id).execute(&pg).await;
+        let _ = sqlx::query("DELETE FROM chat_summaries WHERE chat_id = $1").bind(chat_id).execute(&pg).await;
+    }
+
+    /// Deterministic: a summariser whose output is not shorter than its input (an
+    /// echo) is rejected. Nothing is persisted and the watermark does not advance —
+    /// the turns are kept verbatim rather than an inflated echo becoming permanent.
+    #[tokio::test]
+    async fn compaction_rejects_a_non_shorter_echo() {
+        let ml = spawn_mock_ml("echo").await;
+        let Some((state, pg)) = state_with_ml(ml).await else {
+            return;
+        };
+        let chat_id = seed_chat(&pg).await;
+        let (tx, _rx) = mpsc::channel::<ServerFrame>(64);
+
+        let h: Vec<HistMsg> =
+            (1..=6).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
+        let out = compact_history(&state, chat_id, Uuid::now_v7(), h, 40, &tx).await;
+
+        // Rejected: no summary persisted, and the output is the verbatim turns (no
+        // leading "[Earlier conversation summary]" note).
+        assert!(load_summary(&pg, chat_id).await.is_none(), "an echo must not be persisted as a summary");
+        assert_ne!(out.first().unwrap()["role"], "system", "turns must be kept verbatim, not folded into an echo");
+
+        let _ = sqlx::query("DELETE FROM chats WHERE id = $1").bind(chat_id).execute(&pg).await;
+    }
+
+    /// Live (real model): a real summariser actually produces a summary shorter than
+    /// its input, so the fold is accepted. This is the check that a reasoning model
+    /// at pinned-minimal effort does not emit empty content. Gated on PAI_E2E=1.
+    #[tokio::test]
+    async fn live_compaction_produces_a_real_summary() {
+        if std::env::var("PAI_E2E").as_deref() != Ok("1") {
+            eprintln!("skip: set PAI_E2E=1 with the ML stack up");
+            return;
+        }
+        let Some((state, pg)) = state_or_skip().await else {
+            eprintln!("skip: DATABASE_URL unset");
+            return;
+        };
+        if ml::model_info(&state.http, &state.boot.ml.base_url).await.is_err() {
+            eprintln!("skip: ML unavailable");
+            return;
+        }
+        let chat_id = seed_chat(&pg).await;
+        let (tx, _rx) = mpsc::channel::<ServerFrame>(64);
+
+        let h: Vec<HistMsg> =
+            (1..=6).map(|i| msg(i, if i % 2 == 1 { "user" } else { "assistant" })).collect();
+        let out = compact_history(&state, chat_id, Uuid::now_v7(), h, 40, &tx).await;
+        assert_eq!(out.first().unwrap()["role"], "system", "a real model must actually fold (non-empty summary)");
+        let (s1, _w1) = load_summary(&pg, chat_id).await.expect("summary persisted");
+        assert!(!s1.is_empty());
+
+        let _ = sqlx::query("DELETE FROM chats WHERE id = $1").bind(chat_id).execute(&pg).await;
+        let _ = sqlx::query("DELETE FROM chat_summaries WHERE chat_id = $1").bind(chat_id).execute(&pg).await;
     }
 }

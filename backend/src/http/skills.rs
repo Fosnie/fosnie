@@ -384,8 +384,20 @@ pub async fn test_skill(
         serde_json::json!({ "role": "system", "content": body }),
         serde_json::json!({ "role": "user", "content": req.input }),
     ];
-    let sampling = crate::ml::Sampling { max_tokens: Some(512), ..Default::default() };
+    // A scaffolding call: pin minimal reasoning effort so a thinking-capable model
+    // does not spend this small cap on reasoning and return an empty body.
+    let sampling = crate::ml::Sampling {
+        max_tokens: Some(512),
+        reasoning_effort: Some("minimal".into()),
+        ..Default::default()
+    };
     let step = crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(&state, ctx.user_id).await).await?;
+    if step.content.trim().is_empty() {
+        // A blank box with no message is worse than an explicit failure.
+        return Err(AppError::Validation(
+            "the skill test produced no output; the model returned an empty response".into(),
+        ));
+    }
     Ok(Json(SkillTestOut { output: step.content }))
 }
 
