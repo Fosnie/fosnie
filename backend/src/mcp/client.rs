@@ -91,11 +91,34 @@ use rmcp::{RoleClient, ServiceExt};
 pub(crate) fn build_hardened_client(
     headers: reqwest::header::HeaderMap,
 ) -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    #[allow(unused_mut)]
+    let mut b = reqwest::Client::builder()
         .default_headers(headers)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| AppError::Other(anyhow::anyhow!("build MCP http client: {e}")))
+        .redirect(reqwest::redirect::Policy::none());
+    // Test-only hook: trust one extra root certificate (a local mock authorisation
+    // server). Compiled out unless the `test-mocks` feature is on (which is never a
+    // default feature). It can ONLY ADD a trusted root — it cannot weaken the https
+    // check, the cloud-metadata refusal, the same-origin rule, the DNS re-check,
+    // PKCE/iss validation, or the `redirect::Policy::none()` above. If the feature were
+    // ever shipped on but no root installed, behaviour is byte-identical to today.
+    #[cfg(feature = "test-mocks")]
+    if let Some(cert) = TEST_ROOT.get() {
+        b = b.add_root_certificate(cert.clone());
+    }
+    b.build().map_err(|e| AppError::Other(anyhow::anyhow!("build MCP http client: {e}")))
+}
+
+/// The extra root certificate the `test-mocks` build trusts, if installed.
+#[cfg(feature = "test-mocks")]
+static TEST_ROOT: std::sync::OnceLock<reqwest::Certificate> = std::sync::OnceLock::new();
+
+/// Install a single extra root certificate for [`build_hardened_client`] to trust.
+/// Test-only (feature `test-mocks`); idempotent (first call wins). Used by the mock
+/// authorisation-server suite so the flow's own client trusts the mock's self-signed
+/// cert without disabling verification.
+#[cfg(feature = "test-mocks")]
+pub fn install_test_root(cert: reqwest::Certificate) {
+    let _ = TEST_ROOT.set(cert);
 }
 
 /// A hardened client with no default headers — for OAuth discovery, token exchange, and
