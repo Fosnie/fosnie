@@ -297,7 +297,8 @@ fn iss_param_supported(metadata: &Value) -> bool {
 
 /// Build an `AuthorizationManager` from a saved client row: hardened client, approved
 /// metadata, configured client. No stores bound yet (callers add the ones they need).
-async fn base_manager(
+/// `pub(in crate::mcp)` only so the in-crate mock-AS refresh tests can drive it.
+pub(in crate::mcp) async fn base_manager(
     server_url: &str,
     client: &OAuthClientRow,
     callback: &str,

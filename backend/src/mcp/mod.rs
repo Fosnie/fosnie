@@ -32,6 +32,12 @@ pub mod oauth_store;
 pub mod pin;
 pub mod validate;
 
+/// In-crate mock authorisation server + OAuth integration tests. Compiled only under
+/// the test-only `test-mocks` feature (never a default). In `src/` (not `tests/`) so
+/// the tests can reach module-private items (`base_manager`, `dispatch`'s reauth path).
+#[cfg(feature = "test-mocks")]
+pub(crate) mod testing;
+
 pub use manager::McpManager;
 
 use std::collections::{HashMap, HashSet};
