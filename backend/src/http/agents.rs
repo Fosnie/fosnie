@@ -668,3 +668,103 @@ pub async fn rollback_agent_version(
     let _ = audit::append(&state.pg, &ev).await;
     Ok(Json(serde_json::json!({ "ok": true, "version": new_version })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tool-set validator is the write-time gate shared by create, update, and
+    /// version rollback. It needs a Postgres pool (the MCP catalogue and custom-tool
+    /// lookups are DB reads), so these skip when `DATABASE_URL` is unset.
+    async fn pool() -> Option<sqlx::PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        crate::db::connect(&url, 5).await.ok()
+    }
+
+    /// Freezes a past defect: the previous Rule-of-Two clause was
+    /// `(egress || RequiresRun) && !needs_agent_run()`, and since
+    /// `needs_agent_run() == RequiresRun || egress`, that is `X && !X` for every tool
+    /// - structurally dead, never able to fire. It was removed; this proves it could
+    /// never have done its claimed job, so no behaviour was lost.
+    #[test]
+    fn removed_rule_of_two_clause_was_structurally_dead() {
+        use crate::tools::{self, ToolEffect};
+        for t in tools::ALL {
+            let old_clause = (tools::egress(t)
+                || matches!(tools::effect(t), ToolEffect::RequiresRun))
+                && !tools::needs_agent_run(t);
+            assert!(
+                !old_clause,
+                "the removed clause was X && !X and could never fire ({t})"
+            );
+        }
+    }
+
+    /// The honest validator must accept every state-changing / egress native (they
+    /// are on seeded agents; rejecting them would make those agents unsaveable) and
+    /// refuse a name that is in no registry.
+    #[tokio::test]
+    async fn validator_accepts_native_tools_and_refuses_unknown() {
+        let Some(pg) = pool().await else {
+            eprintln!("skip: DATABASE_URL unset");
+            return;
+        };
+        validate_toolset(
+            &pg,
+            &[
+                "web_search".into(),
+                "code_interpreter".into(),
+                "generate_artefact".into(),
+                "edit_document".into(),
+            ],
+        )
+        .await
+        .expect("state/egress natives must validate, not be rejected");
+
+        let err = validate_toolset(&pg, &["totally_unknown_tool_xyz".into()])
+            .await
+            .expect_err("an unknown name must be refused");
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    /// A custom tool could never be granted to an agent: the validator rejected any
+    /// name that was not a native or an MCP grant, so `agent_tools` could never carry
+    /// a custom name. This proves the fix: a custom tool that exists is now grantable,
+    /// while one that does not exist is still refused.
+    #[tokio::test]
+    async fn validator_now_accepts_a_custom_tool_that_exists() {
+        let Some(pg) = pool().await else {
+            eprintln!("skip: DATABASE_URL unset");
+            return;
+        };
+        let name = format!("authz_ct_{}", uuid::Uuid::now_v7().simple());
+
+        // Absent → unknown → refused (and the existence helper agrees).
+        assert!(validate_toolset(&pg, &[name.clone()]).await.is_err());
+        assert!(!crate::tools::custom::exists_by_name(&pg, &name).await.unwrap());
+
+        sqlx::query(
+            "INSERT INTO custom_tools (id, name, display_name, description, kind, params_schema, \
+             config, requires_egress, side_effecting, enabled, approved_version, version, timeout_secs) \
+             VALUES ($1,$2,$2,'test','http',$3,$4,false,false,true,1,1,10)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(&name)
+        .bind(serde_json::json!({ "type": "object", "properties": {} }))
+        .bind(serde_json::json!({ "method": "GET", "url": "http://127.0.0.1:1/x", "headers": {}, "response": { "mode": "raw" } }))
+        .execute(&pg)
+        .await
+        .expect("insert custom tool");
+
+        // Present → grantable (the N7 fix), and re-checked for enabled/approved on read.
+        assert!(crate::tools::custom::exists_by_name(&pg, &name).await.unwrap());
+        validate_toolset(&pg, &[name.clone()])
+            .await
+            .expect("a custom tool that exists is now a valid grant");
+
+        let _ = sqlx::query("DELETE FROM custom_tools WHERE name = $1")
+            .bind(&name)
+            .execute(&pg)
+            .await;
+    }
+}
