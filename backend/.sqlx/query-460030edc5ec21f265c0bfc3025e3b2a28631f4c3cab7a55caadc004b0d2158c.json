@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE research_templates SET archived_at = now(), updated_at = now() WHERE id = $1 AND archived_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "460030edc5ec21f265c0bfc3025e3b2a28631f4c3cab7a55caadc004b0d2158c"
+}

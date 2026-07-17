@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT label, description, skeleton, writing_instructions, outline_mode, scope,\n                  created_by, archived_at\n           FROM research_templates WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "research_templates",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "research_templates",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "skeleton",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "research_templates",
+            "name": "skeleton"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "writing_instructions",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "research_templates",
+            "name": "writing_instructions"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "outline_mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "research_templates",
+            "name": "outline_mode"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "scope",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "research_templates",
+            "name": "scope"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "research_templates",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "archived_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "research_templates",
+            "name": "archived_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "4920673ba2993fa62e8942052ef0e6f2d396855e23c4f9187b86bd4c8c81d41e"
+}

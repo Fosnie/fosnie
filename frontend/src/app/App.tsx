@@ -52,6 +52,7 @@ const Libraries = lazyScreen(() => import("@/screens/Libraries"), "Libraries");
 const LegalShell = lazyScreen(() => import("@/screens/LegalShell"), "LegalShell");
 const Profile = lazyScreen(() => import("@/screens/Profile"), "Profile");
 const Studio = lazyScreen(() => import("@/screens/Studio"), "Studio");
+const ResearchTemplates = lazyScreen(() => import("@/screens/ResearchTemplates"), "ResearchTemplates");
 const DeepResearch = lazyScreen(() => import("@/screens/DeepResearch"), "DeepResearch");
 
 // The chat surface (New chat / `/` / `/c/:id`) is mode-aware: General → Chat,
@@ -108,6 +109,7 @@ const router = createBrowserRouter([
           { path: "automations/:automationId", element: <Automations /> },
           { path: "prompts", element: <Prompts /> },
           { path: "prompts/:promptId", element: <Prompts /> },
+          { path: "research", element: <ResearchTemplates /> },
           { path: "memory", element: <Memory /> },
         ],
       },

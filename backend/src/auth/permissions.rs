@@ -174,6 +174,7 @@ pub const AGENTS_MANAGE: &str = "agents.manage";
 pub const SKILLS_MANAGE: &str = "skills.manage";
 pub const TOOLS_MANAGE: &str = "tools.manage";
 pub const WORKFLOWS_MANAGE: &str = "workflows.manage";
+pub const RESEARCH_TEMPLATES_MANAGE: &str = "research.templates.manage";
 pub const ANALYTICS_VIEW: &str = "analytics.view";
 pub const INTEGRATIONS_MANAGE: &str = "integrations.manage";
 pub const GROUNDEDNESS_VIEW: &str = "groundedness.view";
@@ -278,6 +279,12 @@ pub const PERMISSION_CATALOG: &[PermissionDef] = &[
     PermissionDef {
         name: WORKFLOWS_MANAGE,
         description: "Create and manage event-driven workflows.",
+        area: PermissionArea::Content,
+        scope: ScopeKind::None,
+    },
+    PermissionDef {
+        name: RESEARCH_TEMPLATES_MANAGE,
+        description: "Create and manage deployment-wide Deep Research report templates.",
         area: PermissionArea::Content,
         scope: ScopeKind::None,
     },
@@ -390,6 +397,7 @@ mod tests {
             SKILLS_MANAGE,
             TOOLS_MANAGE,
             WORKFLOWS_MANAGE,
+            RESEARCH_TEMPLATES_MANAGE,
             ANALYTICS_VIEW,
             INTEGRATIONS_MANAGE,
             GROUNDEDNESS_VIEW,

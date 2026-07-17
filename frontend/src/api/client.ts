@@ -2452,7 +2452,8 @@ export function useResearchChats(enabled = true) {
 export interface ResearchRequestBody {
   question: string;
   source: "web" | "files" | "hybrid";
-  template: "exploration" | "formal" | "freeform" | "literature";
+  /** A built-in template id or a user-defined template's UUID. */
+  template: string;
   /** Narrowed corpus scope (subset of readable libraries); empty ⇒ all. */
   kb_ids?: string[];
   /** Triage-chip answers steering scope voice (non-scope clarifications). */
@@ -2510,6 +2511,107 @@ export function startResearch(body: ResearchRequestBody) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+// --- Deep Research templates -------------------------
+
+/** One section in a report template's structure. The per-section flags are what
+ * the editor toggles; the research service derives the shape it consumes. */
+export interface ResearchTemplateSection {
+  heading: string;
+  brief: string;
+  expandable: boolean;
+  exec_summary: boolean;
+}
+
+/** A built-in template's picker metadata (headings only; the service owns the
+ * body). */
+export interface BuiltinTemplate {
+  id: string;
+  label: string;
+  description: string;
+  structure: string[];
+  outline_mode: "constrained" | "free";
+}
+
+/** A user-defined template as it appears in the picker catalogue. */
+export interface CustomTemplateSummary {
+  id: string;
+  label: string;
+  description: string;
+  structure: string[];
+  outline_mode: "constrained" | "free";
+  scope: "personal" | "global";
+  can_manage: boolean;
+}
+
+export interface ResearchTemplateCatalogue {
+  builtin: BuiltinTemplate[];
+  custom: CustomTemplateSummary[];
+}
+
+/** Full detail of a user-defined template (the editor's load shape). */
+export interface ResearchTemplateDetail {
+  id: string;
+  label: string;
+  description: string;
+  skeleton: ResearchTemplateSection[];
+  writing_instructions: string;
+  outline_mode: "constrained" | "free";
+  scope: "personal" | "global";
+  can_manage: boolean;
+  archived: boolean;
+}
+
+export function useResearchTemplates() {
+  return useQuery({
+    queryKey: ["research", "templates"],
+    queryFn: () => apiFetch<ResearchTemplateCatalogue>("/api/research/templates"),
+  });
+}
+
+export function useResearchTemplate(id: string | undefined) {
+  return useQuery({
+    queryKey: ["research", "template", id],
+    queryFn: () => apiFetch<ResearchTemplateDetail>(`/api/research/templates/${id}`),
+    enabled: !!id,
+  });
+}
+
+/** The editable body of a template (shared by create-from-scratch and update). */
+export interface ResearchTemplateBody {
+  label: string;
+  description: string;
+  skeleton: ResearchTemplateSection[];
+  writing_instructions: string;
+  outline_mode: "constrained" | "free";
+}
+
+/** Create a template. Pass `duplicate_of` (a built-in id) to fork an editable
+ * copy of a built-in (personal, filled from the research service), or a full
+ * body to create from scratch. `scope` defaults to personal. */
+export function createResearchTemplate(
+  body: ({ duplicate_of: string } | ResearchTemplateBody) & { scope?: "personal" | "global" },
+): Promise<{ id: string }> {
+  return apiFetch<{ id: string }>("/api/research/templates", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateResearchTemplate(
+  id: string,
+  body: ResearchTemplateBody & { scope?: "personal" | "global" },
+): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/research/templates/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Archive (soft-delete) a template. Existing chats keep resolving it. */
+export function archiveResearchTemplate(id: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/research/templates/${id}`, { method: "DELETE" });
 }
 
 /** Convert a stored markdown artefact to DOCX/PDF (dedupes server-side). */

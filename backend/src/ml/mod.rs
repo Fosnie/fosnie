@@ -866,6 +866,11 @@ struct DeepResearchRequest<'a> {
     question: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     template: Option<&'a str>,
+    /// A user-defined template resolved by the backend and sent inline (the ML
+    /// service holds no database). Absent for the built-ins, whose behaviour the
+    /// service owns. Skipped when None so the built-in wire shape is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_spec: Option<&'a serde_json::Value>,
     source: &'a str,
     kb_ids: &'a [String],
     docs: &'a [DocEntry],
@@ -926,6 +931,32 @@ pub async fn research_verify_enabled(pg: &sqlx::PgPool) -> bool {
         .unwrap_or(false)
 }
 
+/// The full definitions of the built-in report templates, fetched from the
+/// research service. Used only when a user duplicates a built-in into an editable
+/// one — the picker itself is served from the backend's own metadata copy, so
+/// this is never on a page-load path and is deliberately un-cached. If the ML
+/// service is down the duplicate fails honestly rather than serving a stale copy.
+pub async fn builtin_research_templates(
+    http: &reqwest::Client,
+    base_url: &str,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let url = format!("{}/research/templates", base_url.trim_end_matches('/'));
+    let resp = http
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| AppError::Other(anyhow!("ml /research/templates: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError::Other(anyhow!(
+            "ml /research/templates returned {}",
+            resp.status()
+        )));
+    }
+    resp.json::<Vec<serde_json::Value>>()
+        .await
+        .map_err(|e| AppError::Other(anyhow!("ml /research/templates decode: {e}")))
+}
+
 /// Live event stream for a research run. Dropping it aborts the reader (which
 /// cancels the upstream HTTP body — `GenStream`/`WebStream` mechanics).
 pub struct ResearchStream {
@@ -954,6 +985,7 @@ pub async fn research_stream(
     base_url: &str,
     question: &str,
     template: Option<&str>,
+    template_spec: Option<&serde_json::Value>,
     source: &str,
     kb_ids: &[String],
     docs: &[DocEntry],
@@ -970,6 +1002,7 @@ pub async fn research_stream(
     let mut req = http.post(url).json(&DeepResearchRequest {
         question,
         template,
+        template_spec,
         source,
         kb_ids,
         docs,
@@ -2210,6 +2243,48 @@ pub async fn model_info(http: &reqwest::Client, base_url: &str) -> Result<ModelI
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // GOLDEN regression: with no user-defined template, the `/deep_research` body
+    // must serialise EXACTLY as before this feature — the `template_spec` field
+    // absent, not `null`. A run with zero custom templates has to be byte-identical
+    // to the pre-feature request. Asserted by serialisation, never by eye. The
+    // overrides are bound locally so the request may borrow them.
+    fn dr_json(template_spec: Option<&serde_json::Value>) -> String {
+        let web = WebOverrides::default();
+        let research = ResearchOverrides::default();
+        let req = DeepResearchRequest {
+            question: "q",
+            template: Some("exploration"),
+            template_spec,
+            source: "web",
+            kb_ids: &[],
+            docs: &[],
+            total_docs: None,
+            refinements: &[],
+            verify: false,
+            overrides: &web,
+            research: &research,
+            provider_overrides: ProviderOverrides::new(),
+        };
+        serde_json::to_string(&req).unwrap()
+    }
+
+    #[test]
+    fn deep_research_omits_template_spec_when_absent() {
+        let json = dr_json(None);
+        assert!(
+            !json.contains("template_spec"),
+            "built-in run must not carry a template_spec key: {json}"
+        );
+    }
+
+    #[test]
+    fn deep_research_includes_template_spec_when_present() {
+        let spec = serde_json::json!({ "id": "x", "label": "Ours" });
+        let json = dr_json(Some(&spec));
+        assert!(json.contains("template_spec"), "custom run must carry the spec: {json}");
+        assert!(json.contains("\"label\":\"Ours\""));
+    }
 
     // A4: the NDJSON shapes the ml `/retrieve?stream=true` runner emits must decode
     // to each `RetrieveEvent` variant (tag = "type"). Guards the Rust↔Python wire

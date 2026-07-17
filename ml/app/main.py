@@ -449,7 +449,13 @@ class ResearchDoc(BaseModel):
 
 class DeepResearchRequest(BaseModel):
     question: str
-    template: str | None = None  # exploration | formal | freeform | literature
+    # Built-in template id (one of the four the research service defines). For a
+    # user-defined template the backend sends the whole spec inline in
+    # `template_spec` instead, which takes priority over this id.
+    template: str | None = None
+    # A user-defined template, resolved and serialised by the backend (this
+    # service holds no database). When present it overrides `template`.
+    template_spec: dict | None = None
     # Corpus census / hybrid (Phase 2). source ∈ {web, files, hybrid}. For files
     # and hybrid the Rust backend resolves the readable scope and sends the doc
     # inventory; ML reads the files (paths are storage-confined by safe_path).
@@ -527,10 +533,22 @@ async def deep_research(req: DeepResearchRequest):
             total_docs=req.total_docs,
             refinements=req.refinements,
             verify=req.verify,
+            template_spec=req.template_spec,
         ):
             yield json.dumps(event) + "\n"
 
     return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
+@app.get("/research/templates")
+async def research_templates():
+    """The four built-in report templates in full (skeleton, briefs, writing
+    instructions, outline mode). The backend serves the picker from its own
+    metadata copy and only calls this when a user duplicates a built-in into an
+    editable one — it needs the real writing instructions, which live here."""
+    from .research import templates as templates_mod
+
+    return [templates_mod.to_spec(t) for t in templates_mod.all_templates()]
 
 
 class ResearchTriageRequest(BaseModel):

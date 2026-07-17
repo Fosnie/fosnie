@@ -32,6 +32,112 @@ def test_all_templates():
     assert ids == {"exploration", "formal", "freeform", "literature"}
 
 
+# The backend mirrors these four for the picker in
+# backend/src/http/research_templates.rs (label, outline mode, section headings).
+# If any of them change here, update that constant too (a matching pin test on the
+# Rust side guards the other direction). This is a pin, not a proof: the two tests
+# cannot see each other, so a synchronised edit of both would slip through.
+EXPECTED_BUILTINS = {
+    "exploration": {
+        "label": "Exploration brief",
+        "outline_mode": "constrained",
+        "headings": [
+            "Context & framing", "Landscape & options", "Key unknowns & risks", "Recommendations",
+        ],
+    },
+    "formal": {
+        "label": "Formal report",
+        "outline_mode": "constrained",
+        "headings": [
+            "Executive summary", "Background", "Findings", "Analysis",
+            "Conclusions & recommendations",
+        ],
+    },
+    "freeform": {"label": "Free-form", "outline_mode": "free", "headings": []},
+    "literature": {
+        "label": "Literature review",
+        "outline_mode": "constrained",
+        "headings": [
+            "Executive summary", "Introduction & scope", "Review method & corpus",
+            "Themes in the literature", "Consensus, contradictions and gaps",
+            "Conclusions & further research",
+        ],
+    },
+}
+
+
+def test_builtins_mirror_the_backend_picker():
+    for tid, want in EXPECTED_BUILTINS.items():
+        t = templates.get(tid)
+        assert t.label == want["label"], tid
+        assert t.outline_mode == want["outline_mode"], tid
+        assert [s.heading for s in t.skeleton] == want["headings"], tid
+
+
+def test_to_spec_wire_shape():
+    # The wire shape `GET /research/templates` serves. Each section carries the two
+    # derived per-section flags the editor round-trips.
+    specs = [templates.to_spec(t) for t in templates.all_templates()]
+    assert {s["id"] for s in specs} == {"exploration", "formal", "freeform", "literature"}
+    formal = next(s for s in specs if s["id"] == "formal")
+    assert set(formal) == {"id", "label", "skeleton", "writing_instructions", "outline_mode"}
+    exec_row = formal["skeleton"][0]
+    assert set(exec_row) == {"heading", "brief", "expandable", "exec_summary"}
+    assert exec_row["exec_summary"] is True
+    findings = next(s for s in formal["skeleton"] if s["heading"] == "Findings")
+    assert findings["expandable"] is True
+    assert findings["exec_summary"] is False
+
+
+@pytest.mark.parametrize("tid", ["exploration", "formal", "freeform", "literature"])
+def test_from_spec_inverts_to_spec(tid):
+    # to_spec serves the picker; from_spec feeds the pipeline; between them the
+    # backend just forwards JSON. They must be exact inverses for every built-in.
+    original = templates.get(tid)
+    rebuilt = templates.from_spec(templates.to_spec(original))
+    assert rebuilt.id == original.id
+    assert rebuilt.label == original.label
+    assert rebuilt.writing_instructions == original.writing_instructions
+    assert rebuilt.outline_mode == original.outline_mode
+    assert rebuilt.expandable == original.expandable
+    assert [(s.heading, s.brief, s.placeholder) for s in rebuilt.skeleton] == [
+        (s.heading, s.brief, s.placeholder) for s in original.skeleton
+    ]
+
+
+def test_from_spec_exec_summary_and_expandable():
+    spec = {
+        "id": "x",
+        "label": "Custom",
+        "outline_mode": "constrained",
+        "writing_instructions": "Be terse.",
+        "skeleton": [
+            {"heading": "Summary", "brief": "", "expandable": False, "exec_summary": True},
+            {"heading": "Body", "brief": "the evidence", "expandable": True, "exec_summary": False},
+        ],
+    }
+    t = templates.from_spec(spec)
+    assert t.skeleton[0].placeholder == EXEC_SUMMARY_PLACEHOLDER
+    assert t.skeleton[1].placeholder is None
+    assert t.expandable == ("Body",)
+
+
+def test_from_spec_free_mode_clears_flags():
+    # In free mode the flags are inert downstream, so from_spec drops them.
+    spec = {
+        "id": "x",
+        "label": "Custom",
+        "outline_mode": "free",
+        "writing_instructions": "",
+        "skeleton": [
+            {"heading": "A", "brief": "", "expandable": True, "exec_summary": True},
+        ],
+    }
+    t = templates.from_spec(spec)
+    assert t.expandable == ()
+    assert t.skeleton[0].placeholder is None
+
+
 def test_literature_skeleton_has_analysis_and_exec_summary():
     lit = templates.get("literature")
     headings = [s.heading for s in lit.skeleton]

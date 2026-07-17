@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Small glass dropdown replacing native <select> where we want the glass-era look
-// and a slide-in animation (Deep Research template/depth pickers). The menu is
+// and a slide-in animation (e.g. the Deep Research template picker). The menu is
 // portalled (via <Popover>) so it escapes the glass composer's backdrop-filter root
 // and frosts what's behind it; Popover also handles placement, outside-click + Esc.
 

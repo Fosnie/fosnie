@@ -126,8 +126,10 @@ _ALL = {t.id: t for t in (_EXPLORATION, _FORMAL, _FREEFORM, _LITERATURE)}
 
 
 def get(template_id: str) -> Template:
-    """Resolve a template id. The Rust backend validates the id against exactly
-    these four before the run starts, so an unknown id here is a bug, not a user
+    """Resolve a built-in template id. User-defined templates never reach this
+    function: the backend resolves them from its own store and sends the whole
+    specification inline (see `from_spec`), so anything arriving here is expected
+    to be one of the four built-ins. An unknown id is therefore a bug, not a user
     choice — raise rather than silently downgrading to free-form (which would
     discard the requested structure without telling anyone). Free-form is reachable
     only by its explicit `freeform` id."""
@@ -142,3 +144,63 @@ def get(template_id: str) -> Template:
 
 def all_templates() -> list[Template]:
     return list(_ALL.values())
+
+
+def from_spec(spec: dict) -> Template:
+    """Build a Template from a caller-supplied specification. The backend resolves
+    user-defined templates from its own store and sends them inline; this service
+    holds no database. Shape-mapping only: the backend has already enforced the
+    limits (section count, heading uniqueness, lengths, at most one executive
+    summary). The wire shape mirrors `to_spec`:
+
+        {id, label, skeleton: [{heading, brief, expandable, exec_summary}],
+         writing_instructions, outline_mode}
+
+    In "free" mode the per-section flags do nothing downstream (they reach the
+    outline only via the constrained skeleton-enforcement pass), so the executive
+    summary placeholder is dropped and `expandable` collapses to empty — matching
+    what the backend normalises and keeping this function honest on its own."""
+    outline_mode = spec.get("outline_mode", "constrained")
+    constrained = outline_mode == "constrained"
+    sections = spec.get("skeleton") or []
+    skeleton: list[SectionSpec] = []
+    expandable: list[str] = []
+    for s in sections:
+        heading = s["heading"]
+        placeholder = (
+            EXEC_SUMMARY_PLACEHOLDER
+            if constrained and s.get("exec_summary")
+            else None
+        )
+        skeleton.append(SectionSpec(heading, s.get("brief", ""), placeholder=placeholder))
+        if constrained and s.get("expandable"):
+            expandable.append(heading)
+    return Template(
+        id=spec["id"],
+        label=spec["label"],
+        skeleton=skeleton,
+        writing_instructions=spec.get("writing_instructions", ""),
+        outline_mode=outline_mode,
+        expandable=tuple(expandable),
+    )
+
+
+def to_spec(t: Template) -> dict:
+    """The inverse of `from_spec`: the wire shape of a template. Serves the
+    built-in definitions to callers that need a full copy — duplicating a built-in
+    into a user-defined one. Inverse of `from_spec` for all four built-ins."""
+    return {
+        "id": t.id,
+        "label": t.label,
+        "skeleton": [
+            {
+                "heading": s.heading,
+                "brief": s.brief,
+                "expandable": s.heading in t.expandable,
+                "exec_summary": s.placeholder == EXEC_SUMMARY_PLACEHOLDER,
+            }
+            for s in t.skeleton
+        ],
+        "writing_instructions": t.writing_instructions,
+        "outline_mode": t.outline_mode,
+    }

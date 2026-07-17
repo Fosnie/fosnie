@@ -55,6 +55,10 @@ struct ResearchPayload {
     role: String,
     question: String,
     template: Option<String>,
+    /// A user-defined template snapshot, frozen when the run was enqueued (so a
+    /// later edit or archive cannot rewrite a queued/running report). Absent for
+    /// the built-ins, which the research service owns.
+    template_spec: Option<serde_json::Value>,
     source: String,
     kb_ids: Vec<Uuid>,
     refinements: Vec<String>,
@@ -88,6 +92,7 @@ fn parse(payload: &serde_json::Value) -> Result<ResearchPayload> {
         role: payload.get("role").and_then(|v| v.as_str()).unwrap_or("user").to_string(),
         question,
         template: payload.get("template").and_then(|v| v.as_str()).map(str::to_string),
+        template_spec: payload.get("template_spec").filter(|v| !v.is_null()).cloned(),
         source: payload.get("source").and_then(|v| v.as_str()).unwrap_or("web").to_string(),
         kb_ids,
         refinements,
@@ -415,6 +420,7 @@ pub async fn run_research(state: &AppState, payload: &serde_json::Value) -> Resu
             &state.boot.ml.base_url,
             &p.question,
             p.template.as_deref(),
+            p.template_spec.as_ref(),
             &p.source,
             &kb_ids,
             &docs,
@@ -619,19 +625,32 @@ mod tests {
         let chat = Uuid::now_v7();
         let turn = Uuid::now_v7();
         let kb = Uuid::now_v7();
+        let tmpl_id = Uuid::now_v7().to_string();
+        let spec = json!({ "id": tmpl_id, "label": "Ours", "outline_mode": "constrained" });
         let ok = parse(&json!({
             "chat_id": chat, "turn_id": turn, "question": "what is x",
-            "template": "literature", "role": "user",
+            "template": tmpl_id, "template_spec": spec.clone(), "role": "user",
             "source": "files", "kb_ids": [kb.to_string()], "refinements": ["Last year"],
         }))
         .expect("valid payload");
         assert_eq!(ok.chat_id, chat);
         assert_eq!(ok.question, "what is x");
-        assert_eq!(ok.template.as_deref(), Some("literature"));
+        assert_eq!(ok.template.as_deref(), Some(tmpl_id.as_str()));
+        assert_eq!(ok.template_spec.as_ref(), Some(&spec));
         assert_eq!(ok.source, "files");
         assert_eq!(ok.kb_ids, vec![kb]);
         assert_eq!(ok.refinements, vec!["Last year".to_string()]);
         assert!(ok.run_id.is_none());
+
+        // Built-in path: a bare template id and no spec (spec stays None, and an
+        // explicit null must not become Some(Null)).
+        let builtin = parse(&json!({
+            "chat_id": chat, "turn_id": turn, "question": "q",
+            "template": "literature", "template_spec": serde_json::Value::Null,
+        }))
+        .unwrap();
+        assert_eq!(builtin.template.as_deref(), Some("literature"));
+        assert!(builtin.template_spec.is_none());
 
         // Web default: no source/kb_ids/refinements present.
         let web = parse(&json!({ "chat_id": chat, "turn_id": turn, "question": "q" })).unwrap();

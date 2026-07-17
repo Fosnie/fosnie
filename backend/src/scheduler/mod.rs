@@ -513,7 +513,8 @@ async fn handle(
             // the research chat with citations + an MD artefact. Terminal —
             // the failure path posts an honest message and returns Ok (no
             // retry, lest a re-run double-post). Payload: {run_id?, chat_id,
-            // turn_id, user_id, role, question, template?, depth?}.
+            // turn_id, user_id, role, question, source, kb_ids, refinements,
+            // template?, template_spec?}.
             crate::research::run_research(state, payload).await.map_err(|e| e.to_string())
         }
         TaskType::ReindexEmbeddings => {

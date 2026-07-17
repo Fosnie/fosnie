@@ -51,6 +51,7 @@ pub mod projects;
 pub mod providers;
 pub mod prompts;
 pub mod research;
+pub mod research_templates;
 pub mod skills;
 pub mod superadmin;
 pub mod tabular;
@@ -336,6 +337,16 @@ pub fn router(
             .route("/api/artefacts/{id}/create-page", post(artefacts::create_page))
             .route("/api/research/prepare", post(research::prepare))
             .route("/api/research/start", post(research::start))
+            .route(
+                "/api/research/templates",
+                post(research_templates::create_template).get(research_templates::list_templates),
+            )
+            .route(
+                "/api/research/templates/{id}",
+                axum::routing::get(research_templates::get_template)
+                    .patch(research_templates::update_template)
+                    .delete(research_templates::archive_template),
+            )
             .route("/api/chats/{id}/export", get(export::export_chat))
             .route("/api/admin/projects/{id}/export", get(export::export_project_db))
             .route("/api/exports", post(export::create_export).get(export::list_exports))
