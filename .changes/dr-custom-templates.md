@@ -1,6 +1,7 @@
 ---
 kind: added
 bump: minor
+roadmap_id: dr-templates
 ---
 
 # Custom Deep Research templates
