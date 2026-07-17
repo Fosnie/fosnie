@@ -41,7 +41,7 @@ fn rfc3339(t: Option<OffsetDateTime>) -> Option<String> {
 /// A subscribable trigger. `emitted` marks the events the platform actually
 /// emits today; the rest are reserved names — a workflow may subscribe but stays
 /// inert until they are wired. This slice is the **single source of truth** for the
-/// backend validator and the `GET /api/workflows/triggers` UI dropdown (D4).
+/// backend validator and the `GET /api/workflows/triggers` UI dropdown.
 #[derive(Serialize)]
 pub struct TriggerDef {
     pub name: &'static str,
@@ -100,7 +100,7 @@ fn require_lead(ctx: &AuthContext) -> Result<()> {
     }
 }
 
-/// The authoring gate (D3): a power-user/admin (`require_lead`) **or** any caller
+/// The authoring gate: a power-user/admin (`require_lead`) **or** any caller
 /// holding the `workflows.manage` permission. Additive — Core's default policy
 /// treats the permission as `is_admin`, so power-users keep access unchanged and
 /// an Enterprise delegated-admin role can be granted authoring without the fixed
@@ -428,7 +428,7 @@ pub async fn list_runs(
     }).collect()))
 }
 
-/// The trigger catalogue (D4) — the single source for the create-form dropdown.
+/// The trigger catalogue — the single source for the create-form dropdown.
 /// Gated like authoring so a caller who can't create workflows can't enumerate the
 /// catalogue either. `emitted` lets the UI flag reserved-but-inert triggers.
 pub async fn list_triggers(
