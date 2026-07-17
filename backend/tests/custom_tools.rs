@@ -37,6 +37,36 @@ fn admin_ctx(user_id: Option<Uuid>) -> AuthContext {
     }
 }
 
+/// Mint an authorisation witness through the real seam, then dispatch — the only
+/// way to reach the witness-gated `tools::dispatch`. The custom tool under test is
+/// present in `custom`, so it enters the per-turn authorised set as production
+/// would (via `load_enabled_custom`).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_via_seam(
+    st: &AppState,
+    ctx: &AuthContext,
+    project_id: Option<Uuid>,
+    chat_id: Uuid,
+    turn: Uuid,
+    tx: &mpsc::Sender<ServerFrame>,
+    custom: &std::collections::HashMap<String, tools::custom::CustomToolRow>,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<String, fosnie_backend::AppError> {
+    let authorised =
+        tools::AuthorisedTools::build(&[name.to_string()], &[name.to_string()], false, custom);
+    let overrides = std::collections::HashMap::new();
+    match tools::authorize_native_call(st, ctx, chat_id, &authorised, &overrides, name, project_id)
+        .await
+    {
+        tools::NativeDecision::Allowed(w) => {
+            tools::dispatch(st, ctx, chat_id, turn, tx, None, None, &[], custom, &w, args).await
+        }
+        tools::NativeDecision::Recoverable(m) => Ok(m),
+        tools::NativeDecision::Denied(e) => Err(e),
+    }
+}
+
 /// A loopback JSON endpoint: returns `{"data":{"rate":"1.27"}}`.
 async fn spawn_echo() -> u16 {
     let app = axum::Router::new()
@@ -98,8 +128,8 @@ async fn custom_http_tool_end_to_end() {
 
     // Dispatch: substitution + JSON-Pointer extraction → the rate string.
     let (tx, _rx) = mpsc::channel::<ServerFrame>(8);
-    let out = tools::dispatch(
-        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, &[], &map, "itest_fx",
+    let out = dispatch_via_seam(
+        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, &map, "itest_fx",
         &serde_json::json!({ "pair": "GBPUSD" }),
     )
     .await
@@ -109,8 +139,8 @@ async fn custom_http_tool_end_to_end() {
     // SSRF: a remote (requires_egress=true) tool may NOT reach loopback.
     let id2 = insert_tool(&pg, "itest_ssrf", &url, true, true).await;
     let (_defs2, map2) = tools::custom::load_enabled_custom(&pg, &["itest_ssrf".to_string()]).await;
-    let blocked = tools::dispatch(
-        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, &[], &map2, "itest_ssrf",
+    let blocked = dispatch_via_seam(
+        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, &map2, "itest_ssrf",
         &serde_json::json!({ "pair": "X" }),
     )
     .await
@@ -158,8 +188,8 @@ async fn custom_script_tool_refuses_without_sandbox() {
     assert_eq!(defs.len(), 1, "an enabled+approved script tool is advertised");
 
     let (tx, _rx) = mpsc::channel::<ServerFrame>(8);
-    let out = tools::dispatch(
-        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, None, &[], &map, "itest_script",
+    let out = dispatch_via_seam(
+        &state, &ctx, None, Uuid::now_v7(), Uuid::now_v7(), &tx, &map, "itest_script",
         &serde_json::json!({}),
     )
     .await

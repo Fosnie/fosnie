@@ -195,7 +195,7 @@ pub async fn require_manage(pool: &PgPool, ctx: &AuthContext, kb_id: Uuid) -> Re
 /// (`source = "connector_import"`). Runs the shared format gate, writes the bytes
 /// under the documents dir, inserts the `kb_documents` row (stamping `source`),
 /// enqueues async ingest, and audits `kb.document.uploaded`. The KB id is stamped
-/// backend-side and never taken from client input (anti-spoof, §4.4). The caller
+/// backend-side and never taken from client input (anti-spoof). The caller
 /// owns the manage/authorisation check.
 pub async fn ingest_bytes(
     state: &crate::state::AppState,
@@ -298,7 +298,7 @@ async fn write_kb_bytes(
     Ok(rel)
 }
 
-/// The retrieval allow-list (the ethical wall, §4.2): KBs attached to this
+/// The retrieval allow-list (the ethical wall): KBs attached to this
 /// chat's context (agent-bound ∪ project-linked ∪ chat-linked) **intersected**
 /// with the KBs this user may personally read. Resolved live from Postgres in a
 /// single query, so grant/attach/detach take effect on the very next call.

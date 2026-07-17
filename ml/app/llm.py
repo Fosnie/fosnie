@@ -76,9 +76,9 @@ def _openai_reasoning_effort(model: str | None, req: dict[str, Any]) -> str | No
     """Map the unified reasoning request to OpenAI's `reasoning_effort`, or `None`
     to omit. Gate the caller on `_is_openai` first — only reasoning models accept
     the field; on a plain chat model (gpt-4o/*-chat) it is a HARD error, not a
-    no-op (addendum). ⚠️ On GPT-5.4+, `reasoning_effort:"none"` together with
-    tools is unsupported in Chat Completions (would need the Responses API); we
-    only emit `none` to disable reasoning, accepting that limitation for now."""
+    no-op. Note (gpt-5.x): Chat Completions accepts function tools ONLY when
+    reasoning is disabled (`reasoning_effort:"none"`); a call that keeps reasoning
+    on while passing tools must use the Responses API instead."""
     m = (model or "").strip().lower()
     if not _OPENAI_REASONING_RE.match(m):
         return None  # non-reasoning OpenAI model — never send (else 400)
@@ -248,6 +248,33 @@ def _extract_text_tool_call(content: str) -> tuple[list[dict], str]:
             return [{"id": None, "name": name, "arguments": args}], stripped
         i = j + 1
     return [], content
+
+
+def _finalise_stream_tool_calls(acc: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Turn accumulated streamed tool-call fragments into `tool_call` events, in call
+    order. Each call's arguments are parsed exactly once; a call with no name, or whose
+    arguments never became valid JSON, is dropped with a warning rather than executed
+    half-formed. `arguments` is emitted as a parsed object (the shape the tool loop and
+    the non-streaming step both use)."""
+    events: list[dict[str, Any]] = []
+    for idx in sorted(acc):
+        slot = acc[idx]
+        name = (slot.get("name") or "").strip()
+        if not name:
+            continue
+        raw = slot.get("args") or "{}"
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("dropping malformed streamed tool_call args for %s: %.200r", name, raw)
+            continue
+        events.append({
+            "type": "tool_call",
+            "id": slot.get("id"),
+            "name": name,
+            "arguments": parsed if isinstance(parsed, dict) else {},
+        })
+    return events
 
 
 async def chat_step(
@@ -444,14 +471,34 @@ def _responses_effort(effort: str | None) -> str:
     return effort if effort in ("minimal", "low", "medium", "high") else "high"
 
 
+def _responses_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Translate chat-completions tool schemas (`{type:function, function:{...}}`) to the
+    flatter Responses-API function shape (`{type:function, name, description, parameters}`)."""
+    out: list[dict[str, Any]] = []
+    for t in tools or []:
+        fn = t.get("function") or {}
+        if fn.get("name"):
+            out.append({
+                "type": "function",
+                "name": fn["name"],
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+            })
+    return out
+
+
 async def _stream_responses(
     base: str, model: str | None, messages: list[dict[str, Any]], sampling: dict[str, Any],
     effort: str | None, trace_on: bool, stage: str | None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """OpenAI Responses API stream: summarised reasoning streamed on the
     dedicated `reasoning` channel BEFORE the first answer token, then the answer tokens,
     then a terminal `done`. Raises `_ResponsesUnsupported` (before any yield) on a non-200
-    so the caller falls back to chat-completions; a mid-stream failure surfaces as LlmError."""
+    so the caller falls back to chat-completions; a mid-stream failure surfaces as LlmError.
+
+    With `tools`, a function call the model makes is accumulated per output item and
+    emitted as a `{"type":"tool_call",...}` event before `done` (finish `tool_calls`)."""
     url = f"{base.rstrip('/')}/responses"
     payload: dict[str, Any] = {
         "model": model,
@@ -460,10 +507,15 @@ async def _stream_responses(
         "max_output_tokens": sampling.get("max_tokens") or settings.llm_default_max_tokens,
         "stream": True,
     }
+    if tools:
+        payload["tools"] = _responses_tools(tools)
     headers = {"Authorization": f"Bearer {cfg('llm_api_key', settings.llm_api_key)}"}
     client = http_client.get_client()
     usage: dict[str, Any] | None = None
     finish: str | None = None
+    # Function calls stream as their own output items: `output_item.added` carries the
+    # id/name, `function_call_arguments.delta` the JSON fragments, `.done` the full string.
+    tool_acc: dict[str, dict[str, Any]] = {}
     async with client.stream("POST", url, json=payload, headers=headers) as resp:
         if resp.status_code != 200:
             body = await resp.aread()
@@ -491,6 +543,24 @@ async def _stream_responses(
                 d = ev.get("delta")
                 if d:
                     yield {"type": "token", "delta": d}
+            elif etype == "response.output_item.added":
+                item = ev.get("item") or {}
+                if item.get("type") == "function_call":
+                    iid = item.get("id") or ev.get("item_id") or str(len(tool_acc))
+                    tool_acc[iid] = {
+                        "call_id": item.get("call_id") or item.get("id"),
+                        "name": item.get("name"),
+                        "args": item.get("arguments") or "",
+                    }
+            elif etype == "response.function_call_arguments.delta":
+                iid = ev.get("item_id") or ""
+                slot = tool_acc.setdefault(iid, {"call_id": None, "name": None, "args": ""})
+                slot["args"] += ev.get("delta") or ""
+            elif etype == "response.function_call_arguments.done":
+                iid = ev.get("item_id") or ""
+                slot = tool_acc.setdefault(iid, {"call_id": None, "name": None, "args": ""})
+                if ev.get("arguments"):
+                    slot["args"] = ev["arguments"]  # authoritative full string
             elif etype in ("response.completed", "response.incomplete"):
                 r = ev.get("response") or {}
                 usage = r.get("usage")
@@ -499,6 +569,22 @@ async def _stream_responses(
                 )
             elif etype in ("error", "response.failed"):
                 raise LlmError(f"Responses API stream error: {str(ev)[:300]}")
+    for slot in tool_acc.values():
+        name = (slot.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            parsed = json.loads(slot.get("args") or "{}")
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("dropping malformed Responses tool_call args for %s", name)
+            continue
+        finish = "tool_calls"
+        yield {
+            "type": "tool_call",
+            "id": slot.get("call_id"),
+            "name": name,
+            "arguments": parsed if isinstance(parsed, dict) else {},
+        }
     usage = _normalise_responses_usage(usage)
     _record_usage(stage, usage)
     yield {"type": "done", "finish_reason": finish, "model": model, "usage": usage or {}}
@@ -508,17 +594,24 @@ async def stream_chat(
     messages: list[dict[str, Any]],
     sampling: dict[str, Any],
     model: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream an OpenAI chat completion. Yields `{"type":"token","delta":...}`
     answer events and (on the dedicated channel) `{"type":"reasoning","delta":...}`
-    trace events, then a final `{"type":"done", finish_reason, model, usage}`."""
+    trace events, then a final `{"type":"done", finish_reason, model, usage}`.
+
+    When `tools` is given the model may request a tool mid-stream: once a call's
+    arguments have fully accumulated and parsed, a `{"type":"tool_call","id","name",
+    "arguments":{...}}` event is emitted (never partial args) and the terminal
+    `done` carries `finish_reason:"tool_calls"`. The caller executes the tool and
+    continues the answer in a follow-up request. `tools=None` ⇒ unchanged."""
     base = cfg("llm_base_url", settings.llm_base_url)
     if anthropic_adapter.is_anthropic(base):
-        async for ev in anthropic_adapter.a_stream_chat(messages, sampling, model):
+        async for ev in anthropic_adapter.a_stream_chat(messages, sampling, model, tools=tools):
             yield ev
         return
     if gemini_adapter.is_gemini_native(base):
-        async for ev in gemini_adapter.a_stream_chat(messages, sampling, model):
+        async for ev in gemini_adapter.a_stream_chat(messages, sampling, model, tools=tools):
             yield ev
         return
     stage = _consume_stage()
@@ -574,19 +667,39 @@ async def stream_chat(
         and trace_on
         and cfg("openai_reasoning_summaries", settings.openai_reasoning_summaries)
     )
-    if want_summaries:
+    # Tools + a reasoning OpenAI model: chat-completions rejects function tools unless
+    # reasoning is disabled, so a model told to keep reasoning must go through the
+    # Responses API (which carries tools AND reasoning). vLLM always stays on
+    # chat-completions (its Responses endpoint mis-emits XML tool calls as text).
+    want_tools_responses = bool(tools) and _is_openai(base) and effort not in (None, "none")
+    if want_summaries or want_tools_responses:
         try:
-            async for ev in _stream_responses(base, model, messages, sampling, effort, trace_on, stage):
+            async for ev in _stream_responses(
+                base, model, messages, sampling, effort, trace_on, stage, tools=tools
+            ):
                 yield ev
             return
         except _ResponsesUnsupported:
             pass  # nothing yielded yet — fall through to the chat-completions path below
+
+    if tools:
+        payload["tools"] = tools
+        # chat-completions accepts function tools only with reasoning disabled
+        # (a reasoning model 400s otherwise); the reasoning path went to Responses above.
+        if _is_openai(base):
+            payload["reasoning_effort"] = "none"
 
     headers = {"Authorization": f"Bearer {cfg('llm_api_key', settings.llm_api_key)}"}
     url = f"{cfg('llm_base_url', settings.llm_base_url).rstrip('/')}/chat/completions"
 
     usage: dict[str, Any] | None = None
     finish: str | None = None
+    # Streamed tool calls arrive as index-keyed fragments: the id/name land in an
+    # early fragment, the JSON arguments accrue across many. Accumulate per index and
+    # parse once at the end — the caller never sees a partial call. `content_acc`
+    # backs the speculative recovery of a call a model wrote as answer text.
+    tool_acc: dict[int, dict[str, Any]] = {}
+    content_acc = ""
     client = http_client.get_client()
 
     # vLLM with `--reasoning-parser qwen3` splits the model's `<think>...</think>`
@@ -635,10 +748,37 @@ async def stream_chat(
                         yield {"type": "reasoning", "delta": reasoning}
                     content = delta.get("content")
                     if content:
+                        content_acc += content
                         yield {"type": "token", "delta": content}
+                    for tc in delta.get("tool_calls") or []:
+                        idx = tc.get("index", 0)
+                        slot = tool_acc.setdefault(idx, {"id": None, "name": None, "args": ""})
+                        if tc.get("id"):
+                            slot["id"] = tc["id"]
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            slot["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            slot["args"] += fn["arguments"]
                     if choice.get("finish_reason"):
                         finish = choice["finish_reason"]
         break  # streamed (or raised) — don't loop again
+
+    # Emit each fully-accumulated tool call. A call whose arguments never became valid
+    # JSON is dropped (logged) rather than half-executed — the stream still completes.
+    tool_events = _finalise_stream_tool_calls(tool_acc)
+    if not tool_events and tools and finish != "tool_calls":
+        # Second chance: a model that emitted the call as answer TEXT instead of the
+        # native array (the same leak `chat_step` recovers from).
+        recovered, _ = _extract_text_tool_call(content_acc)
+        tool_events = [
+            {"type": "tool_call", "id": c["id"], "name": c["name"], "arguments": c["arguments"]}
+            for c in recovered
+        ]
+    if tool_events:
+        finish = "tool_calls"
+        for ev in tool_events:
+            yield ev
 
     usage = _normalise_reasoning_tokens(usage)
     _record_usage(stage, usage)

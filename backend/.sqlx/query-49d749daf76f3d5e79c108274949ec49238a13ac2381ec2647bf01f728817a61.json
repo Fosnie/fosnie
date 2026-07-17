@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT chat_id, turn_id, acting_user_id, pending_tool, pending_args FROM agent_runs WHERE id = $1",
+  "query": "SELECT chat_id, turn_id, acting_user_id, agent_id, pending_tool, pending_args FROM agent_runs WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "agent_runs",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "pending_tool",
         "type_info": "Text",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "pending_args",
         "type_info": "Jsonb",
         "origin": {
@@ -69,8 +80,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "031b27a185e06ec26ad35b7ca8ad356b36dd3668ff581da6a1f2ce3f7204a253"
+  "hash": "49d749daf76f3d5e79c108274949ec49238a13ac2381ec2647bf01f728817a61"
 }

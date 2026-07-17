@@ -77,7 +77,7 @@ struct TurnHandle {
 
 /// Fire BOTH cancels for an in-flight live turn. The classic barge-in bug is
 /// cancelling only the LLM and letting TTS run on — so this stops the LLM **and**
-/// the TTS together, and clears the speaking gate. (`§12.3`.)
+/// the TTS together, and clears the speaking gate.
 fn signal_barge_in(h: &TurnHandle) {
     h.speaking.store(false, Ordering::SeqCst);
     h.cancel.notify_waiters();
@@ -808,7 +808,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// The §12.3 invariant: one barge-in cancels BOTH the LLM generation and the TTS
+    /// The barge-in invariant: one barge-in cancels BOTH the LLM generation and the TTS
     /// stream. Modelled with fakes (no DB) — two parked tasks stand in for run_turn's
     /// cancel-wait and a speak_clause abort-wait; both must observe the signal.
     #[tokio::test]

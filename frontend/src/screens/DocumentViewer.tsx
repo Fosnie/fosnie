@@ -387,7 +387,7 @@ export function DocumentViewer() {
 }
 
 /** The Mode-B inline highlight: the version's extracted text with each flagged
- *  claim's verbatim span marked in place (§4.5). Plain text, so the marks land
+ *  claim's verbatim span marked in place. Plain text, so the marks land
  *  precisely regardless of how docx-preview splits runs. */
 function AnnotatedText({ documentId, versionId, claims }: { documentId: string; versionId: string; claims: VerifyClaim[] }) {
   const [text, setText] = useState<string | null>(null);

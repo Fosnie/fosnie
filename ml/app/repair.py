@@ -15,7 +15,7 @@
 """Ground-or-cut repair. For each
 flagged claim from a verify-draft run: re-retrieve a supporting node, regenerate
 the claim constrained to that node, and **re-verify the regenerated text against
-that NEW citation** (§12.6 — never trust a freshly-generated citation). A claim
+that NEW citation** (never trust a freshly-generated citation). A claim
 that cannot be grounded is **cut, not rewritten** ("if it can't be cited, it can't
 be stated"). The backend turns each result into a tracked-change proposal.
 
@@ -68,7 +68,7 @@ async def _repair_one(claim: dict, kb_ids: list[str], sem: asyncio.Semaphore) ->
         out["action"] = "cut"
         return out
 
-    # 1) Re-retrieve the best supporting node for the claim (one attempt, §4.6).
+    # 1) Re-retrieve the best supporting node for the claim (one attempt).
     hits = await retrieve_mod._search_one(claim.get("text", span), kb_ids, sem)
     node = _node_text(hits, k=1)
     if not node:
@@ -88,7 +88,7 @@ async def _repair_one(claim: dict, kb_ids: list[str], sem: asyncio.Semaphore) ->
         out["evidence"] = node[:600]
         return out
 
-    # 3) Re-verify the regenerated text against the NEW citation (§12.6). Only a
+    # 3) Re-verify the regenerated text against the NEW citation. Only a
     #    `supported` verdict promotes it to a proposal; anything else → cut.
     rv = await verify_mod.verify_claims([{"text": rewritten, "evidence": node}])
     rverdict = rv[0]["verdict"] if rv else "not_mentioned"

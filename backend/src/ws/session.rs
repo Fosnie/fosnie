@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Redis-backed WebSocket session state (redis-keyspace §2–4): socket metadata,
+//! Redis-backed WebSocket session state: socket metadata,
 //! the per-user socket set, presence (TTL + heartbeat), and the resume token
 //! used to rebind a reconnecting socket within a short window without a fresh
 //! interactive login.

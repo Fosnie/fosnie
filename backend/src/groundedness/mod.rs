@@ -17,13 +17,13 @@
 //! Mode A (live RAG-answer faithfulness). After a RAG answer finishes streaming,
 //! a spawned task sends `(retrieved context, question, answer)` to the verifier
 //! (LettuceDetect via the ML `/verify` endpoint), which self-highlights spans of
-//! the answer **unsupported by the sources** — *groundedness, not truth* (§1).
+//! the answer **unsupported by the sources** — *groundedness, not truth*.
 //! The result is persisted (a `verification_runs` row + per-span `claim_verdicts`,
 //! plus a compact summary denormalised onto the message), audited
 //! (`groundedness.verified`), and pushed to the client as a `chat.groundedness`
 //! frame.
 //!
-//! Hard invariants (spec §12):
+//! Hard invariants:
 //! - **Never blocks TTFT** — this is fire-and-forget, spawned after the answer
 //!   already streamed + completed.
 //! - **Fail-open** — verifier disabled/unreachable ⇒ no run, no audit, no frame;
@@ -173,7 +173,7 @@ pub async fn verify_message(
     .execute(&state.pg)
     .await;
 
-    // 4) Audit — the trust/compliance artefact (§6).
+    // 4) Audit — the trust/compliance artefact.
     let mut ev = AuditEvent::action("groundedness.verified", role.as_str());
     ev.actor_user_id = Some(user_id);
     ev.resource_type = Some("message".into());
@@ -297,7 +297,7 @@ pub async fn verify_draft(
 
     // One verdict row per claim; evidence + section ride bound_evidence_ref.
     // source_span ({start,end,text}) locates the claim back to the document so
-    // the inline highlight + ground-or-cut repair can act on it (§4.5–4.6).
+    // the inline highlight + ground-or-cut repair can act on it.
     if !res.claims.is_empty() {
         // One UNNEST insert instead of a per-claim round-trip (optimisation audit,
         // L4). `source_span` stays SQL NULL when absent.
@@ -405,9 +405,9 @@ fn emit_repair_done(
     );
 }
 
-/// Ground-or-cut repair (§4.6 / §5 step 5) of a finished verify-draft run on a
+/// Ground-or-cut repair of a finished verify-draft run on a
 /// **document**: re-retrieve + regenerate (or cut) each flagged claim, re-verify
-/// the new citation (§12.6 — never trust a fresh one; an un-groundable claim is
+/// the new citation (never trust a fresh one; an un-groundable claim is
 /// cut, not rewritten), and surface each as a **tracked-change proposal** via the
 /// existing accept/reject HITL. Gated by the `groundedness.repair` knob upstream.
 /// Terminal: ALWAYS emits a `repair.complete` frame (so the UI never hangs) and

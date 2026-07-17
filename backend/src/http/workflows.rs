@@ -38,10 +38,10 @@ fn rfc3339(t: Option<OffsetDateTime>) -> Option<String> {
     t.and_then(|t| t.format(&Rfc3339).ok())
 }
 
-/// A subscribable trigger (§4). `emitted` marks the events the platform actually
+/// A subscribable trigger. `emitted` marks the events the platform actually
 /// emits today; the rest are reserved names — a workflow may subscribe but stays
 /// inert until they are wired. This slice is the **single source of truth** for the
-/// backend validator and the `GET /api/workflows/triggers` UI dropdown (D4).
+/// backend validator and the `GET /api/workflows/triggers` UI dropdown.
 #[derive(Serialize)]
 pub struct TriggerDef {
     pub name: &'static str,
@@ -88,7 +88,7 @@ const TRIGGER_CATALOGUE: &[TriggerDef] = &[
 const MAX_COALESCE_SECS: i32 = 86_400;
 const MAX_RUNS_PER_WINDOW: i32 = 10_000;
 
-/// Only a power-user (or admin) may author workflows (§9).
+/// Only a power-user (or admin) may author workflows.
 fn require_lead(ctx: &AuthContext) -> Result<()> {
     if matches!(
         ctx.role,
@@ -100,7 +100,7 @@ fn require_lead(ctx: &AuthContext) -> Result<()> {
     }
 }
 
-/// The authoring gate (D3): a power-user/admin (`require_lead`) **or** any caller
+/// The authoring gate: a power-user/admin (`require_lead`) **or** any caller
 /// holding the `workflows.manage` permission. Additive — Core's default policy
 /// treats the permission as `is_admin`, so power-users keep access unchanged and
 /// an Enterprise delegated-admin role can be granted authoring without the fixed
@@ -154,7 +154,7 @@ fn validate_action(action_type: &str, cfg: &Value) -> Result<()> {
     Ok(())
 }
 
-/// A condition must be null or a JSON object (a safe declarative filter, §6).
+/// A condition must be null or a JSON object (a safe declarative filter).
 fn validate_condition(c: &Option<Value>) -> Result<()> {
     if let Some(v) = c {
         if !v.is_null() && !v.is_object() {
@@ -329,7 +329,7 @@ pub struct UpdateWorkflow {
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
-    /// The explicit enable/disable toggle (§9.5).
+    /// The explicit enable/disable toggle.
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
@@ -404,7 +404,7 @@ pub struct RunOut {
     pub created_at: Option<String>,
 }
 
-/// Per-workflow run history (§10): the observability + dead-letter surface.
+/// Per-workflow run history: the observability + dead-letter surface.
 pub async fn list_runs(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
@@ -428,7 +428,7 @@ pub async fn list_runs(
     }).collect()))
 }
 
-/// The trigger catalogue (D4) — the single source for the create-form dropdown.
+/// The trigger catalogue — the single source for the create-form dropdown.
 /// Gated like authoring so a caller who can't create workflows can't enumerate the
 /// catalogue either. `emitted` lets the UI flag reserved-but-inert triggers.
 pub async fn list_triggers(
@@ -451,7 +451,7 @@ async fn audit_workflow(state: &AppState, ctx: &AuthContext, action: &str, id: U
 mod tests {
     use super::*;
 
-    /// Acceptance §7: every domain-event constant the platform emits must appear in
+    /// Every domain-event constant the platform emits must appear in
     /// the trigger catalogue and be flagged `emitted` — so the UI dropdown (which is
     /// driven solely by this catalogue) can offer them, and nothing emits an event no
     /// workflow could ever subscribe to.

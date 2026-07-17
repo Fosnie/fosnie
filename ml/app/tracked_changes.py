@@ -22,7 +22,7 @@ and /read-document — no base64 of large files over HTTP.
 
 The paragraph flattener here is the SINGLE shared flattener: `extract.py` uses
 it for `read_document` so the assistant's view of a DOCX matches what the
-tracked-change writer sees (flow §6 invariant). Pre-existing `<w:ins>` are shown
+tracked-change writer sees (shared-flattener invariant). Pre-existing `<w:ins>` are shown
 as accepted (text inline); pre-existing `<w:del>` are hidden (accepted view).
 
 Scope: body paragraphs only — headers/footers/footnotes/comments
@@ -142,7 +142,7 @@ def _paragraph_text(p: etree._Element) -> str:
 
 def extract_body_text(path: str) -> str:
     """Plain-text flatten of the body (accepted view) — the `read_document`
-    surface. Same flattener the writer uses (flow §6)."""
+    surface. Same flattener the writer uses."""
     entries, doc_key = _load_docx(path)
     root = _parse(entries[doc_key])
     body = root.find(_w("body"))

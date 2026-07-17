@@ -54,7 +54,7 @@ pub fn is_private(ip: &IpAddr) -> bool {
 /// True iff `ip` is link-local — the 169.254.0.0/16 range (incl. the 169.254.169.254
 /// cloud-metadata endpoint) or IPv6 fe80::/10. Refused in BOTH modes: a remote server
 /// must never resolve to the metadata service (confused-deputy / credential theft).
-fn is_link_local(ip: &IpAddr) -> bool {
+pub fn is_link_local(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_link_local(),
         IpAddr::V6(v6) => {

@@ -174,9 +174,17 @@ class Message(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    messages: list[Message]
+    # Raw OpenAI-shape message dicts (not the strict `Message` model) so an
+    # assistant `tool_calls` array and a `role:"tool"` result carry through intact
+    # — the streaming answer can now request further retrieval mid-flight, and the
+    # continuation request replays that tool history. Same shape `/chat-step` uses.
+    messages: list[dict[str, Any]]
     sampling: Sampling = Sampling()
     model: str | None = None
+    # Optional tool schemas. Present only when the answering model is allowed to
+    # call a tool (currently just the library top-up) while streaming; absent ⇒ a
+    # plain answer stream, byte-identical to before.
+    tools: list[dict[str, Any]] | None = None
     # Provider overrides: {role}_base_url/_model/_api_key.
     overrides: dict | None = None
 
@@ -223,13 +231,13 @@ async def generate(req: GenerateRequest) -> StreamingResponse:
     from . import rag_ctx
 
     rag_ctx.set_overrides(req.overrides or {})
-    messages = [m.model_dump() for m in req.messages]
+    messages = req.messages
     sampling = req.sampling.model_dump(exclude_none=True)
 
     async def ndjson():
         try:
             llm.set_stage("generate")
-            async for event in llm.stream_chat(messages, sampling, req.model):
+            async for event in llm.stream_chat(messages, sampling, req.model, tools=req.tools):
                 yield json.dumps(event) + "\n"
         except Exception as e:  # surface upstream failures as a terminal event
             yield json.dumps({"type": "error", "message": str(e)}) + "\n"
@@ -272,7 +280,7 @@ class DeleteDocRequest(BaseModel):
 class RetrieveRequest(BaseModel):
     prompt: str
     kb_ids: list[str]
-    # Source-ACL retrieval deny-list (connector-kb-rag §2): `doc_id`s the caller is
+    # Source-ACL retrieval deny-list: `doc_id`s the caller is
     # not entitled to under an `enforce` connector mapping. Default empty ⇒ no
     # filtering ⇒ byte-identical to before the feature.
     deny_doc_ids: list[str] = []
@@ -299,6 +307,9 @@ class RetrieveRequest(BaseModel):
     gap_round_enabled: bool | None = None
     gap_rounds: int | None = None
     gap_reserve: int | None = None
+    gap_deadline_secs: int | None = None
+    gap_diminishing_unseen: float | None = None
+    gap_escalate: bool | None = None
     # NDJSON progress streaming (A4): live retrieval activity ending in a
     # `{"type":"done", context, citations}` line. Off ⇒ today's single dict.
     stream: bool = False
@@ -360,6 +371,9 @@ async def retrieve(req: RetrieveRequest) -> dict:
         "gap_round_enabled": req.gap_round_enabled,
         "gap_rounds": req.gap_rounds,
         "gap_reserve": req.gap_reserve,
+        "gap_deadline_secs": req.gap_deadline_secs,
+        "gap_diminishing_unseen": req.gap_diminishing_unseen,
+        "gap_escalate": req.gap_escalate,
         **(req.overrides or {}),
     })
     if req.stream:
@@ -435,7 +449,13 @@ class ResearchDoc(BaseModel):
 
 class DeepResearchRequest(BaseModel):
     question: str
-    template: str | None = None  # exploration | formal | freeform | literature
+    # Built-in template id (one of the four the research service defines). For a
+    # user-defined template the backend sends the whole spec inline in
+    # `template_spec` instead, which takes priority over this id.
+    template: str | None = None
+    # A user-defined template, resolved and serialised by the backend (this
+    # service holds no database). When present it overrides `template`.
+    template_spec: dict | None = None
     # Corpus census / hybrid (Phase 2). source ∈ {web, files, hybrid}. For files
     # and hybrid the Rust backend resolves the readable scope and sends the doc
     # inventory; ML reads the files (paths are storage-confined by safe_path).
@@ -513,10 +533,22 @@ async def deep_research(req: DeepResearchRequest):
             total_docs=req.total_docs,
             refinements=req.refinements,
             verify=req.verify,
+            template_spec=req.template_spec,
         ):
             yield json.dumps(event) + "\n"
 
     return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
+@app.get("/research/templates")
+async def research_templates():
+    """The four built-in report templates in full (skeleton, briefs, writing
+    instructions, outline mode). The backend serves the picker from its own
+    metadata copy and only calls this when a user duplicates a built-in into an
+    editable one — it needs the real writing instructions, which live here."""
+    from .research import templates as templates_mod
+
+    return [templates_mod.to_spec(t) for t in templates_mod.all_templates()]
 
 
 class ResearchTriageRequest(BaseModel):

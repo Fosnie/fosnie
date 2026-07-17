@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, slug, tools_catalog FROM mcp_servers WHERE status = 'active' AND enabled",
+  "query": "SELECT id, status, auth_type, url, tools_catalog FROM mcp_servers WHERE slug = $1",
   "describe": {
     "columns": [
       {
@@ -16,17 +16,39 @@
       },
       {
         "ordinal": 1,
-        "name": "slug",
+        "name": "status",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "mcp_servers",
-            "name": "slug"
+            "name": "status"
           }
         }
       },
       {
         "ordinal": 2,
+        "name": "auth_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "auth_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "tools_catalog",
         "type_info": "Jsonb",
         "origin": {
@@ -38,13 +60,17 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Text"
+      ]
     },
     "nullable": [
       false,
       false,
+      false,
+      true,
       true
     ]
   },
-  "hash": "df08cc0dc05ae47b6e1414f638d24b5964014fc7b1a8a5307197cb1cc9de16bd"
+  "hash": "3044f5f6d1fdbcfa5aa3e6949d6de532b31e9f0c5f9e82b7f569dc279f1a045e"
 }

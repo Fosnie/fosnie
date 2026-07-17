@@ -220,6 +220,7 @@ async fn judge(state: &AppState, output: &str, rubric: &str) -> bool {
         messages: vec![json!({ "role": "system", "content": sys }), json!({ "role": "user", "content": user })],
         sampling: Default::default(),
         model: None,
+        tools: None,
         overrides: Default::default(),
     };
     let Ok(mut stream) = fosnie_backend::ml::generate(&state.http, &state.boot.ml.base_url, &req).await else {
@@ -230,6 +231,7 @@ async fn judge(state: &AppState, output: &str, rubric: &str) -> bool {
         match ev {
             fosnie_backend::ml::GenEvent::Token { delta } => txt.push_str(&delta),
             fosnie_backend::ml::GenEvent::Reasoning { .. } => {}
+            fosnie_backend::ml::GenEvent::ToolCall { .. } => {}
             fosnie_backend::ml::GenEvent::Done { .. } => break,
             fosnie_backend::ml::GenEvent::Error { .. } => break,
         }

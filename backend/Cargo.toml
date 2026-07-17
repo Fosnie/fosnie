@@ -47,7 +47,10 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 # Official Rust MCP SDK (client role) — FEATURE B1. stdio (TokioChildProcess) +
 # streamable-HTTP (reqwest-backed) client transports. Pinned; protocol negotiated at
 # handshake. Only `mcp/client.rs` touches this crate (isolated behind the McpClient trait).
-rmcp = { version = "1.7.0", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "1.7.0", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
+# Types + token/refresh helpers for the MCP OAuth stores (same version rmcp's `auth`
+# feature already resolves; making it a direct dependency adds no new crate).
+oauth2 = { version = "5.0", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_with = "3"
@@ -81,6 +84,21 @@ uuid = { version = "1.23.2", features = ["v5", "v7", "serde"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = "0.18.3"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+# Mock-authorisation-server suite deps (feature `test-mocks` only): a self-signed TLS
+# listener on 127.0.0.1 with SAN IP:127.0.0.1, matching the rustls backend reqwest
+# uses. Optional so they are pulled ONLY under `test-mocks` (never a default feature).
+# They live in `[dependencies]` (not dev-deps) because the mock harness is in
+# `src/mcp/testing.rs` so in-crate tests can share it; dev-deps are not visible to src.
+rcgen = { version = "0.13", optional = true }
+axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
+
+[features]
+# Test-only: enables an extra-root-certificate hook in the MCP hardened HTTP client
+# (src/mcp/client.rs) + the in-crate mock authorisation server (src/mcp/testing.rs), so
+# the OAuth integration suite can serve TLS with a self-signed cert. NOT a default
+# feature; adds a trusted root only, never weakens any verification. Guarded by
+# tests/test_mocks_feature_guard.rs.
+test-mocks = ["dep:rcgen", "dep:axum-server"]
 
 [dev-dependencies]
 async-trait = "0.1"

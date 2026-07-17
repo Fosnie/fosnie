@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! WebSocket wire protocol — JSON envelope `{ version, type, … }` with a `type`
-//! discriminator (redis-keyspace §WS, topology §6.3). One multiplexed socket
+//! discriminator. One multiplexed socket
 //! per user. This slice carries the chat-token-stream class + cancel + presence;
 //! team-messaging replay is a later slice.
 
@@ -311,7 +311,7 @@ pub enum ServerFrame {
         contradicted: i32,
         not_mentioned: i32,
     },
-    /// Ground-or-cut repair (§4.6) finished for a run: counts of proposed rewrites
+    /// Ground-or-cut repair finished for a run: counts of proposed rewrites
     /// (`regenerated`), deletions (`cut`), and unchanged (`kept`). The viewer
     /// refetches its tracked-change proposals on this. `error` is set when repair
     /// could not run (e.g. a non-DOCX document) so the UI clears instead of hanging.
@@ -490,7 +490,7 @@ pub struct CitationOut {
 }
 
 /// One proposed tracked change, surfaced live so the UI can render accept/reject
-/// cards (tracked-changes flow §3).
+/// cards (tracked-changes flow).
 #[derive(Debug, Clone, Serialize)]
 pub struct EditChangeOut {
     pub w_id: String,

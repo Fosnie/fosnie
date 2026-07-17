@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, slug, pinned_tools FROM mcp_servers WHERE status = 'active' AND enabled",
+  "query": "SELECT id, slug, auth_type, url, pinned_tools FROM mcp_servers WHERE status = 'active' AND enabled",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,28 @@
       },
       {
         "ordinal": 2,
+        "name": "auth_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "auth_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "pinned_tools",
         "type_info": "Jsonb",
         "origin": {
@@ -43,8 +65,10 @@
     "nullable": [
       false,
       false,
+      false,
+      true,
       true
     ]
   },
-  "hash": "008d6c0a7681eea942def3ea5aba972812c46a34b5e631f8ff050273c5e9da9f"
+  "hash": "43981cb57ce113f15537ccf96e47139db550b04f17a2a9f7cf7ffcd06ffbfc37"
 }

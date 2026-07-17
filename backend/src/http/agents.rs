@@ -51,35 +51,54 @@ async fn require_manage_agent(state: &AppState, ctx: &AuthContext, id: Uuid) -> 
     }
 }
 
-/// Closed-registry + Rule-of-Two validation of an Agent's tool whitelist.
-/// (1) Every tool must be in the platform's closed registry. (2) Any tool that
-/// crosses the perimeter (egress) or changes state must be gated by the
-/// classifier — so an agent can never assemble an *unsupervised* lethal trifecta
-/// {untrusted input + private data + egress}; the egress/state leg always pauses
-/// for human approval (agents §8.5). Caught here at config time.
-fn validate_toolset(tools: &[String]) -> Result<()> {
+/// Validate an Agent's tool whitelist against the closed set of grantable tools,
+/// at config time. Every entry must resolve to one of: a native tool in the
+/// platform's closed registry; an MCP grant (`slug__*` / `slug__tool`) whose
+/// server and tool are in the server's pinned catalogue; or a custom tool that
+/// exists. An unknown name is refused here rather than silently ignored at dispatch.
+async fn validate_toolset(pg: &sqlx::PgPool, tools: &[String]) -> Result<()> {
+    let mut catalogues: std::collections::HashMap<String, Option<Vec<crate::mcp::ToolCatalogEntry>>> =
+        std::collections::HashMap::new();
     for t in tools {
-        // A namespaced entry (`slug__*` / `slug__tool`) assigns an MCP server to the
-        // agent (FEATURE B1). It is not in the native closed registry; MCP tools always
-        // cross `guard_egress` and side-effecting ones pause for HITL at dispatch, so the
-        // Rule-of-Two leg is enforced there. Which servers are actually in scope is
-        // decided per-turn by `mcp::session_tool_defs` (active + enabled + RBAC + assigned).
+        // A namespaced entry (`slug__*` / `slug__tool`) grants an MCP server's tools to the
+        // agent (FEATURE B1). `slug__*` = the whole (pinned) catalogue; `slug__tool` = one
+        // tool, which must be in that catalogue. Validate the grant here at write time
+        // (unknown server, or a tool absent from the catalogue, is refused); a stored grant
+        // is tolerated on read even if the tool later vanishes. Which servers are actually
+        // in scope for a given turn is still decided by the per-turn authorisation seam
+        // (active + enabled + RBAC + grant + connection).
         if crate::mcp::is_namespaced(t) {
+            let Some((slug, tool)) = crate::mcp::split(t) else { continue };
+            if !catalogues.contains_key(slug) {
+                let cat = crate::mcp::server_catalogue(pg, slug).await?;
+                catalogues.insert(slug.to_string(), cat);
+            }
+            let Some(catalogue) = catalogues.get(slug).and_then(|c| c.as_ref()) else {
+                return Err(AppError::Validation(format!(
+                    "unknown MCP server '{slug}' in tool grant '{t}'"
+                )));
+            };
+            if tool != "*" && !catalogue.iter().any(|e| e.name == tool) {
+                return Err(AppError::Validation(format!(
+                    "tool '{tool}' is not in MCP server '{slug}' catalogue (grant '{t}')"
+                )));
+            }
             continue;
         }
-        if !crate::tools::ALL.contains(&t.as_str()) {
-            return Err(AppError::Validation(format!(
-                "unknown tool '{t}' — not in the closed registry"
-            )));
+        // Native tool in the closed registry.
+        if crate::tools::ALL.contains(&t.as_str()) {
+            continue;
         }
-        if (crate::tools::egress(t)
-            || matches!(crate::tools::effect(t), crate::tools::ToolEffect::RequiresApproval))
-            && !crate::tools::gated(t)
-        {
-            return Err(AppError::Validation(format!(
-                "tool '{t}' crosses the perimeter or changes state but is not gated — refusing (Rule-of-Two)"
-            )));
+        // Otherwise a custom HTTP/script tool the agent selects by name: valid iff a
+        // row exists. Its enabled + approved-version gate is re-applied at read time
+        // by `load_enabled_custom`, so a stored grant to a later-disabled tool
+        // degrades quietly rather than breaking the Agent save.
+        if crate::tools::custom::exists_by_name(pg, t).await? {
+            continue;
         }
+        return Err(AppError::Validation(format!(
+            "unknown tool '{t}' — not in the closed registry"
+        )));
     }
     Ok(())
 }
@@ -139,7 +158,7 @@ pub async fn create_agent(
     // Personal-only: any authenticated user may create an agent — it becomes THEIRS
     // (created_by), and only the owner (or an admin) can later edit/delete it.
     let me = ctx.user_id.ok_or_else(|| AppError::Forbidden("a user is required".into()))?;
-    validate_toolset(&body.tools)?;
+    validate_toolset(&state.pg, &body.tools).await?;
     validate_modes(&body.modes)?;
     let id = db::new_id();
     let params = body.params.unwrap_or_else(|| serde_json::json!({}));
@@ -264,7 +283,7 @@ pub async fn list_agents(
     // Visibility (personal-only): a non-admin sees the shared/seeded pool
     // (created_by IS NULL) + their own; others' personal agents are hidden. Admin: all.
     // Tools fetched in the same query via a LATERAL aggregate — no per-agent
-    // round-trip (re-audit §9.3 N+1).
+    // round-trip (avoids the N+1 re-audit).
     let rows = sqlx::query!(
         r#"SELECT a.id, a.name, a.description, a.sector, a.modes, a.created_by,
                   COALESCE(t.tools, ARRAY[]::text[]) AS "tools!"
@@ -405,7 +424,7 @@ pub async fn update_agent(
 ) -> Result<Json<serde_json::Value>> {
     require_manage_agent(&state, &ctx, id).await?;
     if let Some(tools) = &body.tools {
-        validate_toolset(tools)?;
+        validate_toolset(&state.pg, tools).await?;
     }
     if let Some(modes) = &body.modes {
         validate_modes(modes)?;
@@ -600,6 +619,9 @@ pub async fn rollback_agent_version(
     .ok_or_else(|| AppError::Validation("agent version not found".into()))?;
 
     let tools: Vec<String> = serde_json::from_value(v.tools).unwrap_or_default();
+    // Restore is a write: re-validate the snapshot's tool-set so a rollback cannot
+    // reintroduce a grant naming a now-unknown server or an off-catalogue tool.
+    validate_toolset(&state.pg, &tools).await?;
     let pk_strs: Vec<String> = serde_json::from_value(v.project_knowledge_ids).unwrap_or_default();
     let pks: Vec<Uuid> = pk_strs.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect();
 
@@ -645,4 +667,104 @@ pub async fn rollback_agent_version(
     ev.payload = Some(serde_json::json!({ "restored_from": vnum, "new_version": new_version }));
     let _ = audit::append(&state.pg, &ev).await;
     Ok(Json(serde_json::json!({ "ok": true, "version": new_version })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tool-set validator is the write-time gate shared by create, update, and
+    /// version rollback. It needs a Postgres pool (the MCP catalogue and custom-tool
+    /// lookups are DB reads), so these skip when `DATABASE_URL` is unset.
+    async fn pool() -> Option<sqlx::PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        crate::db::connect(&url, 5).await.ok()
+    }
+
+    /// Freezes a past defect: the previous Rule-of-Two clause was
+    /// `(egress || RequiresRun) && !needs_agent_run()`, and since
+    /// `needs_agent_run() == RequiresRun || egress`, that is `X && !X` for every tool
+    /// - structurally dead, never able to fire. It was removed; this proves it could
+    /// never have done its claimed job, so no behaviour was lost.
+    #[test]
+    fn removed_rule_of_two_clause_was_structurally_dead() {
+        use crate::tools::{self, ToolEffect};
+        for t in tools::ALL {
+            let old_clause = (tools::egress(t)
+                || matches!(tools::effect(t), ToolEffect::RequiresRun))
+                && !tools::needs_agent_run(t);
+            assert!(
+                !old_clause,
+                "the removed clause was X && !X and could never fire ({t})"
+            );
+        }
+    }
+
+    /// The honest validator must accept every state-changing / egress native (they
+    /// are on seeded agents; rejecting them would make those agents unsaveable) and
+    /// refuse a name that is in no registry.
+    #[tokio::test]
+    async fn validator_accepts_native_tools_and_refuses_unknown() {
+        let Some(pg) = pool().await else {
+            eprintln!("skip: DATABASE_URL unset");
+            return;
+        };
+        validate_toolset(
+            &pg,
+            &[
+                "web_search".into(),
+                "code_interpreter".into(),
+                "generate_artefact".into(),
+                "edit_document".into(),
+            ],
+        )
+        .await
+        .expect("state/egress natives must validate, not be rejected");
+
+        let err = validate_toolset(&pg, &["totally_unknown_tool_xyz".into()])
+            .await
+            .expect_err("an unknown name must be refused");
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    /// A custom tool could never be granted to an agent: the validator rejected any
+    /// name that was not a native or an MCP grant, so `agent_tools` could never carry
+    /// a custom name. This proves the fix: a custom tool that exists is now grantable,
+    /// while one that does not exist is still refused.
+    #[tokio::test]
+    async fn validator_now_accepts_a_custom_tool_that_exists() {
+        let Some(pg) = pool().await else {
+            eprintln!("skip: DATABASE_URL unset");
+            return;
+        };
+        let name = format!("authz_ct_{}", uuid::Uuid::now_v7().simple());
+
+        // Absent → unknown → refused (and the existence helper agrees).
+        assert!(validate_toolset(&pg, &[name.clone()]).await.is_err());
+        assert!(!crate::tools::custom::exists_by_name(&pg, &name).await.unwrap());
+
+        sqlx::query(
+            "INSERT INTO custom_tools (id, name, display_name, description, kind, params_schema, \
+             config, requires_egress, side_effecting, enabled, approved_version, version, timeout_secs) \
+             VALUES ($1,$2,$2,'test','http',$3,$4,false,false,true,1,1,10)",
+        )
+        .bind(uuid::Uuid::now_v7())
+        .bind(&name)
+        .bind(serde_json::json!({ "type": "object", "properties": {} }))
+        .bind(serde_json::json!({ "method": "GET", "url": "http://127.0.0.1:1/x", "headers": {}, "response": { "mode": "raw" } }))
+        .execute(&pg)
+        .await
+        .expect("insert custom tool");
+
+        // Present → grantable (the N7 fix), and re-checked for enabled/approved on read.
+        assert!(crate::tools::custom::exists_by_name(&pg, &name).await.unwrap());
+        validate_toolset(&pg, &[name.clone()])
+            .await
+            .expect("a custom tool that exists is now a valid grant");
+
+        let _ = sqlx::query("DELETE FROM custom_tools WHERE name = $1")
+            .bind(&name)
+            .execute(&pg)
+            .await;
+    }
 }

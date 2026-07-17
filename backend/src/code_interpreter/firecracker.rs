@@ -158,7 +158,7 @@ impl FirecrackerExecutor {
         }
 
         // Configure: kernel, read-only rootfs, machine, vsock — and crucially NO
-        // network interface (zero egress, §A.6.4).
+        // network interface (zero egress).
         fc_put(
             api_sock,
             "/boot-source",

@@ -269,7 +269,7 @@ pub async fn run_and_store(
     let result = match outcome {
         Ok(r) => r,
         Err(e) => {
-            // Surface the failure as a tool error, never silently (spec §3.8).
+            // Surface the failure as a tool error, never silently.
             let mut ev = AuditEvent::action("code_interpreter.completed", ctx.role.as_str());
             ev.actor_user_id = ctx.user_id;
             ev.resource_type = Some("code_execution".into());

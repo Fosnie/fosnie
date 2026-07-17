@@ -21,6 +21,36 @@ fn enabled() -> bool {
     std::env::var("PAI_E2E").as_deref() == Ok("1")
 }
 
+/// Mint an authorisation witness through the real seam, then dispatch — the only
+/// way to reach the witness-gated `tools::dispatch`. Grants `web_search` so the
+/// per-turn authorisation passes; the egress gate still fires inside the tool arm,
+/// which is what the dormant-refusal test exercises.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_via_seam(
+    st: &AppState,
+    ctx: &AuthContext,
+    project_id: Option<Uuid>,
+    chat_id: Uuid,
+    turn: Uuid,
+    tx: &mpsc::Sender<ServerFrame>,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<String, fosnie_backend::AppError> {
+    let custom = std::collections::HashMap::new();
+    let authorised =
+        tools::AuthorisedTools::build(&[name.to_string()], &[name.to_string()], false, &custom);
+    let overrides = std::collections::HashMap::new();
+    match tools::authorize_native_call(st, ctx, chat_id, &authorised, &overrides, name, project_id)
+        .await
+    {
+        tools::NativeDecision::Allowed(w) => {
+            tools::dispatch(st, ctx, chat_id, turn, tx, None, None, &[], &custom, &w, args).await
+        }
+        tools::NativeDecision::Recoverable(m) => Ok(m),
+        tools::NativeDecision::Denied(e) => Err(e),
+    }
+}
+
 async fn token(user: &str) -> Option<String> {
     let c = reqwest::Client::new();
     let r = c
@@ -210,16 +240,13 @@ async fn dormant_by_default_activation_and_egress_gate() {
     // 3. The egress gate is dormant → tool call is refused, no egress, audited.
     let (tx, _rx) = mpsc::channel::<ServerFrame>(8);
     let blocked_before = count_action(&pg, "integration.blocked").await;
-    let dormant = tools::dispatch(
+    let dormant = dispatch_via_seam(
         &state,
         &alice_ctx,
         None,
         Uuid::now_v7(),
         Uuid::now_v7(),
         &tx,
-        None,
-        &[],
-        &std::collections::HashMap::new(),
         "web_search",
         &serde_json::json!({ "query": "anything" }),
     )
@@ -254,16 +281,13 @@ async fn dormant_by_default_activation_and_egress_gate() {
     // the honest "currently unavailable" degradation. Either way, no egress
     // happened before the gate.
     let call_before = count_action(&pg, "integration.call").await;
-    let live = tools::dispatch(
+    let live = dispatch_via_seam(
         &state,
         &alice_ctx,
         None,
         Uuid::now_v7(),
         Uuid::now_v7(),
         &tx,
-        None,
-        &[],
-        &std::collections::HashMap::new(),
         "web_search",
         &serde_json::json!({ "query": "anything" }),
     )

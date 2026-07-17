@@ -52,6 +52,73 @@ def test_hybrid_search_adds_must_not_when_deny_set(monkeypatch):
         assert set(mn[0].match.any) == {"dX", "dY"}
 
 
+class _ScrollClient:
+    """Captures the scroll_filter of the last scroll (fetch_by_sections / fetch_neighbours)."""
+
+    def __init__(self):
+        self.flt = None
+
+    async def collection_exists(self, name):
+        return True
+
+    async def scroll(self, collection, scroll_filter=None, **kw):
+        self.flt = scroll_filter
+        return ([], None)
+
+
+def test_fetch_by_sections_carries_deny(monkeypatch):
+    # Iterative-retrieval deterministic fill (fetch_by_sections) must inherit the deny-list.
+    fake = _ScrollClient()
+    monkeypatch.setattr(qdrant_store, "client", lambda: fake)
+    token = qdrant_store.set_deny_docs(["dX", "dY"])
+    try:
+        _run(qdrant_store.fetch_by_sections(["kb1"], ["239"], limit=12))
+    finally:
+        qdrant_store.reset_deny_docs(token)
+    mn = fake.flt.must_not
+    assert mn is not None and mn[0].key == "doc_id"
+    assert set(mn[0].match.any) == {"dX", "dY"}
+
+
+def test_fetch_neighbours_carries_deny(monkeypatch):
+    # The escalation ±1 neighbour sweep must inherit the deny-list.
+    fake = _ScrollClient()
+    monkeypatch.setattr(qdrant_store, "client", lambda: fake)
+    token = qdrant_store.set_deny_docs(["dZ"])
+    try:
+        _run(qdrant_store.fetch_neighbours(["kb1"], [239], 1, limit=12))
+    finally:
+        qdrant_store.reset_deny_docs(token)
+    mn = fake.flt.must_not
+    assert mn is not None and set(mn[0].match.any) == {"dZ"}
+
+
+def test_toc_search_carries_deny(monkeypatch):
+    # The gap TOC channel must inherit the deny-list.
+    captured = {}
+
+    class _TocClient:
+        async def collection_exists(self, name):
+            return True
+
+        async def query_points(self, **kw):
+            captured["flt"] = kw.get("query_filter")
+
+            class _R:
+                points = []
+
+            return _R()
+
+    monkeypatch.setattr(qdrant_store, "client", lambda: _TocClient())
+    token = qdrant_store.set_deny_docs(["dT"])
+    try:
+        _run(qdrant_store.toc_search(["kb1"], "authority to allot shares"))
+    finally:
+        qdrant_store.reset_deny_docs(token)
+    mn = captured["flt"].must_not
+    assert mn is not None and set(mn[0].match.any) == {"dT"}
+
+
 def test_retrieve_parents_drops_denied_docs(monkeypatch):
     class _P:
         def __init__(self, pid, doc):

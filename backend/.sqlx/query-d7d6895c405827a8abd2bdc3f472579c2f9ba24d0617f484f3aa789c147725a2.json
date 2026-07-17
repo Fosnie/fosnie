@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_oauth_connections SET is_catalog_source = true WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d7d6895c405827a8abd2bdc3f472579c2f9ba24d0617f484f3aa789c147725a2"
+}

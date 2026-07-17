@@ -372,24 +372,31 @@ async def run(
     total_docs: int | None = None,
     refinements: list[str] | None = None,
     verify: bool = False,
+    template_spec: dict | None = None,
 ) -> dict:
     """Returns {title, report_md, citations, doc_citations, verification}. Never
     raises for content reasons. `verify` (gated by Rust on
     features.groundedness + research.verify) runs an in-pipeline citation
     verification + ground-or-cut pass; OFF ⇒ output is byte-identical to the
-    unverified pass and `verification` is None."""
+    unverified pass and `verification` is None. `template_spec`, when present, is
+    a user-defined template the backend resolved and sent inline; it takes
+    priority over `template_id`, which is used only for the built-ins."""
     source = (source or "web").lower()
     kb_ids = kb_ids or []
     docs = docs or []
     refinements = refinements or []
-    template = templates_mod.get(template_id)
+    template = (
+        templates_mod.from_spec(template_spec)
+        if template_spec
+        else templates_mod.get(template_id)
+    )
 
     # Scope refinements (from the triage chips) steer planning + writing.
     plan_question = question
     if refinements:
         plan_question = f"{question}\n\nScope refinements: {'; '.join(refinements)}"
 
-    # Budgets from the runtime context window (adaptive scaling, §3a). Runtime
+    # Budgets from the runtime context window (adaptive scaling). Runtime
     # admin knobs (research.max_minutes / research.census_cap) arrive as rag_ctx
     # overrides; None ⇒ ML env defaults.
     from ..main import _resolve_model

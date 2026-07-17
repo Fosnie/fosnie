@@ -118,35 +118,6 @@ pub async fn load_enabled_custom(
     (defs, map)
 }
 
-/// Load one enabled + approved custom tool by name (durable-resume path).
-pub async fn load_by_name(pg: &sqlx::PgPool, name: &str) -> Option<CustomToolRow> {
-    let r = sqlx::query!(
-        r#"SELECT id, name, display_name, description, kind, params_schema, config,
-                  auth_value_enc, requires_egress, side_effecting, version, timeout_secs
-             FROM custom_tools
-            WHERE name = $1 AND enabled AND approved_version = version"#,
-        name
-    )
-    .fetch_optional(pg)
-    .await
-    .ok()
-    .flatten()?;
-    Some(CustomToolRow {
-        id: r.id,
-        name: r.name,
-        display_name: r.display_name,
-        description: r.description,
-        kind: r.kind,
-        params_schema: r.params_schema,
-        config: r.config,
-        auth_value_enc: r.auth_value_enc,
-        requires_egress: r.requires_egress,
-        side_effecting: r.side_effecting,
-        version: r.version,
-        timeout_secs: r.timeout_secs,
-    })
-}
-
 /// Load one custom tool by id regardless of enabled/approved state — for the admin
 /// Test-run path (an admin tests a tool BEFORE approving it).
 pub async fn load_by_id(pg: &sqlx::PgPool, id: Uuid) -> Option<CustomToolRow> {
@@ -174,6 +145,20 @@ pub async fn load_by_id(pg: &sqlx::PgPool, id: Uuid) -> Option<CustomToolRow> {
         version: r.version,
         timeout_secs: r.timeout_secs,
     })
+}
+
+/// Does a custom tool with this name exist (in any state)? Used to validate an
+/// Agent's tool grant at write time. The enabled/approved gate is re-applied at
+/// read time by [`load_enabled_custom`], so a stored grant to a later-disabled
+/// tool degrades quietly rather than erroring the Agent save.
+pub async fn exists_by_name(pg: &sqlx::PgPool, name: &str) -> crate::error::Result<bool> {
+    let exists = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM custom_tools WHERE name = $1)",
+        name
+    )
+    .fetch_one(pg)
+    .await?;
+    Ok(exists.unwrap_or(false))
 }
 
 /// Admin Test-run: execute the tool with hand-entered args under the same egress +
@@ -284,23 +269,23 @@ pub async fn dispatch_custom(
 }
 
 /// Durable/unattended resume of an approved custom call (no live loop to stream
-/// into). Mirrors the MCP durable branch: only runs while the connector is
-/// enabled; audits the same event.
+/// into). Runs under the same egress choke-point as the live path (`guard_egress` for
+/// http, which refuses + audits when the connector is dormant); the caller has already
+/// enforced the agent grant + the enabled/approved gate. Audits the same event.
 pub async fn dispatch_custom_durable(
     state: &AppState,
-    acting_user_id: Option<Uuid>,
+    ctx: &crate::auth::AuthContext,
     chat_id: Uuid,
     row: &CustomToolRow,
     args: &Value,
 ) {
     let started = Instant::now();
     let res = match row.kind.as_str() {
-        "http" => {
-            if !integrations::is_enabled(&state.pg, ConnectorKind::CustomTool).await.unwrap_or(false) {
-                return; // dormant ⇒ drop (matches the MCP durable branch)
-            }
-            perform_http(row, args).await
-        }
+        // http crosses the perimeter → the single zero-egress choke-point, then the request.
+        "http" => match integrations::guard_egress(state, ctx, ConnectorKind::CustomTool).await {
+            Ok(()) => perform_http(row, args).await,
+            Err(e) => Err(e),
+        },
         "script" => run_script(state, row, args).await, // zero-egress VM, no gate
         other => Err(AppError::Validation(format!("unknown custom tool kind: {other}"))),
     };
@@ -310,7 +295,7 @@ pub async fn dispatch_custom_durable(
         Err(e) => (format!("error: {e}"), AuditOutcome::Failure),
     };
     let status = if matches!(outcome, AuditOutcome::Success) { "ok" } else { "error" };
-    audit_custom_call(state, acting_user_id, "user", chat_id, row, args, &text, ms, outcome).await;
+    audit_custom_call(state, ctx.user_id, ctx.role.as_str(), chat_id, row, args, &text, ms, outcome).await;
     metrics::counter!("tool_calls_total", "tool" => row.name.clone(), "kind" => "custom", "status" => status)
         .increment(1);
 }

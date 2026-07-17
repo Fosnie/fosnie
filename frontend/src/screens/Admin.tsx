@@ -63,6 +63,11 @@ import {
   registerMcpServer,
   approveMcpServer,
   deleteMcpServer,
+  discoverMcpOauth,
+  putMcpOauthClient,
+  deleteMcpOauthClient,
+  connectMcpServer,
+  type McpOauthDiscovery,
   type McpServer,
   type McpAuthType,
   useToolCatalog,
@@ -940,6 +945,7 @@ function McpServersSection() {
   const [authType, setAuthType] = useState<McpAuthType>("none");
   const [authHeaderName, setAuthHeaderName] = useState("");
   const [authValue, setAuthValue] = useState("");
+  const [oauthFor, setOauthFor] = useState<McpServer | null>(null);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["admin-mcp-servers"] });
   const register = () =>
@@ -1009,13 +1015,17 @@ function McpServersSection() {
                 { value: "bearer", label: "bearer token" },
                 { value: "api_key", label: "API key (header)" },
                 { value: "header", label: "custom header" },
+                { value: "oauth", label: "OAuth 2.1 (per-user)" },
               ]}
             />
             {(authType === "api_key" || authType === "header") && (
               <input className={INPUT} placeholder="header name e.g. CONTEXT7_API_KEY" value={authHeaderName} onChange={(e) => setAuthHeaderName(e.target.value)} />
             )}
-            {authType !== "none" && (
+            {authType !== "none" && authType !== "oauth" && (
               <input className={INPUT + " min-w-[16rem]"} type="password" autoComplete="off" placeholder={authType === "bearer" ? "token (sent as 'Bearer …')" : "secret value"} value={authValue} onChange={(e) => setAuthValue(e.target.value)} />
+            )}
+            {authType === "oauth" && (
+              <span className="text-xs text-slate/70">Register by URL only — configure the issuer + connect below once the row exists.</span>
             )}
           </div>
         )}
@@ -1037,6 +1047,9 @@ function McpServersSection() {
                 <td className={TD}>{s.tool_count}</td>
                 <td className={TD}>{s.connected ? <Badge tone="green">connected</Badge> : <Badge>—</Badge>}</td>
                 <td className={TD}>
+                  {s.auth_type === "oauth" && (
+                    <button className={BTN2 + " mr-2"} disabled={!!busy} onClick={() => setOauthFor(s)}>OAuth</button>
+                  )}
                   <button className={BTN2} disabled={!!busy} onClick={() => approve(s)}>{s.status === "active" ? "Re-pin" : s.status === "quarantined" ? "Re-approve" : "Approve"}</button>
                   <button className={BTN_DANGER + " ml-2"} disabled={!!busy} onClick={() => remove(s)}>Delete</button>
                 </td>
@@ -1045,6 +1058,105 @@ function McpServersSection() {
             {(!servers.data || servers.data.length === 0) && <tr><td className={TD} colSpan={6}>No MCP servers registered.</td></tr>}
           </tbody>
         </table>
+      )}
+
+      {oauthFor && (
+        <McpOAuthPanel
+          key={oauthFor.id}
+          server={oauthFor}
+          onClose={() => setOauthFor(null)}
+          onChanged={refresh}
+        />
+      )}
+    </div>
+  );
+}
+
+// One-click MCP connections (OAuth 2.1): discover + approve an issuer, register a client
+// (auto via DCR or a pasted client_id), then connect the admin's catalogue-source (and,
+// optionally, a service connection for unattended runs).
+function McpOAuthPanel({ server, onClose, onChanged }: { server: McpServer; onClose: () => void; onChanged: () => void }) {
+  const { busy, run } = useBusy();
+  const [disc, setDisc] = useState<McpOauthDiscovery | null>(null);
+  const [allowedOrigin, setAllowedOrigin] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+
+  const check = () =>
+    run("Check", async () => {
+      setDisc(await discoverMcpOauth(server.id, allowedOrigin.trim() || undefined));
+    });
+  const registerDcr = () =>
+    run("Register", async () => {
+      await putMcpOauthClient(server.id, { use_dcr: true, allowed_issuer_origin: allowedOrigin.trim() || undefined });
+      onChanged();
+    }, "Client registered — now connect");
+  const saveManual = () =>
+    run("Save", async () => {
+      await putMcpOauthClient(server.id, {
+        client_id: clientId.trim(),
+        client_secret: clientSecret.trim() || undefined,
+        allowed_issuer_origin: allowedOrigin.trim() || undefined,
+      });
+      onChanged();
+    }, "Client saved — now connect");
+  const connect = (service: boolean) =>
+    run("Connect", async () => {
+      const { authorize_url } = await connectMcpServer(server.id, service);
+      window.location.href = authorize_url;
+    });
+  const removeClient = () =>
+    run("Remove", async () => {
+      await deleteMcpOauthClient(server.id);
+      setDisc(null);
+      onChanged();
+    });
+
+  return (
+    <div className="admin-card mb-4">
+      <div className="admin-card-head">
+        <h4>OAuth setup — {server.slug}</h4>
+        <button className={BTN2} onClick={onClose}>Close</button>
+      </div>
+      <p className="mb-2 text-xs text-slate/70">
+        Register the server by URL, check it, approve the issuer, then connect. Each user connects once and the
+        server’s tools run under their own identity.
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <input className={INPUT + " min-w-[18rem]"} placeholder="allowed issuer origin (only if cross-origin)" value={allowedOrigin} onChange={(e) => setAllowedOrigin(e.target.value)} />
+        <button className={BTN} disabled={!!busy} onClick={check}>Check server</button>
+      </div>
+
+      {disc && (
+        <div className="mt-3 text-sm">
+          <p>Issuer: <code className="break-all">{disc.issuer}</code></p>
+          <p className="text-xs text-slate/70">
+            DCR: {disc.dcr_available ? "available" : "not supported"} · PKCE S256: {disc.s256_ok ? "yes" : "no"}
+          </p>
+          <p className="mt-1 text-xs">Redirect URI to register at the provider: <code className="break-all">{disc.callback_url}</code></p>
+          {disc.warnings.map((w, i) => (
+            <p key={i} className="text-xs text-gold">⚠ {w}</p>
+          ))}
+
+          <div className="mt-3">
+            {disc.dcr_available ? (
+              <button className={BTN} disabled={!!busy || !disc.s256_ok} onClick={registerDcr}>Register automatically</button>
+            ) : (
+              <div className="flex flex-wrap items-end gap-2">
+                <input className={INPUT} placeholder="client_id" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+                <input className={INPUT} type="password" autoComplete="off" placeholder="client secret (blank to keep)" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+                <button className={BTN} disabled={!!busy || !disc.s256_ok || !clientId.trim()} onClick={saveManual}>Save client</button>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button className={BTN2} disabled={!!busy} onClick={() => connect(false)}>Connect (my catalogue source)</button>
+            <button className={BTN2} disabled={!!busy} onClick={() => connect(true)}>Use as service connection</button>
+            <button className={BTN_DANGER} disabled={!!busy} onClick={removeClient}>Remove client</button>
+          </div>
+          <p className="mt-1 text-xs text-slate/60">After connecting, set the catalogue source and approve the server (Approve button in the table).</p>
+        </div>
       )}
     </div>
   );
@@ -1844,7 +1956,7 @@ function ToolsSection() {
                 <tr>
                   <td className={TD}>{t.label} <span className="text-xs text-slate/60">({t.name})</span></td>
                   <td className={TD}>
-                    <Badge tone={t.effect === "approval" ? "gold" : "slate"}>{t.effect}</Badge>
+                    <Badge tone={t.effect === "run" ? "gold" : "slate"}>{t.effect}</Badge>
                     {t.egress && <span className="ml-1"><Badge tone="red">egress</Badge></span>}
                     {t.capability && <span className="ml-1"><Badge>host cap</Badge></span>}
                     {t.default && <span className="ml-1"><Badge>always on</Badge></span>}

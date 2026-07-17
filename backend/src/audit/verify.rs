@@ -94,7 +94,7 @@ where
     for row in rows {
         // Linkage: the stored prev_hash must match the predecessor's hash.
         // The first PRESENT row anchors the chain — its predecessor may have
-        // been dropped by a retention partition-drop (audit §A.2.4), so we
+        // been dropped by a retention partition-drop, so we
         // accept its stored prev_hash rather than requiring it to resolve.
         if first {
             expected_prev = row.prev_hash.clone();

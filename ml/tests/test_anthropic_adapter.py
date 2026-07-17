@@ -212,13 +212,51 @@ def test_handle_stream_event_raises_on_error():
         aa._handle_stream_event({"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}, {})
 
 
-def test_handle_stream_event_ignores_tool_json_delta_in_text():
+def test_handle_stream_event_ignores_orphan_tool_json_delta():
+    # An input_json_delta with no preceding tool_use block-start is dropped entirely —
+    # it never leaks into the answer token stream, and there is no block to accumulate into.
     state: dict = {}
     out = aa._handle_stream_event(
-        {"type": "content_block_delta", "delta": {"type": "input_json_delta", "partial_json": '{"q":'}}, state
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": '{"q":'}}, state
     )
-    assert out == []  # tool args never leak into the answer token stream
-    assert state["tool_json"] == '{"q":'
+    assert out == []
+
+
+def test_handle_stream_event_emits_tool_call_on_block_stop():
+    # A tool_use block: start (id+name) → argument fragments → stop ⇒ one tool_call event,
+    # never framed as answer tokens.
+    state: dict = {"trace_on": True}
+    assert aa._handle_stream_event(
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "tu_1", "name": "search_library"}}, state
+    ) == []
+    assert aa._handle_stream_event(
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": '{"query":'}}, state
+    ) == []
+    assert aa._handle_stream_event(
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": '"ratification"}'}}, state
+    ) == []
+    out = aa._handle_stream_event({"type": "content_block_stop", "index": 0}, state)
+    assert out == [{
+        "type": "tool_call", "id": "tu_1", "name": "search_library",
+        "arguments": {"query": "ratification"},
+    }]
+
+
+def test_handle_stream_event_drops_malformed_tool_args():
+    state: dict = {}
+    aa._handle_stream_event(
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "tu_1", "name": "search_library"}}, state
+    )
+    aa._handle_stream_event(
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": "{not json"}}, state
+    )
+    assert aa._handle_stream_event({"type": "content_block_stop", "index": 0}, state) == []
 
 
 # --- Phase 2: extended thinking ----------------------------------------------

@@ -20,7 +20,7 @@ import {
   Activity, ArrowUp, ArrowUpRight, AtSign, Bell, Blocks, BookText, Brain,
   Calculator, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight,
   CircleCheck, Clock, Copy, Database, Dot, Download, Ellipsis, FileStack,
-  FileText, Files, Flag, Folder, Globe, Info, KeyRound, Layers, ListFilter, Lock, LogOut,
+  FileText, Files, Flag, Folder, Globe, Info, KeyRound, Layers, LayoutTemplate, ListFilter, Lock, LogOut,
   Menu, MessageSquare, Mic, NotebookPen, Paperclip, Pause, Pencil, Pin, Play, Plus, Quote,
   RotateCcw, Save, Scale, ScrollText, Search, SendHorizontal, ShieldCheck,
   Smile, SlidersHorizontal, Sparkles, Square, SquareTerminal, Table2, Telescope,
@@ -47,7 +47,7 @@ const G = {
   Alert: TriangleAlert, Info, Dot, Logout: LogOut, Layers, Key: KeyRound, Activity, Database,
   Like: ThumbsUp, Dislike: ThumbsDown, Wrench, Blocks, At: AtSign, Bell, Note: NotebookPen,
   Globe, Calc: Calculator, Lightning: Zap, Tune: ThinkingEffort, User, Send2: SendHorizontal,
-  Save, Smile, Mic, LiveVoice, Workflows: Waypoints, Menu,
+  Save, Smile, Mic, LiveVoice, Workflows: Waypoints, Menu, Template: LayoutTemplate,
 } as const;
 
 // Wrap each glyph so it carries the brand's 1.75 default stroke (overridable).

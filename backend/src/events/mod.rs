@@ -19,18 +19,18 @@
 //! a rolled-back change; no lost event for a committed one). The dispatcher
 //! ([`crate::workflows::dispatch_once`]) relays undispatched events to matching
 //! workflows. Provenance (`actor_type` + `trigger_chain` + `depth`) drives the
-//! loop guards (§7a): a workflow triggers only on human-originated events by
+//! loop guards: a workflow triggers only on human-originated events by
 //! default, and a cascade is capped by `depth`.
 //!
 //! The bus is **internal only** — these are platform domain events, never
-//! external ingress (§3, §13).
+//! external ingress.
 
 use serde_json::Value;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 /// Origin of an event. Maps to the `event_actor_type` Postgres enum. The loop
-/// guard (§7a.2) keys off this: a workflow ignores non-`Human` events unless it
+/// guard keys off this: a workflow ignores non-`Human` events unless it
 /// explicitly opts in via `trigger_on_system_events`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
 #[sqlx(type_name = "event_actor_type", rename_all = "lowercase")]
@@ -41,7 +41,7 @@ pub enum ActorType {
     System,
 }
 
-// v1 event catalogue subset we emit (§4). Stable strings — workflows match on these.
+// v1 event catalogue subset we emit. Stable strings — workflows match on these.
 pub const DOCUMENT_INGESTED: &str = "document.ingested";
 pub const DOCUMENT_DELETED: &str = "document.deleted";
 pub const PROJECT_MEMBER_ADDED: &str = "project.member_added";
@@ -51,7 +51,7 @@ pub const ACCOUNT_ARCHIVED: &str = "account.archived";
 /// so by default it triggers nothing. Makes the loop guard observable end-to-end.
 pub const WORKFLOW_MESSAGE_POSTED: &str = "workflow.message_posted";
 
-// New-subsystem catalogue (§4 expansion). Emitted by Core mutations and — via the
+// New-subsystem catalogue. Emitted by Core mutations and — via the
 // public `emit_with` outbox API — by the Enterprise crate in its own paths. Names
 // are stable: they surface in the trigger UI and workflows match on them.
 /// A document arrived from an external source (connector import). Distinct from
@@ -138,7 +138,7 @@ pub struct EventRow {
 }
 
 /// Append an event to the outbox **using the caller's transaction**, so it commits
-/// atomically with the mutation it records (§3, §12.1). Returns the new event id.
+/// atomically with the mutation it records. Returns the new event id.
 /// There is deliberately no autocommit variant — every emit rides a mutation's tx.
 pub async fn emit_with(conn: &mut PgConnection, ev: &NewEvent) -> Result<Uuid, sqlx::Error> {
     let id = Uuid::now_v7();
@@ -169,7 +169,7 @@ pub async fn emit_with(conn: &mut PgConnection, ev: &NewEvent) -> Result<Uuid, s
     Ok(id)
 }
 
-/// Provenance propagation (§7a.1): the event a workflow run itself causes carries
+/// Provenance propagation: the event a workflow run itself causes carries
 /// `actor_type=workflow`, `depth = parent.depth + 1`, and the parent chain with
 /// this run appended — so the depth cap + human-only rule break any cascade. Pure.
 pub fn child_event(

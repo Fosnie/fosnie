@@ -18,10 +18,10 @@ One engine, two presentations (matrix grid / N=1 prose) — identical per-cell
 mechanism. Each cell is **per-document extraction over a known set**: the
 document's text is pulled once and a single LLM call answers one column's prompt
 for it. Completeness is guaranteed by iterating documents × columns, never by
-retrieval ranking over a base (which could silently drop a document — §B.2).
+retrieval ranking over a base (which could silently drop a document).
 
 Bounded concurrency via an asyncio.Semaphore so we never fan out N×M unbounded
-calls; vLLM continuous batching sits beneath (§3.17). Cells are streamed as they
+calls; vLLM continuous batching sits beneath. Cells are streamed as they
 complete so the caller (Rust) can persist + broadcast incrementally."""
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
 async def _relevant_text(text: str, query: str, k: int) -> str:
     """Single-document retrieval: chunk THIS document, embed the query + chunks,
     return the top-k most relevant chunks joined. Scoped to one document — never
-    base RAG (§B.2). Falls back to the whole text when it already fits k chunks."""
+    base RAG. Falls back to the whole text when it already fits k chunks."""
     chunks = chunker.chunk_text(text)
     if len(chunks) <= k:
         return text
@@ -135,7 +135,7 @@ async def _relevant_text(text: str, query: str, k: int) -> str:
 async def _select_text(doc_text: str, prompt: str, mechanism: str) -> str:
     """Pick the document text fed to the model, per the column mechanism.
     `stuff` uses the whole document but falls back to per-document retrieval when
-    it is over budget (never silently truncate — §B.2 completeness)."""
+    it is over budget (never silently truncate, for completeness)."""
     k = settings.tabular_topk
     if mechanism == "per_document_rag":
         return await _relevant_text(doc_text, prompt, k)

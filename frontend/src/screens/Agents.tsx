@@ -234,6 +234,7 @@ function AgentEditor({
   const [selSkills, setSelSkills] = useState<Set<string>>(new Set());
   const [selPks, setSelPks] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
+  const [mcpExpanded, setMcpExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (agentId && detail.data) {
@@ -248,6 +249,21 @@ function AgentEditor({
 
   const patch = (p: Partial<FormState>) => setForm((f) => ({ ...f, ...p }));
   const toggleTool = (name: string) => setForm((f) => { const tools = new Set(f.tools); if (tools.has(name)) tools.delete(name); else tools.add(name); return { ...f, tools }; });
+  // The server-level switch grants the whole (pinned) catalogue as `slug__*`. Turning it
+  // on collapses any per-tool grants for that server back to the wildcard; turning it off
+  // clears the grant so individual tools can be picked.
+  const toggleMcpServer = (slug: string) => setForm((f) => {
+    const tools = new Set(f.tools);
+    const wild = `${slug}__*`;
+    if (tools.has(wild)) {
+      tools.delete(wild);
+    } else {
+      for (const t of [...tools]) if (t.startsWith(`${slug}__`)) tools.delete(t);
+      tools.add(wild);
+    }
+    return { ...f, tools };
+  });
+  const toggleMcpExpand = (slug: string) => setMcpExpanded((prev) => { const next = new Set(prev); if (next.has(slug)) next.delete(slug); else next.add(slug); return next; });
   const toggleMode = (m: string) => setForm((f) => { const modes = new Set(f.modes); if (modes.has(m)) modes.delete(m); else modes.add(m); return { ...f, modes }; });
   const toggleSkill = (id: string) => setSelSkills((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const togglePk = (id: string) => setSelPks((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
@@ -408,7 +424,7 @@ function AgentEditor({
                     <span className="tool-name">
                       {t.label}
                       {t.default && <span className="tool-badge default">always on</span>}
-                      {t.effect === "approval" && <span className="tool-badge approval">needs approval</span>}
+                      {t.effect === "run" && <span className="tool-badge approval">agent run</span>}
                       {t.effect === "proposal" && <span className="tool-badge proposal">proposal</span>}
                       {t.egress && <span className="tool-badge egress">egress</span>}
                     </span>
@@ -444,20 +460,54 @@ function AgentEditor({
           {(mcpServers.data ?? []).some((s) => s.status === "active") && (
             <section className="ed-section">
               <h4>MCP servers</h4>
-              <p className="ed-hint mono">Grant this agent the tools of an MCP server. Other agents don't see them.</p>
+              <p className="ed-hint mono">Grant this agent an MCP server's tools — the whole server, or individual tools. Other agents don't see them.</p>
               {(mcpServers.data ?? []).filter((s) => s.status === "active").map((s) => {
-                const key = `${s.slug}__*`;
+                const wild = `${s.slug}__*`;
+                const wildOn = form.tools.has(wild);
+                const expanded = mcpExpanded.has(s.slug);
+                const grantedCount = wildOn ? s.tools.length : s.tools.filter((t) => form.tools.has(`${s.slug}__${t.name}`)).length;
                 return (
-                  <div key={s.id} className={"tool-row" + (canManage ? "" : " disabled")}>
-                    <span className="tool-ic"><Icon.Wrench size={15} /></span>
-                    <div className="tool-info">
-                      <span className="tool-name">
-                        {s.name || s.slug}
-                        {s.requires_egress && <span className="tool-badge egress">egress</span>}
-                      </span>
-                      <span className="tool-desc">{s.slug} · {s.tool_count} tool{s.tool_count === 1 ? "" : "s"}</span>
+                  <div key={s.id}>
+                    <div className={"tool-row" + (canManage ? "" : " disabled")}>
+                      <span className="tool-ic"><Icon.Wrench size={15} /></span>
+                      <div className="tool-info">
+                        <span className="tool-name">
+                          {s.name || s.slug}
+                          {s.requires_egress && <span className="tool-badge egress">egress</span>}
+                        </span>
+                        <span className="tool-desc">
+                          {s.slug} · {wildOn ? "all tools, including ones added later" : `${grantedCount} of ${s.tools.length} tool${s.tools.length === 1 ? "" : "s"} granted`}
+                          {s.tools.length > 0 && (
+                            <button
+                              type="button"
+                              style={{ marginLeft: 8, background: "none", border: "none", padding: 0, color: "var(--accent-link, var(--color-gold))", cursor: "pointer", font: "inherit", textDecoration: "underline" }}
+                              onClick={() => toggleMcpExpand(s.slug)}
+                            >
+                              {expanded ? "hide tools" : "choose tools"}
+                            </button>
+                          )}
+                        </span>
+                      </div>
+                      <Switch on={wildOn} disabled={!canManage} onClick={() => canManage && toggleMcpServer(s.slug)} />
                     </div>
-                    <Switch on={form.tools.has(key)} disabled={!canManage} onClick={() => canManage && toggleTool(key)} />
+                    {expanded && (
+                      <div style={{ paddingLeft: 28 }}>
+                        {s.tools.map((t) => {
+                          const tkey = `${s.slug}__${t.name}`;
+                          const on = wildOn || form.tools.has(tkey);
+                          const locked = !canManage || wildOn;
+                          return (
+                            <div key={t.name} className={"tool-row" + (locked ? " disabled" : "")}>
+                              <div className="tool-info">
+                                <span className="tool-name">{t.name}</span>
+                                {t.description && <span className="tool-desc">{t.description}</span>}
+                              </div>
+                              <Switch on={on} disabled={locked} onClick={() => !locked && toggleTool(tkey)} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}

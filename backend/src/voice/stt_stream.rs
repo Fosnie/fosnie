@@ -21,7 +21,7 @@
 //! a box that only has the batch engine — at the cost of no live partials.
 //!
 //! Rust-direct to the engine (not via the Python ML service): the live loop is on
-//! the latency-critical path and owns cancel, so a Python hop is avoided (§4).
+//! the latency-critical path and owns cancel, so a Python hop is avoided.
 
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;

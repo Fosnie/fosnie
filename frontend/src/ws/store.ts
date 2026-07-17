@@ -16,7 +16,7 @@ import { useSyncExternalStore } from "react";
 import { apiFetch } from "@/api/client";
 import type { ClientFrame, ServerFrame, WsStatus } from "@/ws/protocol";
 
-// One multiplexed socket per user (topology §6.3). Status is exposed via
+// One multiplexed socket per user. Status is exposed via
 // useSyncExternalStore; frames are pushed to registered handlers. Reconnect uses
 // the server-issued resume token within its TTL, else a freshly-minted connect
 // ticket — the access token is never placed in the socket URL.

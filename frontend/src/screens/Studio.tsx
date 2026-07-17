@@ -23,6 +23,7 @@ const TABS = [
   { id: "libraries", label: "Library", icon: Icon.Book },
   { id: "automations", label: "Automations", icon: Icon.Automations },
   { id: "prompts", label: "Prompts", icon: Icon.Prompts },
+  { id: "research", label: "Research templates", icon: Icon.Template },
   { id: "memory", label: "Memory", icon: Icon.Memory },
 ] as const;
 

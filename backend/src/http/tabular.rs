@@ -155,7 +155,7 @@ pub async fn create_review(
     .execute(&mut *tx)
     .await?;
     // Two UNNEST inserts instead of (1 + docs + docs×cols) round-trips
-    // (re-audit §9.3). review_documents: doc ids + positions; cells: the full
+    // (avoids the N+1). review_documents: doc ids + positions; cells: the full
     // doc×col matrix built up front.
     let positions: Vec<i32> = (0..body.document_ids.len() as i32).collect();
     sqlx::query!(

@@ -39,11 +39,11 @@ pub struct ProvisionClaims {
     pub display_name: String,
     pub role: PlatformRole,
     /// Brokered-IdP group names/ids from the token `groups` claim (empty when the
-    /// IdP does not send them). Drives JIT group sync (D5, §4).
+    /// IdP does not send them). Drives JIT group sync (D5).
     pub groups: Vec<String>,
 }
 
-/// JIT group-sync mode (`identity.jit_group_sync`, D5 §4). Off ⇒ no group changes.
+/// JIT group-sync mode (`identity.jit_group_sync`, D5). Off ⇒ no group changes.
 #[derive(Clone, Copy, PartialEq)]
 enum JitMode {
     Off,
@@ -201,7 +201,7 @@ pub async fn upsert_from_claims(pool: &PgPool, claims: &ProvisionClaims) -> Resu
         .await?;
     }
 
-    // JIT group sync (D5 §4): reconcile the user's `idp`-sourced group memberships
+    // JIT group sync (D5): reconcile the user's `idp`-sourced group memberships
     // to the token's `groups` claim. Only touches groups the directory owns
     // (`managed_by IN ('idp','scim')`) and memberships it created (`source='idp'`);
     // manual/SCIM grants are never disturbed. `off` (default) is a no-op.
@@ -477,7 +477,7 @@ pub async fn create_manual(
     event.payload = Some(serde_json::json!({ "email": email, "role": role.as_str() }));
     audit::append_with(&mut tx, &event).await?;
 
-    // Domain event (§4): a directory user was provisioned. Local manual create is a
+    // Domain event: a directory user was provisioned. Local manual create is a
     // Human action; the SCIM path emits the same name with a System actor.
     let ev = crate::events::NewEvent::new(
         crate::events::DIRECTORY_USER_PROVISIONED,

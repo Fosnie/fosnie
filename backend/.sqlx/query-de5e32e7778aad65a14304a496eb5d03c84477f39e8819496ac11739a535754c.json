@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO mcp_oauth_connections (id, mcp_server_id, oauth_client_id, user_id, status)\n               VALUES ($1,$2,$3,$4,'pending')\n               ON CONFLICT (mcp_server_id, user_id) WHERE user_id IS NOT NULL\n               DO UPDATE SET oauth_client_id = EXCLUDED.oauth_client_id, status = 'pending'\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "mcp_oauth_connections",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "de5e32e7778aad65a14304a496eb5d03c84477f39e8819496ac11739a535754c"
+}

@@ -20,7 +20,7 @@
 //! consistent under concurrency. [`verify::verify_chain`] recomputes the chain
 //! to detect any tampering.
 //!
-//! **Separation of duties** (§A.2.2): the application role is granted only
+//! **Separation of duties**: the application role is granted only
 //! INSERT/SELECT on `audit_events` (no UPDATE/DELETE) — the log is not
 //! forgeable through the app even by an admin. Retention deletes by dropping
 //! whole partitions on a privileged path, never row-by-row here.
@@ -42,7 +42,7 @@ const CHAIN_LOCK_KEY: i64 = 0x5041_4941_5544_4954u64 as i64;
 /// Domain-separation tag — bump if the canonical serialisation ever changes.
 const HASH_DOMAIN: &[u8] = b"pai.audit.chain.v1";
 
-/// Optional Ed25519 signing key (audit §A.2.2). Set once at boot from
+/// Optional Ed25519 signing key. Set once at boot from
 /// `BootConfig.audit_signing_key`; absent = unsigned (hash-chain only).
 static SIGNING_KEY: std::sync::OnceLock<Option<ed25519_dalek::SigningKey>> =
     std::sync::OnceLock::new();
@@ -340,7 +340,7 @@ where
     F: FnOnce(&[u8]) -> Option<Vec<u8>>,
 {
     // Permanent latency metric (optimisation audit Probe 2, kept per decision
-    // §5.3 — observability is a platform component): time the lock-hold +
+    // — observability is a platform component): time the lock-hold +
     // round-trips per append. Now measures the writer task's batched appends
     // and the synchronous/atomic path alike.
     let probe_start = std::time::Instant::now();
@@ -382,7 +382,7 @@ where
         prev_hash.as_deref(),
     );
 
-    // Optional Ed25519 signature over the row hash (non-repudiation, §A.2.2),
+    // Optional Ed25519 signature over the row hash (non-repudiation),
     // supplied by the sink: `ChainAuditSink` signs, `BasicAuditSink` returns None.
     let signature: Option<Vec<u8>> = sign(&hash);
 

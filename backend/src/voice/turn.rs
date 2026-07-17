@@ -72,7 +72,7 @@ pub async fn detect(
 /// Decide whether to end the speaker's turn. Acoustic/STT endpointing OR trailing
 /// silence beyond the configured threshold ends the utterance; when a semantic
 /// detector is present we additionally require it to judge the turn complete, so a
-/// mid-thought pause holds (§5, §12.5). Without a detector the silence gate decides.
+/// mid-thought pause holds. Without a detector the silence gate decides.
 pub fn should_fire_turn(
     endpoint: bool,
     silence_ms: u64,

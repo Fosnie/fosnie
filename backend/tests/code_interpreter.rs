@@ -22,6 +22,36 @@ fn enabled() -> bool {
     std::env::var("PAI_E2E").as_deref() == Ok("1")
 }
 
+/// Mint an authorisation witness through the real seam, then dispatch — the only
+/// way to reach the witness-gated `tools::dispatch`. Grants the single tool under
+/// test so authorisation passes (the host-capability gate still fires inside the
+/// seam, which is what the feature-off refusal test exercises).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_via_seam(
+    st: &AppState,
+    ctx: &AuthContext,
+    project_id: Option<Uuid>,
+    chat_id: Uuid,
+    turn: Uuid,
+    tx: &mpsc::Sender<ServerFrame>,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<String, fosnie_backend::AppError> {
+    let custom = std::collections::HashMap::new();
+    let authorised =
+        tools::AuthorisedTools::build(&[name.to_string()], &[name.to_string()], false, &custom);
+    let overrides = std::collections::HashMap::new();
+    match tools::authorize_native_call(st, ctx, chat_id, &authorised, &overrides, name, project_id)
+        .await
+    {
+        tools::NativeDecision::Allowed(w) => {
+            tools::dispatch(st, ctx, chat_id, turn, tx, None, None, &[], &custom, &w, args).await
+        }
+        tools::NativeDecision::Recoverable(m) => Ok(m),
+        tools::NativeDecision::Denied(e) => Err(e),
+    }
+}
+
 async fn token(user: &str) -> Option<String> {
     let c = reqwest::Client::new();
     let r = c
@@ -188,16 +218,13 @@ async fn disabled_capability_is_refused() {
         break_glass: false, mfa_enroll_only: false,
     };
     let (tx, _rx) = mpsc::channel::<ServerFrame>(8);
-    let res = tools::dispatch(
+    let res = dispatch_via_seam(
         &state,
         &ctx,
         None,
         Uuid::now_v7(),
         Uuid::now_v7(),
         &tx,
-        None,
-        &[],
-        &std::collections::HashMap::new(),
         "code_interpreter",
         &serde_json::json!({ "code": "print(1)" }),
     )

@@ -49,3 +49,4 @@ Thumbs.db
 
 # NOTE: backend/.sqlx is intentionally committed — sqlx offline query cache,
 # required to build without a live database.
+target-test/

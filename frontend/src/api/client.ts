@@ -265,9 +265,11 @@ export interface NativeToolEntry {
   name: string;
   label: string;
   hint: string;
-  /** State effect — mirrors the backend classifier. */
-  effect: "read" | "proposal" | "approval";
-  /** Crosses the zero-egress perimeter (always gated). */
+  /** State effect — mirrors the backend classifier. "run" = mutates state /
+   *  runs code, so it makes the turn agentic (opens an agent run); it does NOT
+   *  pause for approval. */
+  effect: "read" | "proposal" | "run";
+  /** Crosses the zero-egress perimeter. */
   egress: boolean;
   /** Host capability required to run this tool, else null. */
   capability: string | null;
@@ -1053,7 +1055,11 @@ export function setIntegrationEnabled(kind: string, enabled: boolean): Promise<u
 }
 
 // MCP servers (FEATURE B1) — admin registry
-export type McpAuthType = "none" | "bearer" | "api_key" | "header";
+export type McpAuthType = "none" | "bearer" | "api_key" | "header" | "oauth";
+export interface McpToolBrief {
+  name: string;
+  description: string;
+}
 export interface McpServer {
   id: string;
   slug: string;
@@ -1064,6 +1070,7 @@ export interface McpServer {
   enabled: boolean;
   connected: boolean;
   tool_count: number;
+  tools: McpToolBrief[];
   last_health_at: string | null;
   created_at: string;
   auth_type: McpAuthType;
@@ -1092,6 +1099,87 @@ export function approveMcpServer(id: string): Promise<{ status: string; tools: n
 }
 export function deleteMcpServer(id: string): Promise<{ ok: boolean }> {
   return apiFetch(`/api/admin/mcp-servers/${id}`, { method: "DELETE" });
+}
+export function patchMcpServer(
+  id: string,
+  body: {
+    name?: string;
+    url?: string;
+    auth_type?: McpAuthType;
+    auth_header_name?: string;
+    auth_value?: string;
+    requires_egress?: boolean;
+  },
+): Promise<{ ok: boolean; reapprove: boolean }> {
+  return apiFetch(`/api/admin/mcp-servers/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+// ── MCP one-click connections (OAuth 2.1) ──────────────────────────────────────
+export interface McpOauthDiscovery {
+  issuer: string;
+  dcr_available: boolean;
+  scopes_supported: string[];
+  s256_ok: boolean;
+  callback_url: string;
+  warnings: string[];
+}
+export function discoverMcpOauth(
+  id: string,
+  allowed_issuer_origin?: string,
+): Promise<McpOauthDiscovery> {
+  return apiFetch(`/api/admin/mcp-servers/${id}/oauth/discover`, {
+    method: "POST",
+    body: JSON.stringify({ allowed_issuer_origin }),
+  });
+}
+export function putMcpOauthClient(
+  id: string,
+  body: {
+    allowed_issuer_origin?: string;
+    use_dcr?: boolean;
+    client_id?: string;
+    client_secret?: string;
+    scopes?: string[];
+  },
+): Promise<{ issuer: string; registration_source: string; has_secret: boolean; scopes: string[] }> {
+  return apiFetch(`/api/admin/mcp-servers/${id}/oauth/client`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+export function deleteMcpOauthClient(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/admin/mcp-servers/${id}/oauth/client`, { method: "DELETE" });
+}
+export function setMcpCatalogSource(id: string, connection_id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/admin/mcp-servers/${id}/oauth/catalog-source`, {
+    method: "PUT",
+    body: JSON.stringify({ connection_id }),
+  });
+}
+
+export interface MyMcpConnection {
+  server_id: string;
+  slug: string;
+  name: string;
+  status: "connected" | "disconnected" | "reauth_required";
+  subject_label: string | null;
+  scopes: string[];
+}
+export function useMyMcpConnections(enabled: boolean) {
+  return useQuery({
+    queryKey: ["my-mcp-connections"],
+    queryFn: () => apiFetch<MyMcpConnection[]>("/api/me/mcp-connections"),
+    enabled,
+  });
+}
+export function connectMcpServer(serverId: string, service?: boolean): Promise<{ authorize_url: string }> {
+  return apiFetch(`/api/me/mcp-connections/${serverId}/connect`, {
+    method: "POST",
+    body: JSON.stringify({ service: !!service }),
+  });
+}
+export function disconnectMcpServer(serverId: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/me/mcp-connections/${serverId}`, { method: "DELETE" });
 }
 
 // Legal holds
@@ -1773,7 +1861,7 @@ export interface WorkflowTrigger {
 export function useWorkflows() {
   return useQuery({ queryKey: ["workflows"], queryFn: () => apiFetch<Workflow[]>("/api/workflows") });
 }
-/// The trigger catalogue — the single source for the create-form dropdown (D4).
+/// The trigger catalogue — the single source for the create-form dropdown.
 export function useWorkflowTriggers() {
   return useQuery({ queryKey: ["workflow-triggers"], queryFn: () => apiFetch<WorkflowTrigger[]>("/api/workflows/triggers") });
 }
@@ -2277,9 +2365,9 @@ export interface VerifyClaim {
   evidence: string;
   section: string;
   had_citation: boolean;
-  /** The claim's verbatim span in the document (§4.5); null if unlocatable. */
+  /** The claim's verbatim span in the document; null if unlocatable. */
   source_text: string | null;
-  /** Set once ground-or-cut repair has run on this claim (§4.6). */
+  /** Set once ground-or-cut repair has run on this claim. */
   repair_action: RepairAction | null;
 }
 
@@ -2310,7 +2398,7 @@ export function startVerifyDraft(
   });
 }
 
-/** Ground-or-cut repair of a finished verification run (§4.6). Enqueues a durable
+/** Ground-or-cut repair of a finished verification run. Enqueues a durable
  *  job that proposes tracked changes; surfaced in the accept/reject panel. */
 export function startRepair(runId: string): Promise<{ status: string }> {
   return apiFetch(`/api/verification-runs/${runId}/repair`, { method: "POST" });
@@ -2364,7 +2452,8 @@ export function useResearchChats(enabled = true) {
 export interface ResearchRequestBody {
   question: string;
   source: "web" | "files" | "hybrid";
-  template: "exploration" | "formal" | "freeform" | "literature";
+  /** A built-in template id or a user-defined template's UUID. */
+  template: string;
   /** Narrowed corpus scope (subset of readable libraries); empty ⇒ all. */
   kb_ids?: string[];
   /** Triage-chip answers steering scope voice (non-scope clarifications). */
@@ -2422,6 +2511,107 @@ export function startResearch(body: ResearchRequestBody) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+// --- Deep Research templates -------------------------
+
+/** One section in a report template's structure. The per-section flags are what
+ * the editor toggles; the research service derives the shape it consumes. */
+export interface ResearchTemplateSection {
+  heading: string;
+  brief: string;
+  expandable: boolean;
+  exec_summary: boolean;
+}
+
+/** A built-in template's picker metadata (headings only; the service owns the
+ * body). */
+export interface BuiltinTemplate {
+  id: string;
+  label: string;
+  description: string;
+  structure: string[];
+  outline_mode: "constrained" | "free";
+}
+
+/** A user-defined template as it appears in the picker catalogue. */
+export interface CustomTemplateSummary {
+  id: string;
+  label: string;
+  description: string;
+  structure: string[];
+  outline_mode: "constrained" | "free";
+  scope: "personal" | "global";
+  can_manage: boolean;
+}
+
+export interface ResearchTemplateCatalogue {
+  builtin: BuiltinTemplate[];
+  custom: CustomTemplateSummary[];
+}
+
+/** Full detail of a user-defined template (the editor's load shape). */
+export interface ResearchTemplateDetail {
+  id: string;
+  label: string;
+  description: string;
+  skeleton: ResearchTemplateSection[];
+  writing_instructions: string;
+  outline_mode: "constrained" | "free";
+  scope: "personal" | "global";
+  can_manage: boolean;
+  archived: boolean;
+}
+
+export function useResearchTemplates() {
+  return useQuery({
+    queryKey: ["research", "templates"],
+    queryFn: () => apiFetch<ResearchTemplateCatalogue>("/api/research/templates"),
+  });
+}
+
+export function useResearchTemplate(id: string | undefined) {
+  return useQuery({
+    queryKey: ["research", "template", id],
+    queryFn: () => apiFetch<ResearchTemplateDetail>(`/api/research/templates/${id}`),
+    enabled: !!id,
+  });
+}
+
+/** The editable body of a template (shared by create-from-scratch and update). */
+export interface ResearchTemplateBody {
+  label: string;
+  description: string;
+  skeleton: ResearchTemplateSection[];
+  writing_instructions: string;
+  outline_mode: "constrained" | "free";
+}
+
+/** Create a template. Pass `duplicate_of` (a built-in id) to fork an editable
+ * copy of a built-in (personal, filled from the research service), or a full
+ * body to create from scratch. `scope` defaults to personal. */
+export function createResearchTemplate(
+  body: ({ duplicate_of: string } | ResearchTemplateBody) & { scope?: "personal" | "global" },
+): Promise<{ id: string }> {
+  return apiFetch<{ id: string }>("/api/research/templates", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateResearchTemplate(
+  id: string,
+  body: ResearchTemplateBody & { scope?: "personal" | "global" },
+): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/research/templates/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Archive (soft-delete) a template. Existing chats keep resolving it. */
+export function archiveResearchTemplate(id: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`/api/research/templates/${id}`, { method: "DELETE" });
 }
 
 /** Convert a stored markdown artefact to DOCX/PDF (dedupes server-side). */
@@ -2592,7 +2782,7 @@ export interface KnowledgeDoc {
   status: DocStatus;
   created_at: string;
   /** How the doc entered the KB: "upload" | "connector_import". Optional — only
-   *  the KB detail endpoint returns it (connector-kb-rag §6). */
+   *  the KB detail endpoint returns it. */
   source?: string;
 }
 

@@ -202,9 +202,16 @@ class Settings(BaseSettings):
     # gap-check LLM call (per part / per turn) names specific provisions still missing; a
     # deterministic fill (fetch_by_sections + BM25 + TOC) tops up the slice from a non-evictable
     # append budget. Reuses the whole retrieval toolkit; late_anchor stays the final guardrail.
+    # Iterative retrieval: the gap phase loops gap-check→fill across rounds until the evidence
+    # suffices OR the corpus is exhausted (anti-thrash: escalation + query dedup + diminishing
+    # returns + deadline), then hands honest known-gaps to synthesis. Defaults are deliberately
+    # conservative — an operator raises rounds/deadline for research patterns AFTER an eval run.
     gap_round_enabled: bool = True    # gate the whole phase (mirror rerank_enabled bool)
-    gap_rounds: int = 1               # gap-check→fill iterations (re-check only if fill added)
-    gap_reserve: int = 12             # max [D#] blocks the gap phase may append per turn
+    gap_rounds: int = 3               # iterative-retrieval rounds (gap-check→fill iterations)
+    gap_reserve: int = 40             # max [D#] blocks the gap phase may append across ALL rounds (eval 15 Jul: recall 0.60→0.67 vs 12, flat latency)
+    gap_deadline_secs: int = 60       # wall-clock budget for the whole phase (0 = off)
+    gap_diminishing_unseen: float = 0.2  # stop when a round's NEW-chunk fraction drops below this (0 = off)
+    gap_escalate: bool = True         # second-attempt escalation pass (need-text hybrid + reformulate + neighbours)
 
     # OCR (.md): GLM-OCR over an OpenAI-compatible
     # vision endpoint. The OCR *service* handles each file — including

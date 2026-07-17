@@ -16,7 +16,7 @@
 //! grants, attachable to Projects/chats. Every mutating endpoint writes a
 //! hash-chain audit event; widening an audience (grant / promote / attach) is a
 //! **disclosure event** logged with before/after. `knowledge_base_id` is stamped
-//! backend-side at ingest — never taken from client input (anti-spoof, §4.4).
+//! backend-side at ingest — never taken from client input (anti-spoof).
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -134,7 +134,7 @@ pub struct KbDocOut {
     pub status: String,
     pub created_at: String,
     /// How the document entered the KB: `upload` | `connector_import`
-    /// (connector-kb-rag §6 — drives the source badge in the library UI).
+    /// (drives the source badge in the library UI).
     pub source: String,
 }
 
@@ -454,7 +454,7 @@ pub struct LinkKb {
 
 /// Attach a KB to a Project. Requires project-write (power-user/owner) AND kb-read.
 /// Refused if the KB is `restricted` and this is not its origin Project (hard
-/// ethical wall, §7). The cross-matter exposure surface — audited.
+/// ethical wall). The cross-matter exposure surface — audited.
 pub async fn attach_project(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,

@@ -37,7 +37,7 @@
 /// How a permission may be *scoped* when assigned through a delegated role.
 ///
 /// Scope narrows an otherwise-global permission to a set of groups or projects
-/// (delegated administration, ТЗ §4). A permission whose semantics have no
+/// (delegated administration). A permission whose semantics have no
 /// meaningful narrowing is [`ScopeKind::None`]; assigning it with a scope is a
 /// validation error (400), never a silent global grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -63,7 +63,7 @@ impl ScopeKind {
 
 /// The resolved scope at which a caller holds a given permission — the answer a
 /// scope-aware Core handler needs to filter its lists and guard its mutations
-/// (ТЗ §4). The Core default policy only ever returns [`Global`](Self::Global)
+/// The Core default policy only ever returns [`Global`](Self::Global)
 /// (an admin) or [`Denied`](Self::Denied); an Enterprise policy also returns the
 /// narrowed [`Groups`](Self::Groups)/[`Projects`](Self::Projects) forms for a
 /// delegated admin.
@@ -149,7 +149,7 @@ pub struct PermissionDef {
     /// Which layout group it belongs to in the UI.
     pub area: PermissionArea,
     /// Whether — and how — a delegated assignment of this permission may be
-    /// narrowed (ТЗ §4).
+    /// narrowed.
     pub scope: ScopeKind,
 }
 
@@ -174,6 +174,7 @@ pub const AGENTS_MANAGE: &str = "agents.manage";
 pub const SKILLS_MANAGE: &str = "skills.manage";
 pub const TOOLS_MANAGE: &str = "tools.manage";
 pub const WORKFLOWS_MANAGE: &str = "workflows.manage";
+pub const RESEARCH_TEMPLATES_MANAGE: &str = "research.templates.manage";
 pub const ANALYTICS_VIEW: &str = "analytics.view";
 pub const INTEGRATIONS_MANAGE: &str = "integrations.manage";
 pub const GROUNDEDNESS_VIEW: &str = "groundedness.view";
@@ -278,6 +279,12 @@ pub const PERMISSION_CATALOG: &[PermissionDef] = &[
     PermissionDef {
         name: WORKFLOWS_MANAGE,
         description: "Create and manage event-driven workflows.",
+        area: PermissionArea::Content,
+        scope: ScopeKind::None,
+    },
+    PermissionDef {
+        name: RESEARCH_TEMPLATES_MANAGE,
+        description: "Create and manage deployment-wide Deep Research report templates.",
         area: PermissionArea::Content,
         scope: ScopeKind::None,
     },
@@ -390,6 +397,7 @@ mod tests {
             SKILLS_MANAGE,
             TOOLS_MANAGE,
             WORKFLOWS_MANAGE,
+            RESEARCH_TEMPLATES_MANAGE,
             ANALYTICS_VIEW,
             INTEGRATIONS_MANAGE,
             GROUNDEDNESS_VIEW,

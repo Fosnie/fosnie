@@ -51,7 +51,7 @@ pub struct BootConfig {
     /// Layer [1] fallback system prompt when a chat has no Agent configured.
     pub default_system_prompt: String,
     /// Optional 32-byte hex seed for Ed25519 audit signing. Empty = unsigned
-    /// (hash-chain only). Set in deployment for non-repudiation (audit §A.2.2).
+    /// (hash-chain only). Set in deployment for non-repudiation.
     pub audit_signing_key: String,
     /// Optional base64-encoded 32-byte AES-256-GCM key for at-rest encryption of
     /// direct-message bodies. Empty = DMs stored in plaintext (dev default).

@@ -102,9 +102,17 @@ const KNOBS: &[Knob] = &[
     Knob { key: "rag.toc_max_sections", label: "TOC channel sweep width", desc: "Topic-to-section channel: a topical, numberless sub-question ('authority to allot… pre-emption') is matched to a statute chapter by title, then this many contiguous section numbers are swept from the chapter start (statute chapters are adjacent, so ~24 reaches the sibling chapter). 0 = channel off. Pure Qdrant, no LLM.", value_type: ConfigValueType::Int, default: "24", min: Some(0), max: Some(60) },
     Knob { key: "rag.late_anchor_cap", label: "Late-anchor recoveries per part", desc: "Last-resort guardrail: before a per-part answer says a section is 'not reproduced', if the part NAMES that section's number but its slice lacks it, force a direct fetch (or reuse an already-pooled block) and add it — up to this many per part. Stops false 'not found' on an obviously-named section. 0 = off. Pure Qdrant, no LLM.", value_type: ConfigValueType::Int, default: "4", min: Some(0), max: Some(12) },
     Knob { key: "rag.show_diagnostics", label: "Show retrieval diagnostics", desc: "On: the chat activity panel includes the retrieval Coverage step (parts covered, sub-questions, documents/sections, expansion counts) — useful when tuning retrieval. Off (default): only the human progress steps are shown; the Coverage step is hidden. Display only; retrieval and its telemetry are unchanged, and this toggles live without a restart.", value_type: ConfigValueType::Bool, default: "false", min: None, max: None },
-    Knob { key: "rag.gap_round_enabled", label: "Gap-fill round", desc: "Agentic gap-fill: after the sub-answers and before writing the answer, the model checks whether each part's retrieved evidence is enough and names any specific provisions still missing; a deterministic fetch (sections + BM25 + table-of-contents) tops up the evidence. One bounded extra retrieval round, no tool-loop in the answer stream.", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
-    Knob { key: "rag.gap_rounds", label: "Gap-fill rounds", desc: "How many gap-check → fill iterations the gap-fill round may run (re-checks only if the previous fill added something). Diminishing returns beyond 1.", value_type: ConfigValueType::Int, default: "1", min: Some(0), max: Some(2) },
-    Knob { key: "rag.gap_reserve", label: "Pool: gap-fill reserve", desc: "Maximum additional sections the gap-fill round may append to the evidence per turn — a reserved, non-evictable budget on top of the normal pool. Bounds the extra context length.", value_type: ConfigValueType::Int, default: "12", min: Some(0), max: Some(40) },
+    Knob { key: "rag.gap_round_enabled", label: "Iterative retrieval", desc: "Iterative retrieval: after the sub-answers and before writing the answer, the model checks whether each part's retrieved evidence is enough and names any specific provisions still missing; a deterministic fetch (sections + BM25 + table-of-contents) tops up the evidence, looping across rounds until sufficient or the corpus is exhausted. No tool-loop in the answer stream.", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
+    Knob { key: "rag.gap_rounds", label: "Iterative retrieval rounds", desc: "Maximum gap-check → fill iterations the iterative-retrieval loop may run before writing the answer. The loop stops early on sufficiency, corpus exhaustion, the reserve/deadline budget or diminishing returns — this is the ceiling. Raise (up to 8) for deep multi-hop research; costs latency per extra round. Do not raise beyond eval-validated values.", value_type: ConfigValueType::Int, default: "3", min: Some(0), max: Some(8) },
+    Knob { key: "rag.gap_reserve", label: "Pool: iterative-retrieval reserve", desc: "Maximum additional sections the iterative-retrieval loop may append to the evidence per turn, TOTAL across all rounds — a reserved, non-evictable budget on top of the normal pool. Bounds the extra context length. (Default raised 12→40 on the 15 Jul eval: mean recall 0.60→0.67 at flat latency; the first gap round saturates it, so it is the effective recall dial.)", value_type: ConfigValueType::Int, default: "40", min: Some(0), max: Some(40) },
+    Knob { key: "rag.gap_deadline_secs", label: "Iterative retrieval: deadline", desc: "Wall-clock budget for the whole iterative-retrieval phase; when it expires the loop stops fail-soft and synthesis proceeds with what was gathered. Keep well below the total retrieval timeout. 0 = no deadline (only the round/reserve/diminishing stops apply).", value_type: ConfigValueType::Int, default: "60", min: Some(0), max: Some(300) },
+    Knob { key: "rag.gap_diminishing_unseen", label: "Iterative retrieval: diminishing-returns floor", desc: "Stop the loop when a round's fraction of NEW (previously-unseen) fetched chunks drops below this — the round is re-surfacing material already retrieved (anti-thrash). 0..1; 0 disables the criterion. Range is not enforced by the numeric bounds below (a float knob) — the ML service clamps to 0..1.", value_type: ConfigValueType::Float, default: "0.2", min: None, max: None },
+    Knob { key: "rag.gap_escalate", label: "Iterative retrieval: escalation pass", desc: "On a second attempt at a still-missing item, widen the net: a full hybrid search over the need text (not the judge's search phrase), one query reformulation, and a ±1 neighbour sweep — so a later round is not a verbatim repeat of an earlier one. Off = repeat the same deterministic fetch each round.", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
+    Knob { key: "rag.model_search_mode", label: "Model-driven library search", desc: "Whether the MAIN answering model may call a `search_library` tool to top up evidence when the automatic first pass fell short. 'gaps_only' (default) offers it only when the iterative retrieval left unresolved gaps — healthy turns keep their fast path with zero extra latency. 'always' offers it on every retrieval turn (research agents; costs one extra non-streamed step before the answer). 'off' disables it. Independent of the deployment tool kill-switch and per-agent tool selection.", value_type: ConfigValueType::String, default: "gaps_only", min: None, max: None },
+    Knob { key: "rag.model_search_max_calls", label: "Model-driven search: max calls", desc: "How many times the model may call `search_library` in one turn before it is told to answer from what it has (anti-thrash).", value_type: ConfigValueType::Int, default: "4", min: Some(1), max: Some(10) },
+    Knob { key: "rag.model_search_deadline_secs", label: "Model-driven search: per-call deadline", desc: "Wall-clock budget for a single `search_library` call. Each call runs a LIGHT retrieval (the model is the outer loop), so this is short by design.", value_type: ConfigValueType::Int, default: "20", min: Some(5), max: Some(120) },
+    Knob { key: "rag.model_search_show_commentary", label: "Model-driven search: show reasoning", desc: "Surface the model's brief one-line reason for each library top-up as a live activity detail. Off hides it (the search steps still show).", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
+    Knob { key: "rag.model_search_locus", label: "Model-driven search: where it runs", desc: "Where the `search_library` top-up happens. 'loop' (default) runs it in a non-streamed step BEFORE the answer streams. 'midstream' (experimental) hands the tool to the streaming answer instead, so the model can search between segments of the same reply — saving one step before the first token on gap-turns. Midstream applies to unified synthesis only, and falls back to a plain stream if a provider can't stream tool calls.", value_type: ConfigValueType::String, default: "loop", min: None, max: None },
     Knob { key: "chat.answer_max_continuations", label: "Answer auto-continue passes", desc: "When an answer is truncated at the model's output-token limit (long multi-part answers at higher reasoning effort), how many times to automatically continue it before showing a truncation notice. Each pass resumes where it stopped. 0 = never continue (truncate + notice).", value_type: ConfigValueType::Int, default: "4", min: Some(0), max: Some(10) },
     Knob { key: "ingest.chunk_size", label: "Chunk size (chars)", desc: "Applied to documents ingested from now on.", value_type: ConfigValueType::Int, default: "1500", min: Some(200), max: Some(8000) },
     Knob { key: "ingest.chunk_overlap", label: "Chunk overlap (chars)", desc: "Applied to documents ingested from now on.", value_type: ConfigValueType::Int, default: "400", min: Some(0), max: Some(2000) },
@@ -131,6 +139,8 @@ fn knob_options(key: &str) -> Option<&'static [&'static str]> {
     match key {
         "rag.answer_reasoning_effort" => Some(&["minimal", "low", "medium", "high", "xhigh"]),
         "rag.synthesis_mode" => Some(&["unified", "per_part"]),
+        "rag.model_search_mode" => Some(&["off", "gaps_only", "always"]),
+        "rag.model_search_locus" => Some(&["loop", "midstream"]),
         _ => None,
     }
 }
@@ -268,6 +278,58 @@ mod knob_tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), n, "no duplicate knob keys");
+    }
+
+    #[test]
+    fn iterative_retrieval_knobs_registered_with_types_and_bounds() {
+        let by_key = |k: &str| KNOBS.iter().find(|x| x.key == k);
+        // The whole iterative-retrieval family is present.
+        for k in ["rag.gap_round_enabled", "rag.gap_rounds", "rag.gap_reserve",
+                  "rag.gap_deadline_secs", "rag.gap_diminishing_unseen", "rag.gap_escalate"] {
+            assert!(by_key(k).is_some(), "knob {k} registered");
+        }
+        // Rounds raised to a default of 3 with an 8-round ceiling ("as many rounds as it takes").
+        let rounds = by_key("rag.gap_rounds").unwrap();
+        assert_eq!(rounds.value_type, ConfigValueType::Int);
+        assert_eq!(rounds.default, "3");
+        assert_eq!((rounds.min, rounds.max), (Some(0), Some(8)));
+        // Deadline is a bounded seconds Int (0 = off) enforced on write.
+        let dl = by_key("rag.gap_deadline_secs").unwrap();
+        assert_eq!(dl.value_type, ConfigValueType::Int);
+        assert_eq!((dl.min, dl.max), (Some(0), Some(300)));
+        // Diminishing floor is a Float (0..1 clamped ML-side, so no i64 bounds here).
+        let dim = by_key("rag.gap_diminishing_unseen").unwrap();
+        assert_eq!(dim.value_type, ConfigValueType::Float);
+        assert_eq!(dim.default, "0.2");
+        assert_eq!((dim.min, dim.max), (None, None));
+        // Escalation is a boolean toggle, default on.
+        let esc = by_key("rag.gap_escalate").unwrap();
+        assert_eq!(esc.value_type, ConfigValueType::Bool);
+        assert_eq!(esc.default, "true");
+    }
+
+    #[test]
+    fn model_search_knobs_registered_with_types_and_bounds() {
+        let by_key = |k: &str| KNOBS.iter().find(|x| x.key == k);
+        for k in ["rag.model_search_mode", "rag.model_search_max_calls",
+                  "rag.model_search_deadline_secs", "rag.model_search_show_commentary",
+                  "rag.model_search_locus"] {
+            assert!(by_key(k).is_some(), "knob {k} registered");
+        }
+        // Mode is an enum, default gaps_only, validated against the three-way option set.
+        let mode = by_key("rag.model_search_mode").unwrap();
+        assert_eq!(mode.value_type, ConfigValueType::String);
+        assert_eq!(mode.default, "gaps_only");
+        assert_eq!(super::knob_options("rag.model_search_mode"), Some(&["off", "gaps_only", "always"][..]));
+        // Locus is an enum defaulting to the non-streamed loop; midstream is opt-in.
+        let locus = by_key("rag.model_search_locus").unwrap();
+        assert_eq!((locus.value_type, locus.default), (ConfigValueType::String, "loop"));
+        assert_eq!(super::knob_options("rag.model_search_locus"), Some(&["loop", "midstream"][..]));
+        // Caps + deadline are bounded Ints enforced on write.
+        let mc = by_key("rag.model_search_max_calls").unwrap();
+        assert_eq!((mc.value_type, mc.min, mc.max), (ConfigValueType::Int, Some(1), Some(10)));
+        let dl = by_key("rag.model_search_deadline_secs").unwrap();
+        assert_eq!((dl.min, dl.max), (Some(5), Some(120)));
     }
 }
 

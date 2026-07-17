@@ -15,7 +15,7 @@
 //! Redis connection pool + helpers.
 //!
 //! Named `cache` rather than `redis` to avoid shadowing the `redis` crate
-//! (re-exported via `deadpool_redis`). Redis is Rust-only here (topology §3.3):
+//! (re-exported via `deadpool_redis`). Redis is Rust-only here:
 //! pub/sub, socket state, and — once auth lands — the OIDC session cache.
 
 use deadpool_redis::{Config, Pool, Runtime};
@@ -106,6 +106,21 @@ pub async fn kv_get_del(pool: &Pool, key: &str) -> Result<Option<String>> {
         .await
         .map_err(|e| AppError::Other(anyhow::anyhow!("redis GETDEL failed: {e}")))?;
     Ok(v)
+}
+
+/// Delete `key` unconditionally (idempotent — no error if absent). For callers that
+/// peek with [`kv_get`] and later consume with an explicit delete, rather than the
+/// atomic [`kv_get_del`] — e.g. an OAuth state store whose contract separates load
+/// from delete.
+pub async fn kv_del(pool: &Pool, key: &str) -> Result<()> {
+    use deadpool_redis::redis;
+    let mut conn = pool.get().await.map_err(|e| AppError::Other(anyhow::anyhow!("redis pool: {e}")))?;
+    redis::cmd("DEL")
+        .arg(key)
+        .query_async::<i64>(&mut conn)
+        .await
+        .map(|_| ())
+        .map_err(|e| AppError::Other(anyhow::anyhow!("redis DEL failed: {e}")))
 }
 
 /// Readiness probe: does Redis reply to PING?

@@ -41,6 +41,7 @@ async def stream_events(
     total_docs: int | None = None,
     refinements: list[str] | None = None,
     verify: bool = False,
+    template_spec: dict | None = None,
 ) -> AsyncIterator[dict]:
     queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAX)
 
@@ -77,6 +78,7 @@ async def stream_events(
                 total_docs=total_docs,
                 refinements=refinements or [],
                 verify=verify,
+                template_spec=template_spec,
             )
             await queue.put({"type": "done", **result})
         except Exception as e:  # noqa: BLE001 — terminal error event

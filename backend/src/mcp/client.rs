@@ -58,16 +58,18 @@ pub enum Transport {
     Http { url: String, auth: Option<HttpAuth> },
 }
 
-/// A live MCP connection — list its tools, call one, check liveness.
+/// A live MCP connection — list its tools, call one, check liveness. Sealed to `mcp`: a
+/// raw connection is never handed to code outside the module, so the transport can only be
+/// reached through the manager, which is gated by an `AuthorizedCall` witness.
 #[async_trait]
-pub trait McpConn: Send + Sync {
+pub(in crate::mcp) trait McpConn: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<ToolCatalogEntry>>;
     async fn call_tool(&self, tool: &str, args: Value) -> Result<String>;
-    async fn ping(&self) -> bool;
 }
 
-/// Open a real connection over `transport` (handshake + protocol negotiation).
-pub async fn connect(transport: Transport) -> Result<Arc<dyn McpConn>> {
+/// Open a real connection over `transport` (handshake + protocol negotiation). Sealed to
+/// `mcp` (returns a raw connection).
+pub(in crate::mcp) async fn connect(transport: Transport) -> Result<Arc<dyn McpConn>> {
     let conn = RmcpConn::connect(transport).await?;
     Ok(Arc::new(conn))
 }
@@ -80,6 +82,72 @@ use rmcp::transport::streamable_http_client::{
 };
 use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
+
+/// Build the reqwest client every remote MCP connection uses: the given default headers
+/// plus `redirect::Policy::none()`. Forbidding redirects is the actual SSRF stop — the
+/// SDK has no internal redirect loop, so a 3xx into an internal host with a secret
+/// attached is only prevented here. Both the static-auth path and the OAuth path share
+/// this one construction so neither can drift into an unhardened client.
+pub(crate) fn build_hardened_client(
+    headers: reqwest::header::HeaderMap,
+) -> Result<reqwest::Client> {
+    #[allow(unused_mut)]
+    let mut b = reqwest::Client::builder()
+        .default_headers(headers)
+        .redirect(reqwest::redirect::Policy::none());
+    // Test-only hook: trust one extra root certificate (a local mock authorisation
+    // server). Compiled out unless the `test-mocks` feature is on (which is never a
+    // default feature). It can ONLY ADD a trusted root — it cannot weaken the https
+    // check, the cloud-metadata refusal, the same-origin rule, the DNS re-check,
+    // PKCE/iss validation, or the `redirect::Policy::none()` above. If the feature were
+    // ever shipped on but no root installed, behaviour is byte-identical to today.
+    #[cfg(feature = "test-mocks")]
+    if let Some(cert) = TEST_ROOT.get() {
+        b = b.add_root_certificate(cert.clone());
+    }
+    b.build().map_err(|e| AppError::Other(anyhow::anyhow!("build MCP http client: {e}")))
+}
+
+/// The extra root certificate the `test-mocks` build trusts, if installed.
+#[cfg(feature = "test-mocks")]
+static TEST_ROOT: std::sync::OnceLock<reqwest::Certificate> = std::sync::OnceLock::new();
+
+/// Install a single extra root certificate for [`build_hardened_client`] to trust.
+/// Test-only (feature `test-mocks`); idempotent (first call wins). Used by the mock
+/// authorisation-server suite so the flow's own client trusts the mock's self-signed
+/// cert without disabling verification.
+#[cfg(feature = "test-mocks")]
+pub fn install_test_root(cert: reqwest::Certificate) {
+    let _ = TEST_ROOT.set(cert);
+}
+
+/// A hardened client with no default headers — for OAuth discovery, token exchange, and
+/// the OAuth transport (which injects a fresh bearer per request rather than baking one
+/// into the client).
+pub fn hardened_client() -> Result<reqwest::Client> {
+    build_hardened_client(reqwest::header::HeaderMap::new())
+}
+
+/// Open an OAuth-authenticated streamable-HTTP connection. `auth_manager` carries the
+/// approved metadata, the configured client, and the per-connection credential store; the
+/// SDK's `AuthClient` wrapper fetches (and refreshes) the access token per request, so the
+/// connection survives token rotation. The manager is built by the OAuth flow layer, which
+/// has the database and deployment key; this function owns only the transport handshake.
+pub(in crate::mcp) async fn serve_oauth(
+    url: &str,
+    auth_manager: rmcp::transport::auth::AuthorizationManager,
+    http: reqwest::Client,
+) -> Result<Arc<dyn McpConn>> {
+    use rmcp::transport::auth::AuthClient;
+    let auth_client = AuthClient::new(http, auth_manager);
+    let cfg = StreamableHttpClientTransportConfig::with_uri(url.to_string());
+    let tp = StreamableHttpClientTransport::with_client(auth_client, cfg);
+    let service = ()
+        .serve(tp)
+        .await
+        .map_err(|e| AppError::Other(anyhow::anyhow!("MCP OAuth handshake: {e}")))?;
+    Ok(Arc::new(RmcpConn { service }))
+}
 
 struct RmcpConn {
     service: RunningService<RoleClient, ()>,
@@ -115,11 +183,7 @@ impl RmcpConn {
                     hv.set_sensitive(true);
                     headers.insert(hn, hv);
                 }
-                let client = reqwest::Client::builder()
-                    .default_headers(headers)
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .map_err(|e| AppError::Other(anyhow::anyhow!("build MCP http client: {e}")))?;
+                let client = build_hardened_client(headers)?;
                 let cfg = StreamableHttpClientTransportConfig::with_uri(url);
                 let tp = StreamableHttpClientTransport::with_client(client, cfg);
                 ().serve(tp)
@@ -191,20 +255,19 @@ impl McpConn for RmcpConn {
         }
         Ok(out)
     }
-
-    async fn ping(&self) -> bool {
-        self.service.peer().list_tools(Default::default()).await.is_ok()
-    }
 }
 
-// ── Deterministic fake (tests / demos) ───────────────────────────────────────
+// ── Deterministic fake (tests) ────────────────────────────────────────────────
 /// An in-process fake connection: a fixed catalog and an echoing `call_tool`.
 /// Lets the whole MCP pipeline (registry → namespace → dispatch → result, RBAC,
-/// HITL, rug-pull) be tested without a live server or the rmcp transport.
-pub struct FakeConn {
+/// HITL, rug-pull) be tested without a live server or the rmcp transport. Sealed to `mcp`
+/// (constructs a raw connection); the in-crate MCP tests use it.
+#[cfg(test)]
+pub(in crate::mcp) struct FakeConn {
     pub catalog: Vec<ToolCatalogEntry>,
 }
 
+#[cfg(test)]
 #[async_trait]
 impl McpConn for FakeConn {
     async fn list_tools(&self) -> Result<Vec<ToolCatalogEntry>> {
@@ -216,8 +279,5 @@ impl McpConn for FakeConn {
         } else {
             Err(AppError::Validation(format!("unknown tool '{tool}'")))
         }
-    }
-    async fn ping(&self) -> bool {
-        true
     }
 }

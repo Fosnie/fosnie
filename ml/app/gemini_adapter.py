@@ -338,15 +338,17 @@ async def a_stream_chat(
     messages: list[dict[str, Any]],
     sampling: dict[str, Any],
     model: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     from . import llm
     from .llm import LlmError
 
     stage = llm._consume_stage()
     model = model or cfg("llm_model", settings.llm_model)
-    body = _build_body(messages, sampling, None)
+    body = _build_body(messages, sampling, tools)
     usage: dict[str, Any] | None = None
     finish: str | None = None
+    fc_count = 0  # Gemini has no native call id — synthesise a stable one per call
 
     client = http_client.get_client()
     async with client.stream("POST", _url(model, "streamGenerateContent", sse=True), json=body, headers=_headers()) as resp:
@@ -367,6 +369,18 @@ async def a_stream_chat(
                 usage = _map_usage(chunk["usageMetadata"])
             for cand in chunk.get("candidates") or []:
                 for p in (cand.get("content") or {}).get("parts") or []:
+                    fc = p.get("functionCall")
+                    if fc and fc.get("name"):
+                        # Gemini delivers a function call as one complete part (args are a
+                        # full dict), so it emits directly — no fragment accumulation.
+                        finish = "tool_calls"
+                        args = fc.get("args")
+                        yield {
+                            "type": "tool_call", "id": f"call_{fc_count}", "name": fc["name"],
+                            "arguments": args if isinstance(args, dict) else {},
+                        }
+                        fc_count += 1
+                        continue
                     text = p.get("text")
                     if not text:
                         continue
@@ -374,7 +388,7 @@ async def a_stream_chat(
                         yield {"type": "reasoning", "delta": text}
                     else:
                         yield {"type": "token", "delta": text}
-                if cand.get("finishReason"):
+                if cand.get("finishReason") and finish != "tool_calls":
                     finish = _map_finish(cand["finishReason"])
 
     llm._record_usage(stage, usage)

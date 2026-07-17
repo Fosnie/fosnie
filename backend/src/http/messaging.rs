@@ -16,7 +16,7 @@
 //! chats with members, reliable messages (Postgres truth + per-chat sequence,
 //! live fan-out via the WS hub, reconnect replay by `since=<seq>`), shared
 //! notes (optimistic concurrency), cross-message search, and internal system
-//! messages (the platform posting to its own chat — §B.12).
+//! messages (the platform posting to its own chat).
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -189,7 +189,7 @@ pub async fn is_member(state: &AppState, user_id: Uuid, chat_id: Uuid) -> Result
 
 /// Post a platform `system` message into a group chat (no human sender) — the
 /// reliable `post_message` path, fanned out live like any other. Used by
-/// automation delivery (§B.12). `sender` is `None` for a pure platform post.
+/// automation delivery. `sender` is `None` for a pure platform post.
 pub async fn post_system_message(
     state: &AppState,
     chat_id: Uuid,
@@ -569,7 +569,7 @@ pub async fn add_member(
         _ => "member",
     };
     // Upsert the membership and emit `chat.member_added` atomically (transactional
-    // outbox, §12.1). `xmax = 0` distinguishes a genuine insert from a role change,
+    // outbox). `xmax = 0` distinguishes a genuine insert from a role change,
     // so re-adding an existing member (role update) does not fire the event.
     let mut tx = state.pg.begin().await?;
     let row = sqlx::query!(

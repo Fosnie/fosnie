@@ -81,10 +81,62 @@ fn validate(req: &ResearchRequest) -> Result<()> {
     if !matches!(req.source.as_str(), "web" | "files" | "hybrid") {
         return Err(AppError::Validation(format!("unknown research source '{}'", req.source)));
     }
-    if !matches!(req.template.as_str(), "exploration" | "formal" | "freeform" | "literature") {
-        return Err(AppError::Validation(format!("unknown template '{}'", req.template)));
-    }
+    // The template is no longer a closed enum: a built-in id is checked against
+    // the picker constant and a user-defined UUID against the store, both in
+    // `resolve_template` (which needs the DB and so cannot live here).
     Ok(())
+}
+
+/// A resolved report template: a built-in (spec None, the research service owns
+/// its body) or a user-defined one (spec = the snapshot sent inline to the
+/// service). `scope` labels which, for the audit trail.
+struct ResolvedTemplate {
+    /// The value stored in `chats.research_params.template` (a built-in id or the
+    /// custom template's UUID string).
+    id: String,
+    /// The inline snapshot for a user-defined template; None for a built-in.
+    spec: Option<serde_json::Value>,
+    /// "builtin" | "personal" | "global".
+    scope: &'static str,
+}
+
+/// Resolve the request's `template` to a runnable template. A UUID names a
+/// user-defined template in the store (archived rows included, so a Refine on an
+/// archived template still runs); anything else must be one of the built-ins.
+/// Foreign personal templates answer "not found" (no existence oracle).
+async fn resolve_template(
+    state: &AppState,
+    ctx: &crate::auth::AuthContext,
+    template: &str,
+) -> Result<ResolvedTemplate> {
+    if let Ok(id) = Uuid::parse_str(template) {
+        let row = sqlx::query!(
+            r#"SELECT label, skeleton, writing_instructions, outline_mode, scope, created_by
+               FROM research_templates WHERE id = $1"#,
+            id
+        )
+        .fetch_optional(&state.pg)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("unknown template '{template}'")))?;
+        if !crate::http::research_templates::template_visible(&row.scope, row.created_by, ctx) {
+            return Err(AppError::NotFound(format!("unknown template '{template}'")));
+        }
+        // The snapshot IS the research service's wire shape (`from_spec`): the
+        // stored skeleton already carries the per-section flags it derives from.
+        let spec = json!({
+            "id": id.to_string(),
+            "label": row.label,
+            "skeleton": row.skeleton,
+            "writing_instructions": row.writing_instructions,
+            "outline_mode": row.outline_mode,
+        });
+        let scope = if row.scope == "global" { "global" } else { "personal" };
+        Ok(ResolvedTemplate { id: template.to_string(), spec: Some(spec), scope })
+    } else if crate::http::research_templates::builtin_by_id(template).is_some() {
+        Ok(ResolvedTemplate { id: template.to_string(), spec: None, scope: "builtin" })
+    } else {
+        Err(AppError::NotFound(format!("unknown template '{template}'")))
+    }
 }
 
 fn needs_egress(source: &str) -> bool {
@@ -158,13 +210,17 @@ pub struct PrepareOut {
 
 /// Side-effect-free plan gate: validate → (web/hybrid) egress gate → resolve
 /// scope + estimate → ambiguity triage. Returns the scope summary the user
-/// confirms with Start, plus any clarifying chips (§3b).
+/// confirms with Start, plus any clarifying chips.
 pub async fn prepare(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
     Json(req): Json<ResearchRequest>,
 ) -> Result<Json<PrepareOut>> {
     validate(&req)?;
+    // Resolve the template here so a bad or invisible id is caught on the plan
+    // gate, not at run start. This touches the DB for a user-defined template but
+    // never the research service, so a web-mode prepare stays ML-independent.
+    resolve_template(&state, &ctx, &req.template).await?;
     if needs_egress(&req.source) {
         integrations::guard_egress(&state, &ctx, ConnectorKind::WebSearch).await?;
     }
@@ -286,6 +342,11 @@ pub async fn start(
     Json(req): Json<ResearchRequest>,
 ) -> Result<Json<StartOut>> {
     validate(&req)?;
+    // Resolve once, here in the live request: a user-defined template is snapshot
+    // into the task payload so a later edit or archive cannot rewrite a queued or
+    // running report (the built-in path resolves to no spec). Permissions are
+    // checked against the caller, not the worker.
+    let resolved = resolve_template(&state, &ctx, &req.template).await?;
     if needs_egress(&req.source) {
         integrations::guard_egress(&state, &ctx, ConnectorKind::WebSearch).await?;
     }
@@ -321,11 +382,14 @@ pub async fn start(
     let q = req.question.trim();
     let title = ellipsis(q, 80);
     // Stash the request params so a finished run can be re-opened prefilled
-    // ('Refine' = a fresh run with the same scope; cancel-and-refine).
+    // ('Refine' = a fresh run with the same scope; cancel-and-refine). This
+    // stores the template ID (not the snapshot): Refine must pick up the CURRENT
+    // version of the template, whereas the queued run below carries a frozen
+    // snapshot. The asymmetry is deliberate.
     let research_params = json!({
         "question": q,
         "source": req.source,
-        "template": req.template,
+        "template": resolved.id,
         "kb_ids": kb_ids,
         "kb_names": kb_names,
         "refinements": req.refinements,
@@ -362,7 +426,10 @@ pub async fn start(
             "user_id": owner,
             "role": ctx.role.as_str(),
             "question": q,
-            "template": req.template,
+            "template": resolved.id,
+            // Frozen snapshot for a user-defined template (null for a built-in,
+            // whose body the research service owns). See the research_params note.
+            "template_spec": resolved.spec,
             "source": req.source,
             "kb_ids": kb_ids,
             "refinements": req.refinements,
@@ -376,7 +443,8 @@ pub async fn start(
     ev.resource_type = Some("chat".into());
     ev.resource_id = Some(chat_id);
     ev.payload = Some(json!({
-        "run_id": run_id, "question": q, "template": req.template,
+        "run_id": run_id, "question": q, "template": resolved.id,
+        "template_scope": resolved.scope,
         "source": req.source, "kb_count": kb_ids.len(),
     }));
     let _ = audit::append(&state.pg, &ev).await;
@@ -400,18 +468,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_accepts_phase2_sources_and_templates() {
+    fn validate_accepts_phase2_sources() {
         for s in ["web", "files", "hybrid"] {
             assert!(validate(&req(s, "exploration")).is_ok(), "source {s}");
         }
-        for t in ["exploration", "formal", "freeform", "literature"] {
-            assert!(validate(&req("files", t)).is_ok(), "template {t}");
-        }
         assert!(validate(&req("ftp", "formal")).is_err());
-        assert!(validate(&req("web", "memo")).is_err());
         let mut blank = req("web", "formal");
         blank.question = "   ".into();
         assert!(validate(&blank).is_err());
+    }
+
+    #[test]
+    fn builtin_template_ids_recognised() {
+        // The template is no longer validated in `validate` (a user-defined UUID
+        // needs the DB); the built-in half is a lookup in the picker constant.
+        use crate::http::research_templates::builtin_by_id;
+        for t in ["exploration", "formal", "freeform", "literature"] {
+            assert!(builtin_by_id(t).is_some(), "built-in {t}");
+        }
+        assert!(builtin_by_id("memo").is_none());
     }
 
     #[test]
@@ -430,5 +505,85 @@ mod tests {
         assert_eq!((lo_big, hi_big), (20, 30));
         let (_, hh) = estimate("hybrid", 10_000);
         assert!(hh <= 30, "hybrid estimate capped");
+    }
+
+    // Build an AppState against the dev database; None when DATABASE_URL is unset.
+    async fn db_state() -> Option<(sqlx::PgPool, AppState)> {
+        let db_url = std::env::var("DATABASE_URL").ok()?;
+        let redis_url =
+            std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        let pg = crate::db::connect(&db_url, 5).await.ok()?;
+        let redis = crate::cache::create_pool(&redis_url).ok()?;
+        let boot = crate::config::BootConfig { database_url: db_url, redis_url, ..Default::default() };
+        let state = AppState::new(pg.clone(), redis, std::sync::Arc::new(boot));
+        Some((pg, state))
+    }
+
+    fn user_ctx(id: Uuid) -> crate::auth::AuthContext {
+        crate::auth::AuthContext {
+            user_id: Some(id),
+            email: None,
+            display_name: None,
+            role: crate::auth::PlatformRole::User,
+            break_glass: false,
+            mfa_enroll_only: false,
+        }
+    }
+
+    /// D6: `start` snapshots a user-defined template into the task payload, so a
+    /// later edit cannot rewrite a queued or running report. The snapshot taken at
+    /// enqueue time is an owned value — editing the row afterwards does not touch it,
+    /// while a fresh resolve (what Refine does) reflects the edit.
+    #[tokio::test]
+    async fn resolved_template_snapshot_is_frozen_against_later_edits() {
+        let Some((pg, state)) = db_state().await else {
+            eprintln!("skipping resolved_template_snapshot_is_frozen: DATABASE_URL unset");
+            return;
+        };
+        let owner = Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, display_name, email, role) VALUES ($1, $2, $3, 'user')")
+            .bind(owner)
+            .bind("owner")
+            .bind(format!("owner-{owner}@example.test"))
+            .execute(&pg)
+            .await
+            .unwrap();
+        let tid = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO research_templates \
+             (id, label, description, skeleton, writing_instructions, outline_mode, scope, created_by) \
+             VALUES ($1, 'Original', '', '[]'::jsonb, 'w', 'free', 'personal', $2)",
+        )
+        .bind(tid)
+        .bind(owner)
+        .execute(&pg)
+        .await
+        .unwrap();
+
+        let ctx = user_ctx(owner);
+        // Snapshot at "enqueue" time.
+        let snapshot = resolve_template(&state, &ctx, &tid.to_string()).await.unwrap();
+        let frozen_label = snapshot.spec.as_ref().unwrap()["label"].as_str().unwrap().to_string();
+        assert_eq!(frozen_label, "Original");
+
+        // The author edits the template after the run was queued.
+        sqlx::query("UPDATE research_templates SET label = 'Edited' WHERE id = $1")
+            .bind(tid)
+            .execute(&pg)
+            .await
+            .unwrap();
+
+        // The already-taken snapshot is untouched (the queued run uses THIS)...
+        assert_eq!(
+            snapshot.spec.as_ref().unwrap()["label"].as_str().unwrap(),
+            "Original",
+            "the frozen payload snapshot must not reflect the later edit"
+        );
+        // ...while a fresh resolve (Refine's path) sees the current version.
+        let fresh = resolve_template(&state, &ctx, &tid.to_string()).await.unwrap();
+        assert_eq!(fresh.spec.as_ref().unwrap()["label"].as_str().unwrap(), "Edited");
+
+        sqlx::query("DELETE FROM research_templates WHERE id = $1").bind(tid).execute(&pg).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(owner).execute(&pg).await.ok();
     }
 }

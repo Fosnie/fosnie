@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from itertools import zip_longest
 
 from prometheus_client import Counter
@@ -32,6 +33,7 @@ from prometheus_client import Counter
 from . import chunker, embeddings, guided, llm, qdrant_store, reranker, sparse
 from .config import settings
 from .rag_ctx import cfg
+from .web import dedup  # shingle/Jaccard primitives — reused for gap-query near-dup detection
 
 _log = logging.getLogger("pai-ml.retrieve")
 
@@ -699,6 +701,13 @@ class _ExpandStat:
         self.gap_rounds = 0
         self.gap_queries = 0
         self.gap_sections_added = 0
+        # iterative-retrieval accounting: needs the judge ordered but the corpus
+        # could not satisfy (after escalation), and why the loop stopped.
+        self.gap_needs_exhausted = 0
+        self.gap_stop_reason = ""
+        # the exhausted needs' text, surfaced to the backend so the main model's
+        # search_library top-up starts from concrete holes rather than from scratch.
+        self.gap_unresolved: list[str] = []
         # normalised section refs the deterministic channels FETCHED
         # (crossref/anchor/TOC/neighbours) — lets a retrieval autopsy split a missed expected
         # section into fetched-not-pooled vs not-fetched (which the plain counters only aggregate).
@@ -1309,15 +1318,164 @@ def _append_gap_block(p: dict, block: str, sec: str | None, est: "_ExpandStat | 
         est.gap_sections_added += 1
 
 
+# --- iterative-retrieval controller (generalises the single gap round) --------
+# Bounded evidence-sufficiency loop: keep gap-checking + filling across rounds until the
+# evidence suffices OR the corpus is exhausted, then hand the honest shortfall to synthesis.
+# Budget discipline (deadline / reserve / diminishing returns / anti-thrash) mirrors the golden
+# web/loop.py `_State`; the pattern is COPIED here (per the freeze on web/loop.py + DR), not shared.
+
+
+@dataclass
+class _GapState:
+    """Mutable loop budget + cross-round memory for the iterative-retrieval controller."""
+
+    deadline: float                                  # time.monotonic() deadline (+inf = off)
+    reserve_left: int                                # [D#] blocks the fill may still append
+    round: int = 0
+    stop_reason: str = ""                            # sufficient|rounds|reserve|deadline|…
+    seen_ct: set[str] = field(default_factory=set)   # chunk_texts seen across the WHOLE loop
+    query_history: list[str] = field(default_factory=list)  # normalised gap queries already tried
+    # per missing-item memory between rounds: key → {item, attempts, exhausted, target}.
+    needs: dict[str, dict] = field(default_factory=dict)
+
+    def expired(self) -> bool:
+        return time.monotonic() >= self.deadline
+
+
+def _norm_query(q: str) -> str:
+    """Lower-case + collapse whitespace — the normal form for query-repeat detection."""
+    return " ".join((q or "").lower().split())
+
+
+def _need_key(item: dict) -> str:
+    """Stable key for a missing-item across rounds: normalised need + sorted sections."""
+    secs = ",".join(sorted(str(s).strip() for s in (item.get("sections") or []) if str(s).strip()))
+    return f"{_norm_query(item.get('need') or item.get('query') or '')}|{secs}"
+
+
+def _is_repeat_query(q: str, history: list[str]) -> bool:
+    """A gap query is a repeat when it exactly matches, or token-Jaccard ≥ 0.8 overlaps, a
+    prior round's query (reuses web/dedup shingles — no embeddings, cheap). Guards thrash."""
+    nq = _norm_query(q)
+    if not nq:
+        return False
+    if nq in history:
+        return True
+    qs = dedup.shingles(nq)
+    if not qs:
+        return False
+    return any(dedup.jaccard(qs, dedup.shingles(h)) >= 0.8 for h in history)
+
+
+def _need_synopsis(orders: list[tuple], limit: int = 60) -> str:
+    """Short human synopsis of a round's ordered needs, for the progress label."""
+    needs = [(o[1].get("need") or o[1].get("query") or "").strip() for o in orders]
+    text = "; ".join(n for n in needs if n)[:limit]
+    return text or "additional provisions"
+
+
+def _record_gap_meta(doc_meta: list[dict], block: str, sec: str | None, child: dict, subqs: set) -> None:
+    """CENSUS-FIX: register a freshly-added gap [D#] block in `doc_meta` so the NEXT round's
+    census (_slice_census / _unified_census read doc_meta) reflects what this round already
+    fetched — otherwise the judge re-orders material it was just handed."""
+    doc_meta.append({
+        "block": block,
+        "subqs": subqs,  # part's sub-question indices (per-part) or ∅ (unified shows all)
+        "section": sec or child.get("clause_section_ref"),
+        "section_nums": child.get("section_nums"),
+    })
+
+
+async def _gap_escalate_fetch(item: dict, kb_ids: list[str], sem: asyncio.Semaphore) -> list[dict]:
+    """Escalation pass for an item a first fetch could not satisfy — makes round N+1 ≠ round N:
+    a FULL hybrid search over the `need` text (no _targeted_query wrapper), one _reformulate of
+    the query, and a +1 neighbour span over the item's sections. Wider net, still bounded
+    (top_k×2), all concurrent + fail-soft, all through qdrant_store so the ACL deny-list holds."""
+    est = _expand_stat.get()
+    if est is not None:
+        est.gap_queries += 1
+    need = (item.get("need") or item.get("query") or "").strip()
+    query = (item.get("query") or need).strip()
+    secs = [chunker._norm_ref(s) for s in item.get("sections", [])]
+    secs = [s for s in secs if _fetchable(s)]
+    top_k2 = max(1, cfg("top_k", settings.top_k) * 2)  # bounded — do not inflate rerank
+
+    async def _hybrid_need() -> list[dict]:
+        if not need:
+            return []
+        hits = await _search_one(need, kb_ids, sem)  # raw need text, not the judge's search phrase
+        return _dedup_ranked(hits, top_k2)
+
+    async def _reformulated() -> list[dict]:
+        try:
+            rq = await _reformulate(query)
+        except Exception:  # noqa: BLE001 — reformulation is best-effort
+            return []
+        if not rq or _norm_query(rq) == _norm_query(query):
+            return []
+        hits = await _search_one(rq, kb_ids, sem)
+        return _dedup_ranked(hits, top_k2)
+
+    async def _neighbours() -> list[dict]:
+        nums: list[int] = []
+        for s in secs:
+            m = re.match(r"\d+", s)
+            if m:
+                nums.append(int(m.group()))
+        if not nums:
+            return []
+        return await qdrant_store.fetch_neighbours(kb_ids, sorted(set(nums)), 1, limit=len(nums) * 3 or 12)
+
+    results = await asyncio.gather(_hybrid_need(), _reformulated(), _neighbours(), return_exceptions=True)
+    payloads: list[dict] = []
+    for r in results:
+        if not isinstance(r, Exception) and r:
+            payloads += r
+    return payloads
+
+
+def _finalise_known_gaps(st: "_GapState", context: str, est: "_ExpandStat | None") -> str:
+    """Honest insufficiency: every need still `exhausted` (ordered by the judge, not found
+    after escalation) becomes a neutral service block INSIDE the untrusted context — so synthesis
+    names the shortfall rather than looping or inventing. Returns the updated unified context."""
+    buckets: list[tuple] = []  # [(target, [need, …])]  — target is a part dict or None (unified)
+    for rec in st.needs.values():
+        if not rec.get("exhausted"):
+            continue
+        need = (rec["item"].get("need") or rec["item"].get("query") or "").strip()
+        if not need:
+            continue
+        if est is not None:
+            est.gap_needs_exhausted += 1
+            est.gap_unresolved.append(need)
+        t = rec.get("target")
+        for bt, needs in buckets:
+            if bt is t:
+                needs.append(need)
+                break
+        else:
+            buckets.append((t, [need]))
+    for t, needs in buckets:
+        line = "Not found in the library after exhaustive search: " + "; ".join(needs)
+        if t is not None:
+            t["context"] += "\n\n" + line
+        else:
+            context += "\n\n" + line
+    return context
+
+
 async def _gap_round(
     prompt: str, parts: list[dict], sub_results: list[dict], context: str,
     citations: list[dict], doc_meta: list[dict], pool: list[dict],
     kb_ids: list[str], sem: asyncio.Semaphore,
 ) -> str:
-    """Agentic gap-fill: bounded gap-check per part (or per turn in unified
-    mode) then a deterministic fill into an append-only, non-evictable gap budget. Runs BEFORE
-    _late_anchor_slices (which stays the final guardrail). Mutates `parts`/`citations` in place;
-    returns the (possibly-updated) unified context. Fail-soft throughout."""
+    """Iterative retrieval: a bounded evidence-sufficiency loop. Each round gap-checks every
+    target (per part, or per turn in unified mode), deterministically fills what the judge names
+    into an append-only non-evictable budget, ESCALATES items a prior round could not satisfy,
+    and stops on sufficiency or corpus exhaustion — then records honest known-gaps. Runs
+    BEFORE _late_anchor_slices (which stays the final guardrail). Mutates `parts`/`citations`/
+    `doc_meta` in place; returns the (possibly-updated) unified context. Fail-soft throughout —
+    any error is at worst an early stop, never a failed retrieval."""
     if not cfg("gap_round_enabled", settings.gap_round_enabled):
         return context
     reserve = max(0, cfg("gap_reserve", settings.gap_reserve))
@@ -1325,56 +1483,132 @@ async def _gap_round(
     if reserve <= 0 or rounds <= 0:
         return context
     est = _expand_stat.get()
-    seen_ct = {p["chunk_text"] for p in pool if p.get("chunk_text")}
+    escalate = bool(cfg("gap_escalate", settings.gap_escalate))
+    dim = max(0.0, min(1.0, float(cfg("gap_diminishing_unseen", settings.gap_diminishing_unseen))))
+    deadline_secs = max(0.0, float(cfg("gap_deadline_secs", settings.gap_deadline_secs)))
+    st = _GapState(
+        deadline=(time.monotonic() + deadline_secs) if deadline_secs > 0 else float("inf"),
+        reserve_left=reserve,
+        seen_ct={p["chunk_text"] for p in pool if p.get("chunk_text")},
+    )
     targets = parts if parts else [None]  # None ⇒ the unified pseudo-target
 
     for _r in range(rounds):
-        if est is not None and est.gap_sections_added >= reserve:
+        st.round += 1
+        if st.reserve_left <= 0:
+            st.stop_reason = "reserve"
             break
+        if st.expired():
+            st.stop_reason = "deadline"
+            break
+        # 1. Census is kept current by the fills below (doc_meta append) — the judge on round r+1
+        #    sees what round r already brought, so it does not re-order it.
         censuses = [
             (t, (t["title"] if t is not None else prompt),
              (_slice_census(t, sub_results, doc_meta) if t is not None
               else _unified_census(sub_results, doc_meta)))
             for t in targets
         ]
-        checks = await asyncio.gather(*[_gap_check(title, cen) for _, title, cen in censuses])
+        try:
+            checks = await asyncio.gather(*[_gap_check(title, cen) for _, title, cen in censuses])
+        except Exception as e:  # noqa: BLE001 — a whole-round gap-check hiccup only stops early
+            _log.info("gap-check round failed: %s", e)
+            st.stop_reason = "no_added"
+            break
         if est is not None:
             est.gap_rounds += 1
-        pending = [(t, chk["missing"]) for (t, _, _), chk in zip(censuses, checks)
-                   if not chk["sufficient"] and chk["missing"]]
-        if not pending:
+        # (a) all targets sufficient ⇒ success.
+        if all(chk["sufficient"] for chk in checks):
+            st.stop_reason = "sufficient"
             break
-        total_items = sum(len(m) for _, m in pending)
-        emit("gapfill", f"Filling gaps: fetching up to {total_items} additional provisions…")
+        # 3. Dedup the orders against cross-round memory: skip exhausted items (in census yet still
+        #    asked ⇒ not in corpus), escalate second-attempts, close thrash after two tries.
+        orders: list[tuple] = []  # (target, item, escalate_this_item)
+        for (t, _, _), chk in zip(censuses, checks):
+            if chk["sufficient"]:
+                continue
+            for item in chk["missing"]:
+                key = _need_key(item)
+                rec = st.needs.get(key)
+                q = item.get("query") or item.get("need") or ""
+                repeat_q = _is_repeat_query(q, st.query_history)
+                if rec is None:
+                    st.needs[key] = {"item": item, "attempts": 0, "exhausted": False,
+                                     "found_fresh": False, "target": t}
+                    orders.append((t, item, escalate and repeat_q))
+                elif rec.get("exhausted"):
+                    continue  # judge saw it in the census and still asks ⇒ the corpus lacks it
+                elif rec["attempts"] >= 2:
+                    # Tried + escalated already ⇒ close it (anti-thrash cap: two attempts, never a
+                    # third). Only a KNOWN GAP if it never yielded fresh evidence; an item that did
+                    # is resolved (already in the census), just not re-ordered.
+                    rec["exhausted"] = not rec.get("found_fresh", False)
+                else:
+                    orders.append((t, item, escalate))  # second attempt ⇒ escalation pass
+        # (f) nothing left to order (everything is a repeat of an exhausted item).
+        if not orders:
+            st.stop_reason = "no_pending"
+            break
+        emit("gapfill", f"Round {st.round}: searching for {_need_synopsis(orders)}")
+        round_fetched = 0
+        round_unseen = 0
         added = 0
-        for t, missing in pending:
-            for item in missing:
-                if est is not None and est.gap_sections_added >= reserve:
+        for t, item, esc in orders:
+            if st.reserve_left <= 0 or st.expired():
+                break
+            key = _need_key(item)
+            rec = st.needs.setdefault(
+                key, {"item": item, "attempts": 0, "exhausted": False, "found_fresh": False, "target": t})
+            rec["attempts"] += 1
+            nq = _norm_query(item.get("query") or item.get("need") or "")
+            if nq:
+                st.query_history.append(nq)
+            try:
+                payloads = await (_gap_escalate_fetch(item, kb_ids, sem) if esc
+                                  else _gap_fetch(item, kb_ids, sem))
+            except Exception as e:  # noqa: BLE001 — fill is best-effort insurance
+                _log.info("gap fetch failed: %s", e)
+                if rec["attempts"] >= 2 and not rec.get("found_fresh"):
+                    rec["exhausted"] = True
+                continue
+            fetched = [p for p in payloads if p.get("chunk_text")]
+            round_fetched += len(fetched)
+            fresh = [p for p in fetched if p["chunk_text"] not in st.seen_ct]
+            round_unseen += len(fresh)
+            if not fresh:
+                if rec["attempts"] >= 2 and not rec.get("found_fresh"):  # escalation also empty ⇒ genuinely absent
+                    rec["exhausted"] = True
+                continue
+            rec["found_fresh"] = True
+            blocks = await _expand_gap_blocks(fresh[: st.reserve_left], len(citations) + 1)
+            for block, child in blocks:
+                if st.reserve_left <= 0:
                     break
-                try:
-                    payloads = await _gap_fetch(item, kb_ids, sem)
-                except Exception as e:  # noqa: BLE001 — fill is best-effort insurance
-                    _log.info("gap fetch failed: %s", e)
-                    continue
-                fresh = [p for p in payloads if p.get("chunk_text") and p["chunk_text"] not in seen_ct]
-                remaining = reserve - (est.gap_sections_added if est is not None else 0)
-                if remaining <= 0:
-                    break
-                blocks = await _expand_gap_blocks(fresh[:remaining], len(citations) + 1)
-                for block, child in blocks:
-                    seen_ct.add(child["chunk_text"])
-                    citations.append(_citation_of(child))
-                    sec = child.get("clause_section_ref") or (item["sections"][0] if item.get("sections") else None)
-                    if t is not None:
-                        _append_gap_block(t, block, sec, est)
-                    else:
-                        context = _append_unified_block(context, block)
-                        if est is not None:
-                            est.gap_sections_added += 1
-                    added += 1
-        if added == 0:
+                st.seen_ct.add(child["chunk_text"])
+                citations.append(_citation_of(child))
+                sec = child.get("clause_section_ref") or (item["sections"][0] if item.get("sections") else None)
+                if t is not None:
+                    _append_gap_block(t, block, sec, est)
+                    _record_gap_meta(doc_meta, block, sec, child, set(t.get("subq_indices", [])))
+                else:
+                    context = _append_unified_block(context, block)
+                    if est is not None:
+                        est.gap_sections_added += 1
+                    _record_gap_meta(doc_meta, block, sec, child, set())
+                st.reserve_left -= 1
+                added += 1
+        # (e) diminishing returns: a round that fetched material but almost none of it NEW is
+        #     spinning — stop (this also covers "fetched only already-seen chunks", ratio 0).
+        #     Empty-fetch rounds (round_fetched == 0) are NOT diminishing: they let an item reach
+        #     its escalation pass, after which exhaustion drains it to the (f) no_pending stop.
+        if dim > 0 and round_fetched > 0 and (round_unseen / max(1, round_fetched)) < dim:
+            st.stop_reason = "diminishing"
             break
-    return context
+    if not st.stop_reason:
+        st.stop_reason = "rounds"  # (b) hit the round cap
+    if est is not None:
+        est.gap_stop_reason = st.stop_reason
+    return _finalise_known_gaps(st, context, est)
 
 
 def _append_unified_block(context: str, block: str) -> str:
@@ -1535,7 +1769,7 @@ async def retrieve(prompt: str, kb_ids: list[str], deny_doc_ids: list[str] | Non
     if not kb_ids:
         return {"context": "", "citations": []}
 
-    # Source-ACL retrieval deny-list (connector-kb-rag §2). Installed on the shared
+    # Source-ACL retrieval deny-list. Installed on the shared
     # ContextVar BEFORE any fan-out so every concurrent query task inherits it and
     # honours the `must_not doc_id` filter — a document the caller's connected-source
     # ACL excludes must surface through no retrieval path. Empty ⇒ no filtering.
@@ -1637,13 +1871,14 @@ async def retrieve(prompt: str, kb_ids: list[str], deny_doc_ids: list[str] | Non
         "rag turn subqs=%d ok=%d failed=%d pool=%d parents=%d blocks=%d "
         "parts=%d/%d injected=%d rerank_calls=%d degraded=%d "
         "anchors_recovered=%d crossref_followed=%d crossref_pooled=%d neighbors_fetched=%d toc_fetched=%d "
-        "late_anchor=%d gap_rounds=%d gap_queries=%d gap_added=%d",
+        "late_anchor=%d gap_rounds=%d gap_queries=%d gap_added=%d gap_unresolved=%d gap_stop=%s",
         n_subq, n_ok, n_subq - n_ok, len(pool), parents_expanded, len(citations),
         cover_meta["parts_covered"], cover_meta["parts_detected"], cover_meta["subqs_injected"],
         rstat.calls, rstat.degraded,
         estat.anchors_recovered, estat.crossref_followed, cross_used, estat.neighbors_fetched,
         estat.toc_sections_fetched, estat.late_anchor_fetch,
         estat.gap_rounds, estat.gap_queries, estat.gap_sections_added,
+        estat.gap_needs_exhausted, estat.gap_stop_reason or "-",
     )
     # (+): a product-facing, always-on summary STEP
     # in the chat Agent activity panel — the acceptance signals live here, and it doubles as
@@ -1668,10 +1903,13 @@ async def retrieve(prompt: str, kb_ids: list[str], deny_doc_ids: list[str] | Non
         # sections the deterministic channels fetched (to split fetched-not-pooled vs not-fetched).
         "late_anchor_fetch": estat.late_anchor_fetch,
         "expansion_sections": sorted(estat.expansion_sections),
-        # agentic gap-fill accounting this turn.
+        # iterative-retrieval accounting this turn.
         "gap_rounds": estat.gap_rounds,
         "gap_queries": estat.gap_queries,
         "gap_sections_added": estat.gap_sections_added,
+        "gap_needs_exhausted": estat.gap_needs_exhausted,
+        "gap_stop_reason": estat.gap_stop_reason,
+        "gap_unresolved": estat.gap_unresolved,
         # per-part slice view (context stripped) — settle "which
         # sections landed in a given part's slice" in one run.
         "parts": [
@@ -1723,8 +1961,11 @@ def _activity_summary(
         bits.append(f"cross-references followed: {estat.crossref_followed}")
     if estat is not None and estat.late_anchor_fetch:
         bits.append(f"sections recovered by reference: {estat.late_anchor_fetch}")
-    if estat is not None and estat.gap_sections_added:
-        bits.append(f"gap-fill: {estat.gap_sections_added} sections")
+    if estat is not None and (estat.gap_sections_added or estat.gap_needs_exhausted):
+        bit = f"gap-fill: {estat.gap_sections_added} sections"
+        if estat.gap_needs_exhausted:
+            bit += f", {estat.gap_needs_exhausted} needs unresolved"
+        bits.append(bit)
     # on a multi-part prompt, how many parts have retrieved evidence
     # backing them — the trust signal for per_part synthesis.
     if n_parts:

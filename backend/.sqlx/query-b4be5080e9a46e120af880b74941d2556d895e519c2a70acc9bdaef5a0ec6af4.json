@@ -30,8 +30,8 @@
       "Left": []
     },
     "nullable": [
-      false,
-      false
+      true,
+      true
     ]
   },
   "hash": "b4be5080e9a46e120af880b74941d2556d895e519c2a70acc9bdaef5a0ec6af4"

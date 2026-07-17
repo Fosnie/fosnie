@@ -15,7 +15,7 @@
 // Deep Research home: a centred input — source
 // choice (web | files | hybrid), question and report template (with a structure
 // preview; there is a single deep mode, no depth choice) — then the lightweight
-// plan gate (§3b): ambiguity triage chips when the question is unclear against
+// plan gate: ambiguity triage chips when the question is unclear against
 // the scope, else a one-line scope summary. Corpus modes require an explicit
 // library choice before Start. A dormant web-search connector
 // surfaces as the honest refusal (the 403 from prepare) for web/hybrid; a
@@ -27,6 +27,8 @@ import {
   prepareResearch,
   startResearch,
   useResearchChats,
+  useResearchTemplate,
+  useResearchTemplates,
   type ResearchPrepareOut,
   type ResearchRefineParams,
   type ResearchRequestBody,
@@ -35,40 +37,26 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import { Icon } from "@/components/icons";
 import { Dropdown } from "@/components/Dropdown";
+import { TemplatePreview } from "@/components/TemplatePreview";
 import { NeuralBackground } from "@/components/NeuralBackground";
 import { slideDownVariants, spring } from "@/app/motion";
 
-// Description + section skeleton per type, so the picker shows what each produces
-// (no CRUD editor — the four types are fixed). Keep the `structure` lists in sync
-// with the skeletons in ml/app/research/templates.py.
-const TEMPLATES = [
-  {
-    id: "exploration",
-    label: "Exploration brief",
-    description: "Question-driven brief for working on something new — lays out the landscape and options.",
-    structure: ["Context & framing", "Landscape & options", "Key unknowns & risks", "Recommendations"],
-  },
-  {
-    id: "formal",
-    label: "Formal report",
-    description: "Measured, third-person report; every claim cites its source.",
-    structure: ["Executive summary", "Background", "Findings", "Analysis", "Conclusions & recommendations"],
-  },
-  {
-    id: "literature",
-    label: "Literature review",
-    description: "Academic review synthesising themes across the corpus; agreements, conflicts and gaps.",
-    structure: ["Executive summary", "Introduction & scope", "Review method & corpus", "Themes in the literature", "Consensus, contradictions and gaps", "Conclusions & further research"],
-  },
-  {
-    id: "freeform",
-    label: "Free-form",
-    description: "No fixed skeleton — the structure follows your question.",
-    structure: [],
-  },
-] as const;
+// The report templates come from the catalogue (GET /api/research/templates): the
+// four built-ins plus the user's own. Editing them lives in Studio; this screen
+// only picks one and previews its shape.
 
 type Source = ResearchRequestBody["source"];
+
+// A user-defined template id is a UUID; a built-in is a short slug.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** What the preview needs about the chosen template, from whichever source. */
+interface TemplatePreview {
+  description: string;
+  structure: string[];
+  outline_mode: "constrained" | "free";
+  archived?: boolean;
+}
 
 const SOURCES: { id: Source; label: string; icon: keyof typeof Icon }[] = [
   { id: "web", label: "Research the web", icon: "Globe" },
@@ -89,6 +77,7 @@ export function DeepResearch() {
   const nav = useNavigate();
   const location = useLocation();
   const runs = useResearchChats();
+  const catalogue = useResearchTemplates();
   const [question, setQuestion] = useState("");
   const qRef = useRef<HTMLTextAreaElement | null>(null);
   function grow(el: HTMLTextAreaElement) {
@@ -179,7 +168,52 @@ export function DeepResearch() {
   const showChips = prepared && prepared.questions.length > 0;
   const showConfirm = prepared && prepared.questions.length === 0;
   const corpus = source !== "web";
-  const tpl = TEMPLATES.find((t) => t.id === template);
+
+  // Resolve the picker options and the preview for the current selection. The
+  // built-ins group above the user's own; the current template is looked up in
+  // the catalogue, or — when it is an archived one an existing chat still points
+  // at — fetched by id so it can still be shown (with a badge).
+  const builtins = catalogue.data?.builtin ?? [];
+  const customs = catalogue.data?.custom ?? [];
+  const inCatalogue =
+    builtins.find((t) => t.id === template) ?? customs.find((t) => t.id === template);
+  const orphaned = !inCatalogue && UUID_RE.test(template);
+  const orphanDetail = useResearchTemplate(orphaned ? template : undefined);
+
+  let preview: TemplatePreview | undefined;
+  if (inCatalogue) {
+    preview = {
+      description: inCatalogue.description,
+      structure: inCatalogue.structure,
+      outline_mode: inCatalogue.outline_mode,
+    };
+  } else if (orphanDetail.data) {
+    preview = {
+      description: orphanDetail.data.description,
+      structure: orphanDetail.data.skeleton.map((s) => s.heading),
+      outline_mode: orphanDetail.data.outline_mode,
+      archived: orphanDetail.data.archived,
+    };
+  }
+
+  const templateOptions = [
+    ...builtins.map((t) => ({ value: t.id, label: t.label, group: "Built-in" })),
+    ...customs.map((t) => ({ value: t.id, label: t.label, group: "Your templates" })),
+    // Keep an archived-but-current template selectable so its report can be
+    // re-run/refined; it is not offered to fresh runs otherwise.
+    ...(orphaned && orphanDetail.data
+      ? [{ value: template, label: `${orphanDetail.data.label} (archived)`, group: "Your templates" }]
+      : []),
+  ];
+
+  // Preserve the typed question when stepping into the template editor.
+  const openManageTemplates = () =>
+    nav("/studio/research", {
+      state: {
+        returnTo: location.pathname,
+        refine: { question, source, template, kb_ids: kbIds, refinements } as ResearchRefineParams,
+      },
+    });
 
   return (
     <div style={{ position: "relative", height: "100%", overflow: "hidden", isolation: "isolate" }}>
@@ -253,24 +287,29 @@ export function DeepResearch() {
             <Dropdown
               ariaLabel="Report template"
               value={template}
-              options={TEMPLATES.map((t) => ({ value: t.id, label: t.label }))}
-              onChange={(v) => { setTemplate(v as typeof template); reset(); }}
+              options={templateOptions}
+              disabled={catalogue.isLoading}
+              onChange={(v) => { setTemplate(v); reset(); }}
             />
+            <button
+              className="btn btn-ghost sm"
+              onClick={openManageTemplates}
+              title="Create, duplicate or edit report templates"
+            >
+              Manage templates
+            </button>
             <button className="btn btn-gold sm" style={{ marginLeft: "auto" }} onClick={() => void runPrepare()} disabled={!question.trim() || busy}>
               {busy && !prepared ? "Checking…" : "Review scope"}
             </button>
           </div>
-          {/* What the chosen type produces — description + section skeleton, so the
-              user sees the report's shape before running (no type editor). */}
-          {tpl && (
-            <div className="tpl-preview">
-              <p className="tpl-desc">{tpl.description}</p>
-              {tpl.structure.length > 0 ? (
-                <p className="tpl-structure mono">{tpl.structure.join(" · ")}</p>
-              ) : (
-                <p className="tpl-structure mono">Structure follows your question.</p>
-              )}
-            </div>
+          {/* What the chosen template produces — the same preview the editor shows. */}
+          {preview && (
+            <TemplatePreview
+              description={preview.description}
+              structure={preview.structure}
+              outlineMode={preview.outline_mode}
+              archived={preview.archived}
+            />
           )}
         </div>
 

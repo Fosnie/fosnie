@@ -25,7 +25,7 @@ const Ctx = createContext<ProjectState | null>(null);
 export function ProjectProvider({ children }: { children: ReactNode }) {
   const [active, setActive] = useState<ProjectSummary | null>(null);
   // Stable context value: a fresh object per render would re-render every
-  // consumer on unrelated provider renders (re-audit §9.3).
+  // consumer on unrelated provider renders.
   const value = useMemo(() => ({ active, setActive }), [active]);
   return <Ctx value={value}>{children}</Ctx>;
 }
