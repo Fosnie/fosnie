@@ -50,6 +50,43 @@ Unless you explicitly state otherwise, any contribution you intentionally submit
 - Write a clear PR description: what changed, why, and how it was verified.
 - Do not commit secrets, credentials, or customer data.
 
+## Change fragments
+
+Any branch that changes `backend/`, `frontend/`, or `ml/` must add a **change fragment** at
+`.changes/<slug>.md` describing the change for users. The `CHANGELOG.md` is assembled from these
+fragments when a release is cut, so never edit `CHANGELOG.md` directly on a feature branch (parallel
+branches would collide on the same lines).
+
+A fragment is Markdown with YAML frontmatter:
+
+```markdown
+---
+kind: added        # added | changed | fixed | security | deprecated | removed
+bump: minor        # minor (a headline feature) | patch (everything else, including fixes)
+roadmap_id: <slug> # optional; links the note to a public roadmap item
+---
+
+# Title
+
+## changelog
+
+One line, past tense. This becomes the CHANGELOG entry.
+
+## site
+
+One or two sentences for the public site. Include this section only for `bump: minor`.
+
+## detail
+
+The long-form release note, where measured results belong. Include this section only for `bump: minor`.
+```
+
+`## changelog` is always present; `## site` and `## detail` appear only for a `bump: minor` fragment.
+
+Everything in a fragment is published, so write it as customer-facing text: no internal file, symbol, or
+config names, no notes about the development process, and no claims about other products. Use British
+English and no em-dash.
+
 ## Reporting security issues
 
 **Do not** open public issues for security vulnerabilities. Follow the private disclosure process in [`SECURITY.md`](./SECURITY.md).
