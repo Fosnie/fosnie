@@ -74,6 +74,9 @@ jobs:
       - name: Attach deploy assets to the Release
         uses: softprops/action-gh-release@v2
         with:
+          # The curated release notes, written into this same tagged commit by the
+          # release process; without it the Release body falls back to a raw commit list.
+          body_path: .changes/release-notes.md
           files: |
             backend/deploy/docker-compose.yml
             backend/deploy/example.env
