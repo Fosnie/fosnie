@@ -1,6 +1,6 @@
 ---
 name: Dashboards & informative pages
-description: Build a beautiful, self-contained HTML page — a dashboard, infographic, analytical summary, KPI overview, or interactive data page with charts. Use whenever you generate an `html` artefact, or the user asks for a "dashboard", "infographic", "web page", "interactive report", or charts/graphs to explore. Produces ONE offline-portable file (charts via the inlined ECharts marker — never a CDN). Do NOT use for editable Word docs (DOCX documents), printable PDFs (PDF documents), or spreadsheets.
+description: Build a beautiful, self-contained HTML page — a dashboard, infographic, analytical summary, KPI overview, or interactive data page with charts. Use whenever you generate an `html` artefact, or the user asks for a "dashboard", "infographic", "web page", "interactive report", or charts/graphs to explore. Produces ONE offline-portable file (charts via the inlined ECharts marker — never a CDN). Do NOT use for editable Word docs (DOCX documents), printable PDFs (PDF documents), spreadsheets, or slide decks (use Presentations (PPTX)).
 default: true
 compatibility: both-profiles
 license: proprietary

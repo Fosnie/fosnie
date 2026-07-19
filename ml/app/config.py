@@ -439,6 +439,21 @@ class Settings(BaseSettings):
     # by the Rust backend via /chat-step, which sets its own max_tokens.)
     html_theme: str = ""
 
+    # PPTX artefacts: the model emits a JSON slide spec (the `pptx-deck` skill) and the
+    # pptx engine builds a 16:9 deck with native text, tables and charts. The engine
+    # owns all geometry; a deployment brands it through these three knobs. Empty =
+    # the bundled neutral defaults, which match the HTML artefact theme so the formats
+    # look like one family. Colours are six-digit hex without the leading `#`; a
+    # malformed value is ignored (logged) rather than failing the generation.
+    pptx_font: str = ""
+    pptx_colour_primary: str = ""
+    pptx_colour_accent: str = ""
+
+    # Validate generated PPTX slide parts against the bundled ISO/IEC 29500-4
+    # PresentationML schema. Same honest-degrade contract as `docx_xsd_validate`: a
+    # schema violation is logged, and the hard gate stays the reopen check.
+    pptx_xsd_validate: bool = True
+
     # Validate generated DOCX `word/document.xml` against the bundled ISO/IEC 29500-4
     # (Transitional) OOXML XSD schemas. On by
     # default when the schemas are present; a schema-validation failure is logged as a

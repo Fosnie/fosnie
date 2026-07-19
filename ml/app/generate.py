@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Generated artefacts — DOCX / PDF / MD produced for download.
+"""Generated artefacts — DOCX / PDF / MD / HTML / XLSX / PPTX produced for download.
 The engines sit behind this swappable interface:
 
 - **DOCX**: pandoc against a styled `reference.docx` (`docx_engine`) is the primary
@@ -22,6 +22,8 @@ The engines sit behind this swappable interface:
 - **PDF**: Markdown→HTML→WeasyPrint against a print stylesheet (`pdf_engine`) is the
   primary route; where WeasyPrint's native libraries are absent (e.g. the Windows
   dev box) it falls back to building the DOCX then rendering via LibreOffice.
+- **PPTX**: a JSON slide spec built into a 16:9 deck by python-pptx (`pptx_engine`),
+  which owns the geometry so the model only chooses content and archetype.
 
 Every non-MD artefact is run through a deterministic validator (`validators`) before
 it is returned, so a corrupt file never ships. Both deployment profiles keep working
@@ -78,10 +80,11 @@ def _build_docx(title: str, content: str, out_path: str) -> None:
 
 
 def generate_artefact(kind: str, title: str, content: str, out_path: str) -> dict:
-    """Write an artefact of `kind` (docx|pdf|md|html|xlsx) to `out_path`; return
+    """Write an artefact of `kind` (docx|pdf|md|html|xlsx|pptx) to `out_path`; return
     {path, mime}. For pdf, a DOCX is built alongside then converted + removed; for
     html, vendored libs + theme are inlined and a CSP injected (html_engine); for
-    xlsx, a JSON workbook spec is built via openpyxl (xlsx_engine)."""
+    xlsx, a JSON workbook spec is built via openpyxl (xlsx_engine); for pptx, a JSON
+    slide spec is built via python-pptx (pptx_engine)."""
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -107,6 +110,13 @@ def generate_artefact(kind: str, title: str, content: str, out_path: str) -> dic
 
         res = xlsx_engine.build(content, title, str(out))
         validators.validate_xlsx(res["path"])
+        return res
+
+    if kind == "pptx":
+        from . import pptx_engine, validators
+
+        res = pptx_engine.build(content, title, str(out))
+        validators.validate_pptx(res["path"])
         return res
 
     if kind == "docx":

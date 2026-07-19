@@ -634,13 +634,13 @@ fn def(name: &str) -> Option<Value> {
             "type": "function",
             "function": {
                 "name": "generate_artefact",
-                "description": "Generate a downloadable artefact (DOCX, PDF, Markdown, a self-contained HTML page, or an XLSX spreadsheet) from the given content for the user to download. Use when the user asks for a document/file to take away, a dashboard/infographic/web page, or a spreadsheet. For html, `content` is a complete self-contained HTML page (read the dashboard Skill); reference charts via the `<!-- pai:echarts -->` marker — never link an external script or stylesheet. For xlsx, `content` is a JSON workbook spec (read the xlsx-tables Skill).",
+                "description": "Generate a downloadable artefact (DOCX, PDF, Markdown, a self-contained HTML page, an XLSX spreadsheet, or a PPTX slide deck) from the given content for the user to download. Use when the user asks for a document/file to take away, a dashboard/infographic/web page, a spreadsheet, or a slide deck. For html, `content` is a complete self-contained HTML page (read the dashboard Skill); reference charts via the `<!-- pai:echarts -->` marker — never link an external script or stylesheet. For xlsx, `content` is a JSON workbook spec (read the xlsx-tables Skill). For pptx, `content` is a JSON slide spec (read the pptx-deck Skill).",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "kind": { "type": "string", "enum": ["docx", "pdf", "md", "html", "xlsx"], "description": "The file type to produce." },
+                        "kind": { "type": "string", "enum": ["docx", "pdf", "md", "html", "xlsx", "pptx"], "description": "The file type to produce." },
                         "title": { "type": "string", "description": "The artefact title (used as the heading / page title)." },
-                        "content": { "type": "string", "description": "For docx/pdf/md: the body text (Markdown). For html: a self-contained HTML page. For xlsx: a JSON workbook spec." }
+                        "content": { "type": "string", "description": "For docx/pdf/md: the body text (Markdown). For html: a self-contained HTML page. For xlsx: a JSON workbook spec. For pptx: a JSON slide spec." }
                     },
                     "required": ["kind", "content"]
                 }
@@ -1203,8 +1203,10 @@ pub async fn dispatch(
 
         "generate_artefact" => {
             let kind = args.get("kind").and_then(|v| v.as_str()).unwrap_or("md");
-            if !matches!(kind, "docx" | "pdf" | "md" | "html" | "xlsx") {
-                return Err(AppError::Validation("generate_artefact kind must be docx|pdf|md|html|xlsx".into()));
+            if !matches!(kind, "docx" | "pdf" | "md" | "html" | "xlsx" | "pptx") {
+                return Err(AppError::Validation(
+                    "generate_artefact kind must be docx|pdf|md|html|xlsx|pptx".into(),
+                ));
             }
             let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("Artefact");
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");

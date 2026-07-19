@@ -1,6 +1,6 @@
 ---
 name: PDF documents
-description: Produce a beautiful, downloadable PDF — report, briefing, research write-up, formatted letter, anything that must look designed and paginate cleanly with page numbers and running headers. Use whenever you are generating a PDF artefact or the user asks for a "PDF" to download, print, or circulate. Write clean Markdown with clear sections; it is rendered through a print stylesheet. Do NOT use for editable Word files (use DOCX documents), spreadsheets, or slides.
+description: Produce a beautiful, downloadable PDF — report, briefing, research write-up, formatted letter, anything that must look designed and paginate cleanly with page numbers and running headers. Use whenever you are generating a PDF artefact or the user asks for a "PDF" to download, print, or circulate. Write clean Markdown with clear sections; it is rendered through a print stylesheet. Do NOT use for editable Word files (use DOCX documents), spreadsheets, or slide decks (use Presentations (PPTX)).
 default: true
 compatibility: both-profiles
 license: proprietary
