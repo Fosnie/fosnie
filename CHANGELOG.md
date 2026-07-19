@@ -11,6 +11,13 @@ next tag; a plain merge ships nothing to users.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-20
+
+### Added
+
+- Added PowerPoint (.pptx) generation: editable 16:9 decks with native text, tables, charts and speaker notes.
+- Deep Research now checks each report section's evidence before writing and runs a targeted search to fill the gaps, so under-supported sections get real sources instead of padding.
+
 ## [0.2.0] - 2026-07-17
 
 ### Added
@@ -48,6 +55,7 @@ next tag; a plain merge ships nothing to users.
 - Hash-chained, append-only audit log (tamper-detection).
 - One-line installer and Docker Compose deployment; health and Prometheus metrics endpoints.
 
-[Unreleased]: https://github.com/Fosnie/fosnie/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Fosnie/fosnie/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Fosnie/fosnie/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Fosnie/fosnie/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Fosnie/fosnie/releases/tag/v0.1.0
