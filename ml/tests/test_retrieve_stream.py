@@ -98,7 +98,7 @@ def test_done_matches_non_stream(monkeypatch):
 def test_stream_error_terminal(monkeypatch):
     _mock_backends(monkeypatch)
 
-    async def boom(prompt, kb_ids):
+    async def boom(prompt, kb_ids, deny_doc_ids=None):
         raise RuntimeError("retrieve exploded")
 
     monkeypatch.setattr(retrieve_mod, "retrieve", boom)
@@ -110,7 +110,7 @@ def test_stream_error_terminal(monkeypatch):
 def test_queue_full_drops_progress_but_done_survives(monkeypatch):
     _mock_backends(monkeypatch)
 
-    async def flooding(prompt, kb_ids):
+    async def flooding(prompt, kb_ids, deny_doc_ids=None):
         for i in range(1000):  # far past the queue bound, consumer not draining yet
             retrieve_mod.emit("search", f"flood {i}")
         return {"context": "ctx", "citations": []}
