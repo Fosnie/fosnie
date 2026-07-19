@@ -63,6 +63,15 @@ class ResearchBudgets:
     census_seconds: float = 0.0    # wall-clock slice for the census/sampling sweep
     census_note_tokens: int = 0    # max_tokens per per-document note call
     census_input_tokens: int = 0   # document text visible per note call
+    # Per-section deepening (an additive pre-write stage that judges each
+    # section's evidence sufficiency and digs for the gaps). All levers are 0 on
+    # a small context so the stage is a no-op there — the pipeline stays
+    # byte-identical for weak deploys.
+    deepen_rounds: int = 0              # judge→dig→re-judge iterations per section (0 disables)
+    deepen_sections_hi: int = 0         # cap on how many hungry sections actually dig
+    deepen_max_new_sources: int = 0     # cap on sources a single section may gain
+    deepen_input_tokens: int = 0        # bound-notes digest visible to the judge call
+    deepen_seconds: float = 0.0         # wall-clock slice for the whole deepening stage
 
     def per_subq_budget(self) -> WebBudget:
         """The web-loop Budget one research sub-question runs under. The caller
@@ -78,6 +87,23 @@ class ResearchBudgets:
             max_serp_queries=max(6, self.max_serp_queries // max(1, self.subqs)),
             max_fetches=max(6, self.max_fetches // max(1, self.subqs)),
             wall_clock=self.collect_seconds / max(1, self.subqs),
+        )
+
+    def per_deepen_budget(self) -> WebBudget:
+        """The web-loop Budget one deepening gap-query runs under — a tighter
+        cousin of `per_subq_budget`: one shallow round, fewer fetches. The
+        section shares one pool/seen/state across its gaps, so the section's
+        appetite is bounded by that shared `_State` (sized from
+        `deepen_max_new_sources` / `deepen_seconds`), not these per-call numbers."""
+        return WebBudget(
+            decompose=False,
+            subqs=1,
+            rounds=1,
+            serp_limit=self.serp_limit,
+            fetch_per_round=max(3, self.fetch_per_round // 2),
+            max_serp_queries=max(3, self.max_serp_queries // 4),
+            max_fetches=max(3, self.deepen_max_new_sources),
+            wall_clock=self.deepen_seconds,
         )
 
 
@@ -127,11 +153,23 @@ def budgets(
         census_seconds = 0.0
         collect_seconds = total_seconds * 0.6
 
+    # Per-section deepening. Disabled below a 32k context (a small deploy keeps
+    # the byte-identical single-pass path); above it, one or two rounds. The
+    # stage is time-boxed to a slice of the run so a slow dig can never eat the
+    # writer's budget.
+    deepen_rounds = 0 if ctx < 32_768 else _clamp(1 + ctx // 131_072, 1, 2)
+    deepen_seconds = min(total_seconds * 0.25, 240.0)
+
     return ResearchBudgets(
         source=src,
         census_seconds=census_seconds,
         census_note_tokens=_clamp(ctx // 200, 250, 800),
         census_input_tokens=_clamp(int(ctx * settings.stuff_fraction), 6_000, 200_000),
+        deepen_rounds=deepen_rounds,
+        deepen_sections_hi=_clamp(sections_hi // 2, 2, 6),
+        deepen_max_new_sources=_clamp(ctx // 32_768, 3, 5),
+        deepen_input_tokens=_clamp(int(ctx * 0.2), 3_000, 12_000),
+        deepen_seconds=deepen_seconds,
         max_model_len=ctx,
         subqs=subqs,
         max_sources=max_sources,

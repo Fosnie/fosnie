@@ -29,6 +29,7 @@ export const STAGE_LABELS: Record<string, string> = {
   collect: "Gathering sources",
   notes: "Reading & noting",
   outline: "Building outline",
+  deepen: "Digging deeper",
   write: "Writing",
   cohere: "Refining coherence",
   check: "Final checks",
@@ -39,9 +40,9 @@ export const STAGE_LABELS: Record<string, string> = {
 /** Ordered macro-stages shown in the roadmap, by run source. Skipped stages still
  * render but resolve to "done" once the run moves past them (graceful). */
 export function stagesFor(source: string | undefined): string[] {
-  if (source === "files") return ["census", "notes", "outline", "write", "cohere", "check", "deliver"];
-  if (source === "hybrid") return ["census", "plan", "collect", "notes", "outline", "write", "cohere", "check", "deliver"];
-  return ["plan", "collect", "notes", "outline", "write", "cohere", "check", "deliver"];
+  if (source === "files") return ["census", "notes", "outline", "deepen", "write", "cohere", "check", "deliver"];
+  if (source === "hybrid") return ["census", "plan", "collect", "notes", "outline", "deepen", "write", "cohere", "check", "deliver"];
+  return ["plan", "collect", "notes", "outline", "deepen", "write", "cohere", "check", "deliver"];
 }
 
 /** The bubble's one-line current-stage label: the active stage, or on `write`

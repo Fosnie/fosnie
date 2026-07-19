@@ -899,6 +899,10 @@ pub struct ResearchOverrides {
     pub research_census_cap: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub research_notes_concurrency: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub research_deepen_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub research_deepen_concurrency: Option<i64>,
 }
 
 /// Whether DR verification should run: `features.groundedness` (boot) AND the
@@ -912,10 +916,15 @@ pub async fn research_overrides(pg: &sqlx::PgPool) -> ResearchOverrides {
     async fn geti(pg: &sqlx::PgPool, key: &str) -> Option<i64> {
         runtime::get(pg, key).await.ok().flatten().and_then(|e| e.value.parse::<i64>().ok())
     }
+    async fn getb(pg: &sqlx::PgPool, key: &str) -> Option<bool> {
+        runtime::get(pg, key).await.ok().flatten().map(|e| e.value == "true")
+    }
     ResearchOverrides {
         research_max_minutes: getf(pg, "research.max_minutes").await,
         research_census_cap: geti(pg, "research.census_cap").await,
         research_notes_concurrency: geti(pg, "research.notes_concurrency").await,
+        research_deepen_enabled: getb(pg, "research.deepen_enabled").await,
+        research_deepen_concurrency: geti(pg, "research.deepen_concurrency").await,
     }
 }
 

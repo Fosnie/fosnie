@@ -154,3 +154,50 @@ def test_census_budgets_monotonic_and_bounded():
         if prev:
             assert b.census_note_tokens >= prev
         prev = b.census_note_tokens
+
+
+# --- Per-section deepening budgets ------------------------------------------
+
+
+def test_deepen_disabled_below_32k():
+    # A small deploy (below the 32k floor) gets the no-op: zero rounds ⇒ the
+    # deepening stage is skipped and the pipeline stays byte-identical.
+    b = budgets(16_384)
+    assert b.deepen_rounds == 0
+    # At and above the floor it is enabled.
+    assert budgets(32_768).deepen_rounds >= 1
+
+
+def test_deepen_fields_floors_and_ceilings():
+    for ctx in _CTXS:
+        b = budgets(ctx)
+        assert 1 <= b.deepen_rounds <= 2
+        assert 2 <= b.deepen_sections_hi <= 6
+        assert 3 <= b.deepen_max_new_sources <= 5
+        assert b.deepen_input_tokens >= 3_000
+        assert b.deepen_seconds > 0
+
+
+def test_deepen_seconds_bounded_and_monotonic_in_minutes():
+    # The stage is a slice of the run budget, capped so a slow dig cannot eat the
+    # writer's time; more minutes ⇒ no less deepening time, up to the cap.
+    short, long = budgets(131_072, max_minutes=4.0), budgets(131_072, max_minutes=30.0)
+    assert short.deepen_seconds <= long.deepen_seconds
+    assert long.deepen_seconds <= 240.0
+
+
+def test_deepen_rounds_monotonic_in_context():
+    prev = 0
+    for ctx in _CTXS:
+        r = budgets(ctx).deepen_rounds
+        assert r >= prev
+        prev = r
+
+
+def test_per_deepen_budget_is_a_tighter_cousin():
+    b = budgets(131_072)
+    wb, primary = b.per_deepen_budget(), b.per_subq_budget()
+    assert not wb.decompose and wb.subqs == 1
+    assert wb.rounds == 1 and wb.rounds <= primary.rounds
+    assert wb.fetch_per_round <= primary.fetch_per_round
+    assert wb.max_fetches >= 3
