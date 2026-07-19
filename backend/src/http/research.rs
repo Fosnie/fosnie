@@ -159,6 +159,10 @@ fn estimate(source: &str, doc_count: i64) -> (u32, u32) {
         "files" => files,
         _ => ((web.0 + files.0).min(30), (web.1 + files.1).min(30)),
     };
+    // The pre-write deepening stage adds a time-boxed dig (bounded by its own
+    // wall-clock slice, a few minutes at most); nudge the upper estimate, still
+    // capped at 30.
+    let hi = (hi + 4).min(30);
     (lo as u32, hi as u32)
 }
 
@@ -498,9 +502,10 @@ mod tests {
 
     #[test]
     fn estimates_scale_and_cap() {
-        // Files scale with document count; everything caps at 30 minutes.
+        // Files scale with document count; everything caps at 30 minutes. The
+        // upper estimate carries the deepening stage's small time-box.
         let (lo, hi) = estimate("files", 0);
-        assert_eq!((lo, hi), (5, 15));
+        assert_eq!((lo, hi), (5, 19));
         let (lo_big, hi_big) = estimate("files", 10_000);
         assert_eq!((lo_big, hi_big), (20, 30));
         let (_, hh) = estimate("hybrid", 10_000);

@@ -359,6 +359,11 @@ class Settings(BaseSettings):
     # ≈ the agent-run kill-token TTL minted at start.
     research_max_minutes: float = 20.0
     research_notes_concurrency: int = 4
+    # Per-section deepening: an additive pre-write stage that judges each
+    # section's evidence sufficiency and digs for the gaps (small contexts skip
+    # it via the budget floor). Off ⇒ the single-pass pipeline is unchanged.
+    research_deepen_enabled: bool = True
+    research_deepen_concurrency: int = 2
     # Corpus census cap (Phase 2). At or below this many documents the corpus is
     # read in full (a per-doc structured note each); above it, the run falls back
     # to agentic-retrieval sampling with an honest "documents not reviewed"

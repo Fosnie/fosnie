@@ -196,3 +196,27 @@ RESEARCH_NOTES = json_schema(
 
 # --- research.pipeline._plan_subquestions / _gap_subquestions: [str] ----------
 RESEARCH_SUBQS = json_schema(_str_array())
+
+# --- research.deepen judge: {sufficient: bool, gaps: [{query, why}]} ----------
+# The pre-write sufficiency judge, per evidence-section: does the section's bound
+# evidence suffice, and if not what self-contained web/corpus queries would fill
+# the gap. `gaps` is capped downstream to 3.
+RESEARCH_DEEPEN = json_schema(
+    {
+        "type": "object",
+        "properties": {
+            "sufficient": {"type": "boolean"},
+            "gaps": _array_of(
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "why": {"type": "string"},
+                    },
+                    "required": ["query", "why"],
+                }
+            ),
+        },
+        "required": ["sufficient", "gaps"],
+    }
+)

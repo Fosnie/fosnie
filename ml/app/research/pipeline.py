@@ -42,6 +42,7 @@ from . import census as census_mod
 from . import checks as checks_mod
 from . import cohere as cohere_mod
 from . import corpus_analysis as corpus_mod
+from . import deepen as deepen_mod
 from . import notes as notes_mod
 from . import outline as outline_mod
 from . import padding as padding_mod
@@ -410,6 +411,9 @@ async def run(
     beast = False
     census_result = None
     sampling = False
+    # Shared with the primary web collect (web/hybrid) and, later, the deepening
+    # stage: a URL fetched once is never re-fetched. Empty for a files-only run.
+    seen: set[str] = set()
 
     bank = Bank()
 
@@ -433,7 +437,6 @@ async def run(
             subqs = await _plan_subquestions(plan_question, b)
         progress.emit("plan", f"{len(subqs)} web question{'s' if len(subqs) != 1 else ''}")
         pool = _Pool()
-        seen: set[str] = set()
         if await _collect_web(subqs, pool, seen, b, deadline):
             beast = True
         progress.emit("collect", f"{len(pool.sources)} web sources", sources_read=len(pool.sources))
@@ -489,6 +492,38 @@ async def run(
         sections=[s.heading for s in outline.sections],
         sections_total=total,
     )
+
+    # 3c. Deepen the hungriest sections before writing: judge each section's
+    #     bound evidence, dig for the gaps, rebind. Additive and fail-open — on any
+    #     failure the run continues and each section keeps whatever bindings it has
+    #     (deepening only ever appends, so a partial pass is safe to keep). Disabled
+    #     by the budget (small context) or the admin switch ⇒ skipped entirely, so
+    #     the event sequence and result stay identical to the single-pass path.
+    #     The stage bounds each of its own provider calls; this outer timeout is the
+    #     backstop that keeps a pathological backend from eating the writer's budget.
+    deepen_on = cfg("research_deepen_enabled", settings.research_deepen_enabled)
+    if deepen_on and b.deepen_rounds > 0 and time.monotonic() < deadline:
+        try:
+            await asyncio.wait_for(
+                deepen_mod.deepen(
+                    question,
+                    outline,
+                    bank,
+                    b,
+                    source=source,
+                    kb_ids=kb_ids,
+                    docs=docs,
+                    seen=seen,
+                    deadline=deadline,
+                ),
+                timeout=b.deepen_seconds + deepen_mod.STAGE_GRACE_SECONDS,
+            )
+        except TimeoutError:
+            _log.warning(
+                "deepen stage exceeded its time budget; continuing with the bindings it had made"
+            )
+        except Exception as e:  # noqa: BLE001 — deepening never fails the run
+            _log.warning("deepen stage failed (sections keep the bindings they had): %s", e)
 
     # 4. Write, section by section.
     bodies: list[str] = []

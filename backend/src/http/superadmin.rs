@@ -131,6 +131,8 @@ const KNOBS: &[Knob] = &[
     Knob { key: "research.max_minutes", label: "Research wall-clock (min)", desc: "Per-run Deep Research time budget; beyond it the run delivers best-effort from what it gathered. Must stay below the Rust stream timeout (45 min).", value_type: ConfigValueType::Int, default: "20", min: Some(2), max: Some(45) },
     Knob { key: "research.census_cap", label: "Corpus census cap (docs)", desc: "At or below this many documents a files/hybrid run reads every document (census); above it, it falls back to retrieval sampling with an honest coverage appendix. Tune low on a slow local LLM.", value_type: ConfigValueType::Int, default: "500", min: Some(10), max: Some(5000) },
     Knob { key: "research.notes_concurrency", label: "Research notes concurrency", desc: "Concurrent per-source / per-document note-extraction calls during a Deep Research run.", value_type: ConfigValueType::Int, default: "4", min: Some(1), max: Some(16) },
+    Knob { key: "research.deepen_enabled", label: "Per-section deepening", desc: "Before writing, judge each report section's evidence and run a bounded targeted dig for the gaps (web or corpus), binding new sources to that section. Skipped on a small model context and time-boxed within the run; fails open. On by default.", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
+    Knob { key: "research.deepen_concurrency", label: "Deepening concurrency", desc: "Concurrent sections deepened at once during the pre-write deepening stage. A dig is heavier than a note, so this is separate from (and lower than) the notes concurrency.", value_type: ConfigValueType::Int, default: "2", min: Some(1), max: Some(16) },
 ];
 
 /// Allowed values for an enum (String) knob — rendered as a `<select>` and validated on
@@ -256,7 +258,14 @@ mod knob_tests {
     fn research_knobs_registered_with_types_and_bounds() {
         let by_key = |k: &str| KNOBS.iter().find(|x| x.key == k);
         // The Deep Research budget + verification knobs are all present.
-        for k in ["research.verify", "research.max_minutes", "research.census_cap", "research.notes_concurrency"] {
+        for k in [
+            "research.verify",
+            "research.max_minutes",
+            "research.census_cap",
+            "research.notes_concurrency",
+            "research.deepen_enabled",
+            "research.deepen_concurrency",
+        ] {
             assert!(by_key(k).is_some(), "knob {k} registered");
         }
         // verify is a boolean toggle, default off (Phases 1-2 behaviour unchanged).
@@ -269,6 +278,13 @@ mod knob_tests {
         assert_eq!((mm.min, mm.max), (Some(2), Some(45)));
         let cap = by_key("research.census_cap").unwrap();
         assert_eq!((cap.min, cap.max), (Some(10), Some(5000)));
+        // Deepening: a default-on boolean plus a bounded concurrency dial.
+        let de = by_key("research.deepen_enabled").unwrap();
+        assert_eq!(de.value_type, ConfigValueType::Bool);
+        assert_eq!(de.default, "true");
+        let dc = by_key("research.deepen_concurrency").unwrap();
+        assert_eq!(dc.value_type, ConfigValueType::Int);
+        assert_eq!((dc.min, dc.max), (Some(1), Some(16)));
     }
 
     #[test]

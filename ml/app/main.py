@@ -473,6 +473,8 @@ class DeepResearchRequest(BaseModel):
     research_max_minutes: float | None = None
     research_census_cap: int | None = None
     research_notes_concurrency: int | None = None
+    research_deepen_enabled: bool | None = None
+    research_deepen_concurrency: int | None = None
     # The same runtime/admin web overrides /web_search accepts — web/hybrid
     # collection rides the web loop, so the same policy applies. (Ignored by a
     # files-only run, which performs zero egress.)
@@ -508,6 +510,8 @@ async def deep_research(req: DeepResearchRequest):
         "research_max_minutes": req.research_max_minutes,
         "research_census_cap": req.research_census_cap,
         "research_notes_concurrency": req.research_notes_concurrency,
+        "research_deepen_enabled": req.research_deepen_enabled,
+        "research_deepen_concurrency": req.research_deepen_concurrency,
         **(req.overrides or {}),
     })
 
