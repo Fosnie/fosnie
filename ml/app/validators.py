@@ -18,7 +18,9 @@ generation so a corrupt artefact never ships to a client: a failure raises
 
 DOCX: the package is a well-formed zip carrying the required OOXML parts, and it
 reopens via python-docx (which parses `document.xml`). PDF: pypdf opens it and it
-has at least one page. Full ECMA XSD validation against bundled schemas is the
+has at least one page. PPTX: the zip is intact, python-pptx reopens it (parsing
+every slide part), and it carries at least one slide. Full ECMA XSD validation
+against bundled schemas is the
 Phase-3 hardening; the reopen + opens-clean checks here catch the corruption that
 actually occurs (truncated writes, broken zips, unparsable XML)."""
 
@@ -99,7 +101,11 @@ _ALLOWED_OOXML_NS = frozenset({
     "http://www.w3.org/XML/1998/namespace",
 })
 
+_PML_XSD = _SCHEMA_DIR / "ISO-IEC29500-4_2016" / "pml.xsd"
+_SLIDE_PART = re.compile(r"^ppt/slides/slide\d+\.xml$")
+
 _wml_schema = None  # compiled lazily (the 39-file schema set is slow to compile)
+_pml_schema = None
 
 
 def _ns_of(qname: str) -> str | None:
@@ -169,6 +175,69 @@ def validate_xlsx(path: str) -> None:
         raise ValidationError(f"XLSX failed to open: {e}") from e
     if not wb.sheetnames:
         raise ValidationError("XLSX has no sheets")
+
+
+def validate_pptx(path: str) -> None:
+    p = Path(path)
+    if not p.is_file() or p.stat().st_size == 0:
+        raise ValidationError("PPTX is missing or empty")
+    try:
+        with zipfile.ZipFile(p) as z:
+            corrupt = z.testzip()
+    except zipfile.BadZipFile as e:
+        raise ValidationError(f"PPTX is not a valid OOXML package: {e}") from e
+    if corrupt is not None:
+        raise ValidationError(f"PPTX zip is corrupt at {corrupt}")
+    try:
+        from pptx import Presentation
+
+        slides = len(Presentation(str(p)).slides)  # parses the slide parts
+    except Exception as e:
+        raise ValidationError(f"PPTX failed to open: {e}") from e
+    if slides < 1:
+        raise ValidationError("PPTX has no slides")
+
+    # Honest-degrade, as for DOCX: a schema violation is logged, and the reopen check
+    # above stays the hard gate. We do not reject a deck PowerPoint would open.
+    from .config import settings
+
+    if settings.pptx_xsd_validate:
+        try:
+            validate_pptx_xsd(path)
+        except ValidationError as e:
+            log.warning("PPTX XSD validation: %s", e)
+
+
+def validate_pptx_xsd(path: str) -> None:
+    """Validate every `ppt/slides/slideN.xml` against the bundled ISO/IEC 29500-4
+    (Transitional) PresentationML schema. A deck has no single `document.xml`
+    equivalent, so each slide part is checked in turn. No-op if the schemas are not
+    vendored. Raises ValidationError on a schema violation (callers may warn)."""
+    global _pml_schema
+    if not _PML_XSD.is_file():
+        log.debug("OOXML schemas not vendored — skipping XSD validation")
+        return
+    from lxml import etree
+
+    p = Path(path)
+    try:
+        with zipfile.ZipFile(p) as z:
+            parts = sorted(n for n in z.namelist() if _SLIDE_PART.match(n))
+            slides = [(n, etree.fromstring(z.read(n))) for n in parts]
+    except (zipfile.BadZipFile, KeyError, etree.XMLSyntaxError) as e:
+        raise ValidationError(f"cannot read the PPTX slide parts: {e}") from e
+    if not slides:
+        raise ValidationError("PPTX carries no slide parts")
+
+    if _pml_schema is None:
+        _pml_schema = etree.XMLSchema(etree.parse(str(_PML_XSD)))
+    for name, doc in slides:
+        _strip_ignorable(doc)
+        if not _pml_schema.validate(doc):
+            first = next(iter(_pml_schema.error_log), None)
+            raise ValidationError(
+                f"PPTX {name} fails OOXML XSD: {first.message if first else 'invalid'}"
+            )
 
 
 def validate_pdf(path: str) -> None:

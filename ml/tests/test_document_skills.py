@@ -273,6 +273,8 @@ def test_generate_pipeline_is_deterministic(tmp_path):
     cases = [
         ("html", "<!DOCTYPE html><html><head><!-- pai:echarts --></head><body><div id='c'></div></body></html>"),
         ("xlsx", '{"sheets":[{"name":"S","columns":[{"header":"A"}],"rows":[[1],["=A2"]]}]}'),
+        ("pptx", '{"slides":[{"layout":"title","title":"T"},'
+                 '{"layout":"bullets","title":"B","bullets":["one","two"]}]}'),
     ]
     for kind, content in cases:
         for i in range(5):
@@ -284,3 +286,8 @@ def test_generate_pipeline_is_deterministic(tmp_path):
 def test_skill_library_ships_phase3_skills():
     slugs = {d.name for d in SKILLS_DIR.iterdir() if (d / "SKILL.md").is_file()}
     assert {"web-frontend", "research-methods", "xlsx-tables"} <= slugs
+
+
+def test_skill_library_ships_the_presentations_skill():
+    slugs = {d.name for d in SKILLS_DIR.iterdir() if (d / "SKILL.md").is_file()}
+    assert {"pptx-deck"} <= slugs

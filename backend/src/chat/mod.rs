@@ -2424,23 +2424,44 @@ fn wants_artefact(prompt: &str) -> bool {
         || p.contains("as a docx")
         || p.contains("as a document")
         || p.contains("as a word")
+        || p.contains("as a deck")
     {
         return true;
     }
     const VERBS: [&str; 8] =
         ["draft", "write", "generate", "create", "produce", "prepare", "export", "make"];
-    const NOUNS: [&str; 9] = [
-        "document", "memo", "letter", "report", "contract", "agreement", "brief", "pdf", "docx",
+    const NOUNS: [&str; 13] = [
+        "document",
+        "memo",
+        "letter",
+        "report",
+        "contract",
+        "agreement",
+        "brief",
+        "pdf",
+        "docx",
+        "deck",
+        "slide",
+        "presentation",
+        "pptx",
     ];
     VERBS.iter().any(|v| p.contains(v)) && NOUNS.iter().any(|n| p.contains(n))
 }
 
-/// The requested artefact format from the user's prompt — `pdf`/`docx`/`md`
-/// (Python's generator writes all three). Default markdown. The string doubles as
-/// the file extension.
+/// The requested artefact format from the user's prompt — `pptx`/`pdf`/`docx`/`md`
+/// (Python's generator writes all four). Default markdown. The string doubles as
+/// the file extension. Slides are matched first: "a deck as a pdf" is a deck, and a
+/// slide word is only ever written when slides are genuinely wanted.
 fn artefact_kind(prompt: &str) -> &'static str {
     let p = prompt.to_lowercase();
-    if p.contains("pdf") {
+    if p.contains("pptx")
+        || p.contains("powerpoint")
+        || p.contains("slide")
+        || p.contains("deck")
+        || p.contains("presentation")
+    {
+        "pptx"
+    } else if p.contains("pdf") {
         "pdf"
     } else if p.contains("docx") || p.contains("word") {
         "docx"

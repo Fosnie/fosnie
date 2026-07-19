@@ -50,6 +50,9 @@ CASES = [
      lambda c: c.lower().count("<section") + c.lower().count("<div")),
     ("xlsx-tables", "xlsx", "Make a spreadsheet of Q2 costs: Licences 12 x 250, Support 1 x 4000, with a total.",
      lambda c: c.count("=")),
+    ("pptx-deck", "pptx", "Prepare a short board deck on Q2 compliance findings: three controls failed, "
+     "£1.2m exposed, overdue reviews rose from 9 in January to 19 in June.",
+     lambda c: c.count("layout")),
 ]
 
 

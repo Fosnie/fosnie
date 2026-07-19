@@ -1,6 +1,6 @@
 ---
 name: DOCX documents
-description: Produce a beautiful, downloadable Word (.docx) document — report, memo, letter, briefing note, policy, contract draft. Use whenever you are generating a DOCX artefact or the user asks for a "Word document", ".docx", or something to "download" / "send" / "print". Write clean Markdown; it is rendered with real Word styles. Do NOT use for spreadsheets (.xlsx), slide decks (.pptx), or when only an on-screen answer is wanted.
+description: Produce a beautiful, downloadable Word (.docx) document — report, memo, letter, briefing note, policy, contract draft. Use whenever you are generating a DOCX artefact or the user asks for a "Word document", ".docx", or something to "download" / "send" / "print". Write clean Markdown; it is rendered with real Word styles. Do NOT use for spreadsheets (.xlsx), for slide decks (use Presentations (PPTX)), or when only an on-screen answer is wanted.
 default: true
 compatibility: both-profiles
 license: proprietary

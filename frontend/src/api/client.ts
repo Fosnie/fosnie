@@ -1988,7 +1988,7 @@ export function deleteFact(id: string): Promise<{ ok: boolean }> {
 
 export interface Artefact {
   id: string;
-  kind: "docx" | "pdf" | "md" | "file" | "html" | "xlsx";
+  kind: "docx" | "pdf" | "md" | "file" | "html" | "xlsx" | "pptx";
   title: string;
   mime: string;
   /** Assistant message that produced it (null until the turn persists). */
