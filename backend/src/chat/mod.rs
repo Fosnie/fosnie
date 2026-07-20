@@ -19,6 +19,7 @@
 
 pub mod budget;
 pub mod compose;
+pub mod prefetch;
 
 use std::sync::Arc;
 
@@ -166,6 +167,7 @@ pub async fn regenerate_prepare(
     Ok((anchor_id, anchor_content))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_turn(
     state: &AppState,
     ctx: &AuthContext,
@@ -184,11 +186,16 @@ pub async fn run_turn(
     // Per-turn LLM provider pick (composer dropdown, multi-LLM). `None` = the chat's
     // remembered provider, else the deployment default.
     llm_provider_id: Option<Uuid>,
+    // A retrieval already performed for this query before the turn started (live
+    // voice speculates from a partial transcript while the speaker is still
+    // talking). `Some` = skip this turn's own retrieval call and use it; `None` =
+    // retrieve as normal. Every caller but live voice passes `None`.
+    prefetched_rag: Option<prefetch::PrefetchedRag>,
     tx: &mpsc::Sender<ServerFrame>,
     cancel: Arc<Notify>,
 ) {
     if let Err(e) =
-        run_turn_inner(state, ctx, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, tx, cancel).await
+        run_turn_inner(state, ctx, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel).await
     {
         let _ = tx
             .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string() })
@@ -211,6 +218,7 @@ async fn run_turn_inner(
     reuse_user_msg: Option<Uuid>,
     reasoning: Option<crate::reasoning::ReasoningSpec>,
     llm_provider_id: Option<Uuid>,
+    prefetched_rag: Option<prefetch::PrefetchedRag>,
     tx: &mpsc::Sender<ServerFrame>,
     cancel: Arc<Notify>,
 ) -> Result<()> {
@@ -386,6 +394,11 @@ async fn run_turn_inner(
     let mut turn_kb_ids: Vec<String> = Vec::new();
     let mut turn_deny_doc_ids: Vec<String> = Vec::new();
     let mut cancelled = false;
+    // Whether this turn's retrieval came from a prefetch rather than its own call.
+    // A prefetched search runs a deliberately light profile without the gap-filling
+    // rounds, and it was fired on a partial transcript, so it may not have covered
+    // the whole question — the model is always offered the top-up tool afterwards.
+    let mut prefetched_used = false;
     // per-turn phase timer (debug-level table emitted at turn end).
     let mut phases = TurnPhases::new();
     if !allow.is_empty() {
@@ -412,7 +425,6 @@ async fn run_turn_inner(
             chat_id,
             json!({ "kb_ids": kb_ids, "denied_count": deny_doc_ids.len() }),
         );
-        let rag_ov = ml::rag_overrides(&state.pg).await;
         // Display gate: the retrieval Coverage summary (part/section/expansion counts) is useful
         // when tuning retrieval but noise for an ordinary user, so it is shown only when the
         // operator turns diagnostics on. Off by default; read live so it toggles without a restart.
@@ -431,72 +443,104 @@ async fn run_turn_inner(
         let _ = tx
             .send(ServerFrame::ChatTool { turn_id, name: "retrieve".into(), phase: "started".into(), detail: None })
             .await;
-        match ml::retrieve_stream(
-            &state.http,
-            &state.boot.ml.base_url,
-            &content,
-            &kb_ids,
-            &deny_doc_ids,
-            &rag_ov,
-            ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel.as_ref()).await,
-            Some(retrieve_timeout(&state.pg).await),
-        )
-        .await
-        {
-            Ok(mut stream) => loop {
-                tokio::select! {
-                    ev = stream.recv() => match ev {
-                        Some(ml::RetrieveEvent::Progress { stage, detail }) => {
-                            // The terminal `summary` event is the Coverage line. It is captured and
-                            // forwarded on a PERSISTENT `summary` phase (not the transient
-                            // `progress` label) so it survives as a completed activity step — but
-                            // only when diagnostics are on. With diagnostics off it is dropped
-                            // entirely (no capture, no frame), so no Coverage step reaches the UI;
-                            // the human progress steps below are always shown.
-                            if stage == "summary" {
-                                if show_diagnostics {
-                                    if let Some(text) = detail.clone() {
-                                        rag_summary = Some(text);
+        // A retrieval performed for this query before the turn started (live voice
+        // speculates from a partial transcript while the speaker is still talking).
+        // Using it takes the whole retrieval duration off the turn's critical path;
+        // everything downstream is unchanged, because this is the same shape the
+        // retrieval stream's terminal event carries.
+        match prefetched_rag {
+            Some(p) => {
+                prefetched_used = true;
+                if show_diagnostics {
+                    let line = format!("Coverage - prefetched for: {}", p.source_query);
+                    rag_summary = Some(line.clone());
+                    let _ = tx
+                        .send(ServerFrame::ChatTool {
+                            turn_id,
+                            name: "retrieve".into(),
+                            phase: "summary".into(),
+                            detail: Some(line),
+                        })
+                        .await;
+                }
+                prefetch::apply_prefetch(
+                    p,
+                    &mut rag_context,
+                    &mut rag_citations,
+                    &mut rag_parts,
+                    &mut rag_gap_debug,
+                );
+            }
+            None => {
+                let rag_ov = ml::rag_overrides(&state.pg).await;
+            match ml::retrieve_stream(
+                &state.http,
+                &state.boot.ml.base_url,
+                &content,
+                &kb_ids,
+                &deny_doc_ids,
+                &rag_ov,
+                ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel.as_ref()).await,
+                Some(retrieve_timeout(&state.pg).await),
+            )
+            .await
+            {
+                Ok(mut stream) => loop {
+                    tokio::select! {
+                        ev = stream.recv() => match ev {
+                            Some(ml::RetrieveEvent::Progress { stage, detail }) => {
+                                // The terminal `summary` event is the Coverage line. It is captured and
+                                // forwarded on a PERSISTENT `summary` phase (not the transient
+                                // `progress` label) so it survives as a completed activity step — but
+                                // only when diagnostics are on. With diagnostics off it is dropped
+                                // entirely (no capture, no frame), so no Coverage step reaches the UI;
+                                // the human progress steps below are always shown.
+                                if stage == "summary" {
+                                    if show_diagnostics {
+                                        if let Some(text) = detail.clone() {
+                                            rag_summary = Some(text);
+                                        }
+                                        let _ = tx
+                                            .send(ServerFrame::ChatTool {
+                                                turn_id,
+                                                name: "retrieve".into(),
+                                                phase: "summary".into(),
+                                                detail: Some(detail.unwrap_or(stage)),
+                                            })
+                                            .await;
                                     }
+                                } else {
                                     let _ = tx
                                         .send(ServerFrame::ChatTool {
                                             turn_id,
                                             name: "retrieve".into(),
-                                            phase: "summary".into(),
+                                            phase: "progress".into(),
                                             detail: Some(detail.unwrap_or(stage)),
                                         })
                                         .await;
                                 }
-                            } else {
-                                let _ = tx
-                                    .send(ServerFrame::ChatTool {
-                                        turn_id,
-                                        name: "retrieve".into(),
-                                        phase: "progress".into(),
-                                        detail: Some(detail.unwrap_or(stage)),
-                                    })
-                                    .await;
                             }
-                        }
-                        Some(ml::RetrieveEvent::Done { context, citations, parts, debug }) => {
-                            if !context.trim().is_empty() {
-                                rag_context = Some(context);
-                                rag_citations = citations;
-                                rag_parts = parts;
+                            Some(ml::RetrieveEvent::Done { context, citations, parts, debug }) => {
+                                if !context.trim().is_empty() {
+                                    rag_context = Some(context);
+                                    rag_citations = citations;
+                                    rag_parts = parts;
+                                }
+                                rag_gap_debug = debug;
+                                break;
                             }
-                            rag_gap_debug = debug;
-                            break;
-                        }
-                        Some(ml::RetrieveEvent::Error { message }) => {
-                            tracing::warn!(error = %message, "retrieve failed; proceeding without RAG context");
-                            break;
-                        }
-                        None => break,
-                    },
-                    _ = cancel.notified() => { cancelled = true; break; }
+                            Some(ml::RetrieveEvent::Error { message }) => {
+                                tracing::warn!(error = %message, "retrieve failed; proceeding without RAG context");
+                                break;
+                            }
+                            None => break,
+                        },
+                        _ = cancel.notified() => { cancelled = true; break; }
+                    }
+                },
+                Err(e) => tracing::warn!(error = %e, "retrieve stream failed; proceeding without RAG context"),
                 }
-            },
-            Err(e) => tracing::warn!(error = %e, "retrieve stream failed; proceeding without RAG context"),
+            }
         }
         let _ = tx
             .send(ServerFrame::ChatTool { turn_id, name: "retrieve".into(), phase: "finished".into(), detail: None })
@@ -709,7 +753,13 @@ async fn run_turn_inner(
             .flatten()
             .map(|e| e.value)
             .unwrap_or_else(|| "gaps_only".to_string());
-        let gaps_left = rag_gap_debug.gap_needs_exhausted > 0
+        // A prefetched retrieval always counts as leaving gaps. It ran a light
+        // profile without the gap-filling rounds, on a transcript that was still
+        // being spoken, so treating it as complete would be optimistic — instead the
+        // model gets the top-up tool and fills in whatever the speculation missed,
+        // which is cheaper than re-running the full search on the turn's clock.
+        let gaps_left = prefetched_used
+            || rag_gap_debug.gap_needs_exhausted > 0
             || (!rag_gap_debug.gap_stop_reason.is_empty()
                 && rag_gap_debug.gap_stop_reason != "sufficient");
         let advertise = crate::tools::advertise_search_library(&mode, gaps_left);

@@ -31,6 +31,7 @@
 pub mod aggregate;
 pub mod dictation;
 pub mod session;
+pub mod spec_retrieval;
 pub mod stt_openai_realtime;
 pub mod stt_stream;
 pub mod tts_stream;
@@ -84,6 +85,33 @@ pub struct VoiceKnobs {
     pub aec_required: bool,
     /// Consult the turn-detection sidecar (else the silence threshold alone decides).
     pub turn_detection: bool,
+    /// Start the knowledge-base search from the partial transcript, while the
+    /// speaker is still talking, so its cost falls outside the reply budget.
+    pub spec_enabled: bool,
+    /// Minimum words in the query before speculating.
+    pub spec_min_words: u64,
+    /// Minimum growth since the previous speculative search.
+    pub spec_min_new_words: u64,
+    /// Minimum gap between speculative searches.
+    pub spec_debounce_ms: u64,
+    /// Cap on speculative searches per utterance.
+    pub spec_max_fires: u64,
+    /// Soft endpoint as a percentage of `silence_threshold_ms`: the pause at which
+    /// the turn is probably ending, and the transcript is worth searching on, but
+    /// not yet long enough to end it.
+    pub spec_soft_silence_pct: u64,
+    /// Turn-completeness probability that also counts as a soft endpoint. Needs the
+    /// turn-detection sidecar; `1.0` leaves the silence threshold in sole charge.
+    pub spec_eager_prob: f32,
+    /// Deadline for a speculative search (far tighter than a turn's own retrieval:
+    /// a speculation that has not landed by the time the speaker stops is worthless).
+    pub spec_timeout_secs: u64,
+    /// Reuse gate: token-Jaccard similarity at or above which a speculative result
+    /// answers the committed transcript.
+    pub spec_reuse_jaccard: f32,
+    /// Reuse gate: when the speculative query is a word-prefix of the committed
+    /// transcript, the largest fraction of it that may be words never searched for.
+    pub spec_reuse_new_ratio: f32,
 }
 
 impl Default for VoiceKnobs {
@@ -97,6 +125,18 @@ impl Default for VoiceKnobs {
             ptt_default: true,
             aec_required: true,
             turn_detection: false,
+            spec_enabled: true,
+            spec_min_words: 5,
+            spec_min_new_words: 4,
+            spec_debounce_ms: 700,
+            spec_max_fires: 3,
+            spec_soft_silence_pct: 50,
+            spec_eager_prob: 0.4,
+            spec_timeout_secs: 12,
+            // Starting points, to be calibrated from the per-turn counters on a live
+            // deployment rather than guessed at.
+            spec_reuse_jaccard: 0.7,
+            spec_reuse_new_ratio: 0.35,
         }
     }
 }
@@ -111,6 +151,19 @@ impl VoiceKnobs {
         async fn getu(pg: &sqlx::PgPool, key: &str, dflt: u64) -> u64 {
             runtime::get(pg, key).await.ok().flatten().and_then(|e| e.value.parse::<u64>().ok()).unwrap_or(dflt)
         }
+        /// Fractional dials, clamped here. The knob store enforces the declared
+        /// range for whole numbers only, so a fraction arrives unvalidated and a
+        /// mistyped one would otherwise disable or wildly loosen a gate.
+        async fn getf(pg: &sqlx::PgPool, key: &str, dflt: f32) -> f32 {
+            runtime::get(pg, key)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|e| e.value.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .unwrap_or(dflt)
+                .clamp(0.0, 1.0)
+        }
         let d = Self::default();
         VoiceKnobs {
             silence_threshold_ms: getu(pg, "voice.silence_threshold_ms", d.silence_threshold_ms).await,
@@ -118,6 +171,42 @@ impl VoiceKnobs {
             ptt_default: getb(pg, "voice.ptt_default", d.ptt_default).await,
             aec_required: getb(pg, "voice.aec_required", d.aec_required).await,
             turn_detection: getb(pg, "voice.turn_detection", d.turn_detection).await,
+            spec_enabled: getb(pg, "voice.spec_enabled", d.spec_enabled).await,
+            spec_min_words: getu(pg, "voice.spec_min_words", d.spec_min_words).await,
+            spec_min_new_words: getu(pg, "voice.spec_min_new_words", d.spec_min_new_words).await,
+            spec_debounce_ms: getu(pg, "voice.spec_debounce_ms", d.spec_debounce_ms).await,
+            spec_max_fires: getu(pg, "voice.spec_max_fires", d.spec_max_fires).await,
+            // Clamped to the same 10-90 the knob store accepts on write, so a value
+            // that arrived by some other route behaves exactly like one typed in.
+            spec_soft_silence_pct: getu(pg, "voice.spec_soft_silence_pct", d.spec_soft_silence_pct)
+                .await
+                .clamp(10, 90),
+            spec_eager_prob: getf(pg, "voice.spec_eager_prob", d.spec_eager_prob).await,
+            spec_timeout_secs: getu(pg, "voice.spec_timeout_secs", d.spec_timeout_secs).await,
+            spec_reuse_jaccard: getf(pg, "voice.spec_reuse_jaccard", d.spec_reuse_jaccard).await,
+            spec_reuse_new_ratio: getf(pg, "voice.spec_reuse_new_ratio", d.spec_reuse_new_ratio)
+                .await,
+        }
+    }
+
+    /// The speculator's firing policy, as the decision core wants it.
+    pub fn spec_cfg(&self) -> spec_retrieval::SpecCfg {
+        spec_retrieval::SpecCfg {
+            enabled: self.spec_enabled,
+            min_words: self.spec_min_words as usize,
+            min_new_words: self.spec_min_new_words as usize,
+            debounce_ms: self.spec_debounce_ms,
+            max_fires: self.spec_max_fires as u32,
+            eager_prob: self.spec_eager_prob,
+            soft_silence_pct: self.spec_soft_silence_pct,
+        }
+    }
+
+    /// The reuse-gate thresholds.
+    pub fn reuse_cfg(&self) -> spec_retrieval::ReuseCfg {
+        spec_retrieval::ReuseCfg {
+            jaccard: self.spec_reuse_jaccard,
+            new_ratio: self.spec_reuse_new_ratio,
         }
     }
 }

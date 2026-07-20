@@ -261,7 +261,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                             crate::http::chat_attachments::take_attachments(&st, &ctxc, &attachment_ids).await;
                         crate::chat::run_turn(
                             &st, &ctxc, turn_id, chat_id, project_id, agent_id, content, attachments,
-                            Vec::new(), false, None, reasoning, llm_provider_id, &txc, cancel,
+                            Vec::new(), false, None, reasoning, llm_provider_id, None, &txc, cancel,
                         )
                         .await;
                         st.hub.remove_turn(socket_id, turn_id);
@@ -289,7 +289,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                             Ok((anchor_id, anchor_content)) => {
                                 crate::chat::run_turn(
                                     &st, &ctxc, turn_id, Some(chat_id), None, None, anchor_content,
-                                    Vec::new(), Vec::new(), false, Some(anchor_id), None, None, &txc, cancel,
+                                    Vec::new(), Vec::new(), false, Some(anchor_id), None, None, None, &txc, cancel,
                                 )
                                 .await;
                             }

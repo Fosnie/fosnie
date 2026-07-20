@@ -189,7 +189,7 @@ async fn run_once(
     let cancel = Arc::new(tokio::sync::Notify::new());
     fosnie_backend::chat::run_turn(
         state, ctx, Uuid::now_v7(), None, Some(project_id), Some(agent_id),
-        prompt.to_string(), Vec::new(), Vec::new(), true, None, None, None, &tx, cancel,
+        prompt.to_string(), Vec::new(), Vec::new(), true, None, None, None, None, &tx, cancel,
     )
     .await;
     drop(tx);

@@ -410,7 +410,14 @@ pub enum ServerFrame {
     /// Live voice: the conversation state changed (idle/listening/capturing/
     /// thinking/speaking/interrupted/error) — drives the SPA's state visuals.
     #[serde(rename = "voice.state")]
-    VoiceLiveState { state: String },
+    VoiceLiveState {
+        state: String,
+        /// A speculative knowledge-base search is running for what the speaker is
+        /// currently saying. Omitted when false, so a client that predates the
+        /// feature sees exactly the frame it always saw.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        retrieving: bool,
+    },
     /// Live voice: a stabilising partial transcript (shown muted). Emitted only when
     /// a streaming-STT engine is present.
     #[serde(rename = "voice.partial")]
