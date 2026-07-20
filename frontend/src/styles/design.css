@@ -842,7 +842,14 @@
 /* ============================================================
    General workspace + chat
    ============================================================ */
-.general-main { --topbar-h: 60px; position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* The chat surface is a grid so the artefact panel can take a real column beside
+   it rather than floating over it. The chat itself lives in .chat-col, which
+   keeps position:relative so the absolute composer dock, top bar and document
+   rail anchor to THIS column and not to the grid — the same arrangement the
+   legal shell uses for its right-hand rail. */
+.general-main { display: grid; grid-template-columns: 1fr; height: 100%; min-height: 0; }
+.general-main.panel-docked { grid-template-columns: minmax(0, 1fr) minmax(420px, 44%); }
+.chat-col { --topbar-h: 60px; position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
 /* Thread is the scroller; its top padding clears the absolute glass top bar so
    content scrolls *under* the frosted bar (true glass-over-scroll). */
 .thread { flex: 1; overflow-y: auto; padding-top: var(--topbar-h); padding-bottom: 124px; }
@@ -852,6 +859,9 @@
    by Virtuoso's injected inline style. Item spacing is PADDING on .msg (below),
    not margin — Virtuoso's height measurement excludes margins. */
 .thread-virtual { max-width: 812px; margin: 0 auto; padding: 0 26px; box-sizing: border-box; }
+/* With the artefact panel docked the thread column is narrow enough that the
+   26px gutters start to bind; trim them so the text keeps its measure. */
+.panel-docked .thread-inner, .panel-docked .thread-virtual { padding-left: 18px; padding-right: 18px; }
 .thread-virtual .msg { padding-bottom: 26px; }
 
 .msg { display: flex; gap: 14px; }
@@ -1880,7 +1890,6 @@ details[open] > .cites-summary .cites-chev { transform: rotate(180deg); }
 /* Inline PDF: embed the real document (native viewer) rather than extracted text. */
 .dv-pdf-frame { width: 100%; height: calc(100vh - 150px); min-height: 540px; border: 0; background: #fff; border-radius: 4px; box-shadow: var(--shadow-2); }
 /* Verify-draft report (Mode B) — a flagged claim + its evidence. */
-.artefact-row { display: inline-flex; align-items: center; gap: 6px; }
 .vr-claim { display: flex; flex-direction: column; gap: 3px; }
 .gd-repair { font-size: 10px; letter-spacing: 0.02em; color: var(--gold); border: 1px solid var(--gold-deep); border-radius: 3px; padding: 0 4px; align-self: center; }
 .vr-claim-head { display: flex; align-items: baseline; gap: 8px; }
@@ -2010,26 +2019,52 @@ details[open] > .cites-summary .cites-chev { transform: rotate(180deg); }
 .artefact-name { max-width: 20rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artefact-kind { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--gold); }
 
-/* Artefact item wrapper: chips still wrap side-by-side, but an html artefact with a
-   preview claims the full row so its sandboxed iframe has width. */
-.artefact-item { display: flex; flex-direction: column; gap: 6px; }
-.artefact-item:has(.artefact-preview-wrap) { flex-basis: 100%; width: 100%; }
-/* Inline preview for image artefacts (e.g. a code-interpreter plot). */
-.artefact-image { display: block; max-width: min(28rem, 100%); max-height: 22rem; height: auto; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); cursor: zoom-in; }
-.artefact-item:has(.artefact-image) { flex-basis: 100%; width: 100%; }
-.artefact-preview-wrap { display: flex; flex-direction: column; gap: 6px; }
-.artefact-preview-bar { display: inline-flex; gap: 6px; }
 .btn.btn-line.sm.active { border-color: var(--gold); color: var(--gold); background: var(--bg-3); }
-.artefact-preview-loading { padding: 10px 2px; color: var(--ink-3); font-size: 12px; }
-/* Sandboxed preview: light surface (the dashboard theme is light); the iframe is
-   sandbox="allow-scripts" only — null origin, no app-storage access. */
-.artefact-preview { width: 100%; height: 520px; border: 1px solid var(--line); border-radius: var(--r-sm); background: #fff; }
+
+/* The chip splits into an open button and a download button sharing one border,
+   so the primary click reads the artefact and the file is still one click away. */
+.artefact-chip-wrap { display: inline-flex; align-items: stretch; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); overflow: hidden; }
+.artefact-chip-wrap:hover, .artefact-chip-wrap.selected { border-color: var(--gold-deep); }
+.artefact-chip-wrap.selected { background: var(--bg-3); }
+.artefact-chip-wrap .artefact-chip { border: 0; border-radius: 0; background: transparent; }
+.artefact-chip-dl { display: inline-flex; align-items: center; padding: 0 10px; border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--ink-3); cursor: pointer; }
+.artefact-chip-dl:hover { background: var(--bg-3); color: var(--gold); }
+
+/* ---- Artefact panel: the generated document read beside the chat ---- */
+.artefact-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; border-left: 1px solid var(--line); background: var(--bg-2); }
+.ap-head { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px 8px; }
+.ap-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
+.ap-name { margin: 0; font-family: var(--font-sans); font-size: 14px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-name:focus-visible { outline: 1px solid var(--gold-deep); outline-offset: 3px; }
+.ap-close { border: 0; background: transparent; color: var(--ink-3); cursor: pointer; padding: 2px; }
+.ap-close:hover { color: var(--ink); }
+.ap-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 14px 10px; border-bottom: 1px solid var(--line); }
+.ap-seg { display: inline-flex; gap: 6px; margin-left: auto; }
+.ap-body { flex: 1; min-height: 0; overflow: auto; }
+.ap-loading { padding: 18px; color: var(--ink-3); font-size: 12px; }
+.ap-pad { padding: 14px; }
+/* Framed content (the sandboxed html preview, the PDF viewer) fills the panel;
+   both surfaces are light, the app chrome is not. */
+.ap-frame { display: block; width: 100%; height: 100%; min-height: 420px; border: 0; background: #fff; }
+.ap-docx { background: #fff; }
+.ap-doc { padding: 24px 28px; max-width: 72ch; }
+.ap-img { display: block; max-width: 100%; height: auto; margin: 14px auto; }
+.ap-pre { margin: 0; padding: 14px; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); }
+.ap-card { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 24px; color: var(--ink-2); font-size: 13px; }
+.ap-card-detail { font-size: 11.5px; color: var(--ink-3); }
+/* Drawer placement below the docking breakpoint. */
+.ap-scrim { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: flex-end; background: rgba(0,0,0,.55); }
+.ap-drawer { display: flex; height: 100%; width: 100%; max-width: 560px; }
+.ap-drawer > .artefact-panel { flex: 1; min-width: 0; }
+/* The panel is the richer view of the same documents the rail lists, and the
+   live research roadmap would sit on top of it — both stand down while it is open. */
+.panel-open .doc-rail, .panel-open .roadmap-panel { display: none; }
 
 /* Disabled-skill badge (Studio skill card). */
 .skill-badge-off { color: var(--amber); border: 1px solid var(--line); border-radius: var(--r-full); padding: 0 6px; font-size: 10px; margin-left: 6px; text-transform: uppercase; letter-spacing: .05em; }
 
 /* Collapsible documents rail (top-right of the chat surface). */
-.general-main { position: relative; }
+.chat-col { position: relative; }
 .doc-rail { position: absolute; top: 84px; right: 18px; z-index: 30; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .doc-rail-toggle { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2); color: var(--ink-2); font-family: var(--font-mono); font-size: 11.5px; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.35); transition: border-color .14s, color .14s; }
 .doc-rail-toggle:hover { border-color: var(--gold-deep); color: var(--ink); }

@@ -2639,6 +2639,47 @@ export async function fetchArtefactText(id: string): Promise<string> {
   return res.text();
 }
 
+/** As `fetchArtefactText`, but refuses anything over `maxBytes` before reading the
+ *  body — the size is known up front because the download endpoint answers with a
+ *  fully buffered body, so `Content-Length` is always present. Returns null when
+ *  the artefact is too large, so the caller can offer a download instead of
+ *  pulling megabytes of text into the DOM. */
+export async function fetchArtefactTextCapped(id: string, maxBytes: number): Promise<string | null> {
+  const token = await freshToken();
+  const res = await fetch(`/api/artefacts/${id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const len = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(len) && len > maxBytes) {
+    void res.body?.cancel();
+    return null;
+  }
+  return res.text();
+}
+
+/** Fetch an artefact's bytes (Bearer, so it works under both local and federated
+ *  auth) as an object URL for in-app rendering. The download endpoint always
+ *  answers `Content-Disposition: attachment`, so a raw URL cannot be rendered;
+ *  a blob URL can.
+ *
+ *  `forcedType` sets the Blob's MIME type instead of trusting the server's. Pass
+ *  it whenever the object URL will be framed: a blob URL inherits this origin, so
+ *  a framed HTML blob would be same-origin script execution. Framing is for
+ *  `application/pdf` only, and forcing the type makes anything else structurally
+ *  impossible. The caller owns the URL and must revoke it. */
+export async function artefactBlobUrl(id: string, forcedType?: string): Promise<string> {
+  const blob = await artefactBlob(id);
+  return URL.createObjectURL(forcedType ? new Blob([blob], { type: forcedType }) : blob);
+}
+
+/** An artefact's bytes (Bearer) for renderers that want the Blob itself rather
+ *  than a URL — docx-preview, for one. */
+export async function artefactBlob(id: string): Promise<Blob> {
+  const token = await freshToken();
+  const res = await fetch(`/api/artefacts/${id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.blob();
+}
+
 export function useProjects() {
   return useQuery({ queryKey: ["projects"], queryFn: () => apiFetch<ProjectSummary[]>("/api/projects") });
 }
