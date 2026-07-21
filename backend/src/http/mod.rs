@@ -656,10 +656,19 @@ async fn spa_ok_status(req: Request, next: Next) -> Response {
 /// confines the SPA to same-origin assets (and contains the docx-preview DOM
 /// render to non-executing content). `connect-src 'self'` covers same-origin
 /// `/api` + `/ws`; `'unsafe-inline'` styles are needed by the Tailwind/React UI.
-/// `frame-src 'self'` permits the `srcdoc` sandboxed preview of html artefacts
-/// (the framed page carries its own strict injected CSP). The `csp` value is
-/// precomputed from config in `router` so the deployment's own auth origin is
-/// what the login flow is allowed to reach.
+/// `frame-src 'self' blob:` permits the `srcdoc` sandboxed preview of html
+/// artefacts (the framed page carries its own strict injected CSP) and the
+/// in-app PDF viewer. `blob:` is listed explicitly because a CSP source
+/// expression matches on scheme/host/port and a `blob:` URL has scheme `blob`
+/// with an empty host, so `'self'` never matches it (`img-src` lists it for the
+/// same reason). Document bytes are fetched with the caller's credentials and
+/// framed from an object URL — the download endpoint always answers
+/// `Content-Disposition: attachment`, so it cannot be framed directly. A blob
+/// URL inherits this origin, so only PDF bytes are ever framed and the frontend
+/// builds the object URL with a forced `application/pdf` type; HTML artefacts
+/// stay on the `srcdoc` + `sandbox` path and are never given a blob URL.
+/// The `csp` value is precomputed from config in `router` so the deployment's
+/// own auth origin is what the login flow is allowed to reach.
 async fn security_headers(csp: HeaderValue, req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let h = res.headers_mut();
@@ -708,7 +717,7 @@ fn build_csp_inner(public_url: &str, keycloak_url: &str, keycloak_configured: bo
          worker-src 'self'; \
          connect-src 'self'{auth}; \
          object-src 'none'; base-uri 'self'; frame-ancestors 'none'; \
-         frame-src 'self'{auth}"
+         frame-src 'self' blob:{auth}"
     )
 }
 
@@ -720,7 +729,7 @@ mod csp_tests {
     fn includes_configured_keycloak_origin() {
         let csp = build_csp_inner("https://chat.example.com", "https://auth.example.com/realms/x", true);
         assert!(csp.contains("connect-src 'self' https://auth.example.com;"), "{csp}");
-        assert!(csp.contains("frame-src 'self' https://auth.example.com"), "{csp}");
+        assert!(csp.contains("frame-src 'self' blob: https://auth.example.com"), "{csp}");
         assert!(!csp.contains("scottish-ai"), "{csp}");
     }
 
@@ -728,7 +737,7 @@ mod csp_tests {
     fn local_auth_is_self_only() {
         let csp = build_csp_inner("http://localhost:8088", "", false);
         assert!(csp.contains("connect-src 'self';"), "{csp}");
-        assert!(csp.trim_end().ends_with("frame-src 'self'"), "{csp}");
+        assert!(csp.trim_end().ends_with("frame-src 'self' blob:"), "{csp}");
         assert!(!csp.contains("https://"), "{csp}");
     }
 
@@ -736,7 +745,21 @@ mod csp_tests {
     fn omits_keycloak_when_same_origin_as_spa() {
         let csp = build_csp_inner("https://app.example.com", "https://app.example.com/auth", true);
         assert!(csp.contains("connect-src 'self';"), "{csp}");
-        assert!(csp.trim_end().ends_with("frame-src 'self'"), "{csp}");
+        assert!(csp.trim_end().ends_with("frame-src 'self' blob:"), "{csp}");
+    }
+
+    // The in-app document viewers frame PDF bytes from an object URL, which a
+    // bare `frame-src 'self'` would refuse — the allowance must survive every
+    // auth configuration, not just the local-auth one.
+    #[test]
+    fn frames_blob_urls_in_every_auth_mode() {
+        for csp in [
+            build_csp_inner("http://localhost:8088", "", false),
+            build_csp_inner("https://app.example.com", "https://app.example.com/auth", true),
+            build_csp_inner("https://chat.example.com", "https://auth.example.com/realms/x", true),
+        ] {
+            assert!(csp.contains("frame-src 'self' blob:"), "{csp}");
+        }
     }
 }
 

@@ -19,11 +19,13 @@ import { forwardRef, Fragment, useEffect, useMemo, useRef, useState } from "reac
 import { Virtuoso } from "react-virtuoso";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { approveAgentRun, attachChatLibrary, cancelAgentRun, chatAttachmentUrl, convertArtefact, createAgent, createPage, deleteChat, downloadArtefact, downloadChatAttachment, exportChat, rejectAgentRun, renameChat, revokeShare, shareChat, startVerifyDraft, useAgents, useChatArtefacts, useChatLinks, useChatMessages, useChats, useGroupChats, useLibraries, useMyShares, useProjects, useResearchChats, useWhoami, type Artefact, type ChatAttachmentMeta, type ChatShare, type MsgActivity, type MsgGroundedness } from "@/api/client";
-import { HtmlArtefactPreview } from "@/components/htmlArtefact";
+import { approveAgentRun, attachChatLibrary, cancelAgentRun, chatAttachmentUrl, createAgent, deleteChat, downloadChatAttachment, exportChat, rejectAgentRun, renameChat, revokeShare, shareChat, useAgents, useChatArtefacts, useChatLinks, useChatMessages, useChats, useGroupChats, useLibraries, useMyShares, useProjects, useResearchChats, useWhoami, type Artefact, type ChatAttachmentMeta, type ChatShare, type MsgActivity, type MsgGroundedness } from "@/api/client";
+import { ArtefactChip } from "@/components/artefacts/ArtefactChip";
+import { ArtefactPanelHost } from "@/components/artefacts/ArtefactPanel";
+import { useArtefactActions } from "@/components/artefacts/useArtefactActions";
+import { useArtefactPanel } from "@/components/artefacts/useArtefactPanel";
 import { AgentActivity } from "@/components/agentActivity";
 import { Groundedness } from "@/components/groundedness";
-import { VerificationReport } from "@/components/verificationReport";
 import { useFeedback } from "@/components/feedback";
 import { useActiveProject } from "@/app/ProjectContext";
 import { Icon } from "@/components/icons";
@@ -107,18 +109,9 @@ export function Chat() {
   const { agentId, setAgentId, defaultAgentId, pinDefaultAgent } = useAgentSelection(visibleAgents);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [sending, setSending] = useState(false);
-  // Per-artefact "Verify draft" run id ("starting" while the POST is in flight).
-  const [verifyRuns, setVerifyRuns] = useState<Record<string, string>>({});
-  async function verifyArtefact(id: string) {
-    setVerifyRuns((v) => ({ ...v, [id]: "starting" }));
-    try {
-      const { run_id } = await startVerifyDraft("draft", id);
-      setVerifyRuns((v) => ({ ...v, [id]: run_id }));
-    } catch (e) {
-      setVerifyRuns((v) => { const n = { ...v }; delete n[id]; return n; });
-      toast((e as Error).message, { variant: "error" });
-    }
-  }
+  // Download/convert/verify an artefact — shared with the artefact panel, which
+  // is where all of them but the download are offered.
+  const artefactActions = useArtefactActions(chatId);
   const [notice, setNotice] = useState<string | null>(null);
   // The tool currently executing this turn — a live indicator inside the active
   // message's activity block (steps/tools persist on the message itself).
@@ -564,6 +557,10 @@ export function Chat() {
             qc.invalidateQueries({ queryKey: ["chat-messages", cid] });
             qc.invalidateQueries({ queryKey: ["artefacts", cid] });
             window.setTimeout(() => qc.invalidateQueries({ queryKey: ["artefacts", cid] }), 1200);
+            // Show whatever this turn produced. Arming rather than opening here is
+            // deliberate: the refetch above has only been queued, so the artefact
+            // does not exist client-side yet.
+            panel.armAutoOpen(cid);
           }
           break;
         }
@@ -710,6 +707,9 @@ export function Chat() {
       { id: pid, role: "assistant", content: "", pending: true, agent: agentName(agentId), time: now, createdAt: nowIso, startedAt: Date.now() },
     ]);
     setSending(true);
+    // Remember which artefacts predate this turn, so the panel can open the one
+    // the turn produces (and may claim the panel again).
+    panel.beginTurn();
     setRunningTool(null); // a new turn starts fresh; the new message holds its own activity
     setRunningToolDetail(null);
     wsStore.send({
@@ -827,9 +827,15 @@ export function Chat() {
     return out;
   }, [messages]);
   const [attachOpen, setAttachOpen] = useState(false);
+  // Which artefact is open beside the chat (URL-backed, so it is shareable).
+  const panel = useArtefactPanel(chatId, artefactList, artefacts.isLoading);
 
   return (
-    <Dropzone className="general-main" onFiles={(f) => composerRef.current?.addFiles(f)}>
+    <Dropzone
+      className={"general-main" + (panel.isOpen ? " panel-open" : "") + (panel.isOpen && panel.docked ? " panel-docked" : "")}
+      onFiles={(f) => composerRef.current?.addFiles(f)}
+    >
+      <div className="chat-col">
       {/* Live Deep Research roadmap — right-docked from the first progress event. */}
       {deepRoadmap && (
         <ResearchRoadmapPanel
@@ -1066,88 +1072,22 @@ export function Chat() {
                       </>
                     ) : null}
 
+                    {/* Artefacts are listed as chips; the document itself is read in
+                        the panel beside the chat, which is also where the convert,
+                        page and verify actions live. */}
                     {artByMsg.get(m.id)?.length ? (
                       <div className="msg-artefacts">
                         {artByMsg.get(m.id)!.map((a) => (
-                          <div key={a.id} className="artefact-item">
-                            <div className="artefact-row">
-                              <button
-                                className="artefact-chip"
-                                title={`Download ${a.title}`}
-                                onClick={() => downloadArtefact(a.id, a.title, a.kind).catch((e) => toast((e as Error).message))}
-                              >
-                                <Icon.Doc size={14} />
-                                <span className="artefact-name">{a.title}</span>
-                                <span className="artefact-kind mono">{a.kind}</span>
-                                <Icon.Download size={14} />
-                              </button>
-                              {a.kind === "md" && (
-                                <>
-                                  <button
-                                    className="btn btn-line sm"
-                                    title="Save as DOCX"
-                                    onClick={() =>
-                                      convertArtefact(a.id, "docx")
-                                        .then((n) => { void downloadArtefact(n.id, n.title, n.kind); qc.invalidateQueries({ queryKey: ["artefacts", chatId] }); })
-                                        .catch((e) => toast((e as Error).message))
-                                    }
-                                  >
-                                    DOCX
-                                  </button>
-                                  <button
-                                    className="btn btn-line sm"
-                                    title="Save as PDF"
-                                    onClick={() =>
-                                      convertArtefact(a.id, "pdf")
-                                        .then((n) => { void downloadArtefact(n.id, n.title, n.kind); qc.invalidateQueries({ queryKey: ["artefacts", chatId] }); })
-                                        .catch((e) => toast((e as Error).message))
-                                    }
-                                  >
-                                    PDF
-                                  </button>
-                                  {a.chat_mode === "research" && (
-                                    <button
-                                      className="btn btn-line sm"
-                                      title="Create a self-contained HTML page from this report"
-                                      onClick={() =>
-                                        createPage(a.id)
-                                          .then(() => qc.invalidateQueries({ queryKey: ["artefacts", chatId] }))
-                                          .catch((e) => toast((e as Error).message))
-                                      }
-                                    >
-                                      Create page
-                                    </button>
-                                  )}
-                                </>
-                              )}
-                              {groundednessOn && (
-                                <button className="btn btn-line sm" title="Verify the draft against your sources" onClick={() => verifyArtefact(a.id)} disabled={verifyRuns[a.id] === "starting"}>
-                                  <Icon.Shield size={13} /> {verifyRuns[a.id] ? "Re-verify" : "Verify"}
-                                </button>
-                              )}
-                            </div>
-                            {a.kind === "html" && <HtmlArtefactPreview artefact={a} />}
-                            {a.mime?.startsWith("image/") && (
-                              // Render image artefacts (e.g. a code-interpreter plot)
-                              // inline under the answer; click opens/downloads the full file.
-                              <img
-                                className="artefact-image"
-                                src={`/api/artefacts/${a.id}/download`}
-                                alt={a.title}
-                                loading="lazy"
-                                onClick={() => downloadArtefact(a.id, a.title, a.kind).catch((e) => toast((e as Error).message))}
-                              />
-                            )}
-                          </div>
+                          <ArtefactChip
+                            key={a.id}
+                            artefact={a}
+                            selected={panel.selectedId === a.id}
+                            onOpen={panel.open}
+                            onDownload={artefactActions.download}
+                          />
                         ))}
                       </div>
                     ) : null}
-
-                    {groundednessOn
-                      ? artByMsg.get(m.id)?.filter((a) => verifyRuns[a.id] && verifyRuns[a.id] !== "starting").map((a) => (
-                          <VerificationReport key={a.id} runId={verifyRuns[a.id]} />
-                        ))
-                      : null}
 
                     {!m.pending && !m.error && (
                       <div className="msg-actions">
@@ -1234,13 +1174,12 @@ export function Chat() {
                     <button
                       key={a.id}
                       className="doc-rail-item"
-                      title={`Download ${a.title}`}
-                      onClick={() => downloadArtefact(a.id, a.title, a.kind).catch((e) => toast((e as Error).message))}
+                      title={`Open ${a.title}`}
+                      onClick={() => panel.open(a)}
                     >
                       <Icon.Doc size={14} />
                       <span className="doc-rail-name">{a.title}</span>
                       <span className="artefact-kind mono">{a.kind}</span>
-                      <Icon.Download size={13} />
                     </button>
                   ))}
                 </div>
@@ -1372,6 +1311,21 @@ export function Chat() {
         const O = getMessageOverlay(overlay.key);
         return O ? <O.component {...overlay.props} onClose={() => setOverlay(null)} /> : null;
       })()}
+      </div>
+
+      {/* The selected artefact: a column beside the thread on a wide viewport,
+          a drawer over it otherwise. */}
+      <ArtefactPanelHost
+        open={panel.isOpen}
+        artefact={panel.selected}
+        loading={panel.pending}
+        missing={panel.missing}
+        mode={panel.mode}
+        actions={artefactActions}
+        groundednessOn={groundednessOn}
+        onClose={panel.close}
+        onInteract={panel.markInteracted}
+      />
     </Dropzone>
   );
 }
