@@ -11,6 +11,14 @@ next tag; a plain merge ships nothing to users.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-21
+
+### Added
+
+- Added speculative library search to live voice: the knowledge-base search now starts from the partial transcript while the speaker is still talking, so a grounded reply begins sooner.
+- Added an OpenAI-compatible API at `/v1`, authenticated by platform API keys minted in Profile: address a configured model directly, or an agent to answer from your own libraries.
+- Added an artefact panel: generated documents open beside the conversation with a preview per file type, and download stays one click away.
+
 ## [0.3.0] - 2026-07-20
 
 ### Added
@@ -55,7 +63,8 @@ next tag; a plain merge ships nothing to users.
 - Hash-chained, append-only audit log (tamper-detection).
 - One-line installer and Docker Compose deployment; health and Prometheus metrics endpoints.
 
-[Unreleased]: https://github.com/Fosnie/fosnie/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Fosnie/fosnie/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Fosnie/fosnie/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Fosnie/fosnie/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Fosnie/fosnie/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Fosnie/fosnie/releases/tag/v0.1.0
