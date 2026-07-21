@@ -104,5 +104,8 @@ impl crate::ext::JobRegistrar for CoreJobs {
         reg.register_periodic_job("0 * * * * *", periodic_enqueue(TaskType::McpHealth, "periodic"));
         // Daily orphaned-artefact sweep. 03:30.
         reg.register_periodic_job("0 30 3 * * *", periodic_enqueue(TaskType::ArtefactCleanup, "daily"));
+        // Daily sweep of aged API conversations. 03:45. A no-op unless a
+        // retention period has been configured.
+        reg.register_periodic_job("0 45 3 * * *", periodic_enqueue(TaskType::ApiChatCleanup, "daily"));
     }
 }

@@ -133,6 +133,9 @@ const KNOBS: &[Knob] = &[
     Knob { key: "research.notes_concurrency", label: "Research notes concurrency", desc: "Concurrent per-source / per-document note-extraction calls during a Deep Research run.", value_type: ConfigValueType::Int, default: "4", min: Some(1), max: Some(16) },
     Knob { key: "research.deepen_enabled", label: "Per-section deepening", desc: "Before writing, judge each report section's evidence and run a bounded targeted dig for the gaps (web or corpus), binding new sources to that section. Skipped on a small model context and time-boxed within the run; fails open. On by default.", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
     Knob { key: "research.deepen_concurrency", label: "Deepening concurrency", desc: "Concurrent sections deepened at once during the pre-write deepening stage. A dig is heavier than a note, so this is separate from (and lower than) the notes concurrency.", value_type: ConfigValueType::Int, default: "2", min: Some(1), max: Some(16) },
+    Knob { key: "api.rate_per_min", label: "API requests per key per minute", desc: "Throttle on the OpenAI-compatible surface, counted per API key over a rolling minute. A coarse abuse guard rather than a quota: it fails open if the cache is unreachable.", value_type: ConfigValueType::Int, default: "60", min: Some(1), max: Some(10000) },
+    Knob { key: "api.chat_retention_days", label: "API conversation retention (days)", desc: "Delete conversations created through the OpenAI-compatible surface once they are this old. 0 keeps them indefinitely. They never appear in the chat lists, so this sweep is the only thing that removes them.", value_type: ConfigValueType::Int, default: "0", min: Some(0), max: Some(3650) },
+    Knob { key: "api.cors_allow_all", label: "Allow cross-origin API calls", desc: "Send permissive CORS headers on the OpenAI-compatible surface so browser-based tooling can call it. Off by default: native clients and server-side SDKs do not need it. Keys travel in the Authorization header, never a cookie, so this cannot expose a logged-in browser session.", value_type: ConfigValueType::Bool, default: "false", min: None, max: None },
 ];
 
 /// Allowed values for an enum (String) knob — rendered as a `<select>` and validated on
@@ -408,9 +411,12 @@ pub async fn user_chats(
     SuperAdmin(_ctx): SuperAdmin,
     Path(user_id): Path<Uid>,
 ) -> Result<Json<Vec<ChatRow>>> {
+    // Same exclusion as the owner's own list: machine traffic from an external
+    // application is not part of a person's conversation history.
     let rows = sqlx::query!(
         "SELECT id, title, created_at FROM chats \
-         WHERE owner_user_id = $1 AND archived_at IS NULL ORDER BY created_at DESC",
+         WHERE owner_user_id = $1 AND archived_at IS NULL AND origin <> 'api' \
+         ORDER BY created_at DESC",
         user_id
     )
     .fetch_all(&state.pg)

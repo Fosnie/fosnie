@@ -866,17 +866,21 @@ pub async fn usage_analytics(
     if !scope.is_global() {
         return Err(AppError::Forbidden("organisation-wide analytics requires unscoped analytics.view".into()));
     }
-    // Token usage + model traceability live on the chat.assistant.completed
-    // audit rows.
+    // Token usage + model traceability live on the metered completion audit
+    // rows: chat turns and API completions alike, so the dashboard shows the
+    // whole spend rather than only what came through the application.
+    let metered: Vec<String> =
+        crate::audit::METERED_COMPLETION_ACTIONS.iter().map(|s| s.to_string()).collect();
     let per_model = sqlx::query!(
         r#"SELECT model_agent_traceability->>'model' AS "model?: String",
                   COALESCE(SUM((token_usage->>'prompt_tokens')::bigint), 0)::bigint AS "prompt_tokens!: i64",
                   COALESCE(SUM((token_usage->>'completion_tokens')::bigint), 0)::bigint AS "completion_tokens!: i64",
                   COUNT(*) AS "count!: i64"
            FROM audit_events
-           WHERE action_type = 'chat.assistant.completed'
+           WHERE action_type = ANY($1)
            GROUP BY model_agent_traceability->>'model'
-           ORDER BY COUNT(*) DESC"#
+           ORDER BY COUNT(*) DESC"#,
+        &metered,
     )
     .fetch_all(&state.pg)
     .await?;
@@ -887,9 +891,10 @@ pub async fn usage_analytics(
                   COUNT(*) AS "count!: i64"
            FROM audit_events a
            LEFT JOIN users u ON u.id = a.actor_user_id
-           WHERE a.action_type = 'chat.assistant.completed'
+           WHERE a.action_type = ANY($1)
            GROUP BY a.actor_user_id, u.email
-           ORDER BY COUNT(*) DESC"#
+           ORDER BY COUNT(*) DESC"#,
+        &metered,
     )
     .fetch_all(&state.pg)
     .await?;
@@ -904,9 +909,10 @@ pub async fn usage_analytics(
                   COUNT(*) AS "count!: i64"
            FROM audit_events a
            LEFT JOIN agents ag ON ag.id = (a.model_agent_traceability->>'agent_id')::uuid
-           WHERE a.action_type = 'chat.assistant.completed'
+           WHERE a.action_type = ANY($1)
            GROUP BY a.model_agent_traceability->>'agent_id', ag.name
-           ORDER BY COUNT(*) DESC"#
+           ORDER BY COUNT(*) DESC"#,
+        &metered,
     )
     .fetch_all(&state.pg)
     .await?;
@@ -923,9 +929,10 @@ pub async fn usage_analytics(
                   COUNT(a.id) AS "messages!: i64"
            FROM generate_series((now() - interval '29 days')::date, now()::date, interval '1 day') d
            LEFT JOIN audit_events a
-             ON a.action_type = 'chat.assistant.completed'
+             ON a.action_type = ANY($1)
             AND date_trunc('day', a.occurred_at)::date = d::date
-           GROUP BY d ORDER BY d"#
+           GROUP BY d ORDER BY d"#,
+        &metered,
     )
     .fetch_all(&state.pg)
     .await?;

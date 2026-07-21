@@ -99,6 +99,11 @@ pub async fn power_analytics(
     let members = rbac::led_member_ids(&state.pg, me).await?;
     let team_size = members.iter().filter(|&&u| u != me).count() as i64;
 
+    // Both metered completion actions, so a team's API usage is counted
+    // alongside its chat usage rather than silently missing.
+    let metered: Vec<String> =
+        crate::audit::METERED_COMPLETION_ACTIONS.iter().map(|s| s.to_string()).collect();
+
     let per_user = sqlx::query!(
         r#"SELECT a.actor_user_id, u.email AS "email?",
                   COALESCE(SUM((a.token_usage->>'prompt_tokens')::bigint), 0)::bigint AS "prompt_tokens!: i64",
@@ -106,10 +111,11 @@ pub async fn power_analytics(
                   COUNT(*) AS "count!: i64"
            FROM audit_events a
            LEFT JOIN users u ON u.id = a.actor_user_id
-           WHERE a.action_type = 'chat.assistant.completed'
-             AND a.actor_user_id = ANY($1)
+           WHERE a.action_type = ANY($1)
+             AND a.actor_user_id = ANY($2)
            GROUP BY a.actor_user_id, u.email
            ORDER BY COUNT(*) DESC"#,
+        &metered,
         &members,
     )
     .fetch_all(&state.pg)
@@ -123,10 +129,11 @@ pub async fn power_analytics(
                   COUNT(*) AS "count!: i64"
            FROM audit_events a
            LEFT JOIN agents ag ON ag.id = (a.model_agent_traceability->>'agent_id')::uuid
-           WHERE a.action_type = 'chat.assistant.completed'
-             AND a.actor_user_id = ANY($1)
+           WHERE a.action_type = ANY($1)
+             AND a.actor_user_id = ANY($2)
            GROUP BY a.model_agent_traceability->>'agent_id', ag.name
            ORDER BY COUNT(*) DESC"#,
+        &metered,
         &members,
     )
     .fetch_all(&state.pg)

@@ -178,6 +178,44 @@ fn is_replayable(frame: &ServerFrame) -> bool {
     )
 }
 
+/// The greeting frame, built the same way wherever it is sent (on connect, and
+/// again after an in-band session refresh) so the two can never drift.
+async fn hello_frame(
+    state: &AppState,
+    socket_id: Uuid,
+    user_id: Uuid,
+    resume_token: String,
+) -> ServerFrame {
+    // The same capability names the application reads at startup, resolved for
+    // this user so a group restriction is reflected here too.
+    const ADVERTISED: [&str; 6] = [
+        "voice",
+        "voice_live",
+        "groundedness",
+        "code_interpreter",
+        "messaging",
+        "workflows",
+    ];
+    let mut features = Vec::new();
+    for f in ADVERTISED {
+        if crate::features::enabled_for_user(state, Some(user_id), f).await {
+            features.push(f.to_string());
+        }
+    }
+    // MCP is a deployment-wide switch with no per-user resolution, so it is read
+    // where the application reads it: straight from the boot configuration.
+    if state.boot.features.mcp {
+        features.push("mcp".to_string());
+    }
+    ServerFrame::Hello {
+        socket_id,
+        user_id,
+        resume_token,
+        server_version: env!("CARGO_PKG_VERSION").to_string(),
+        features,
+    }
+}
+
 async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, resumed: bool) {
     // Break-glass principals have no user identity and cannot own/drive chats.
     let Some(user_id) = ctx.user_id else {
@@ -195,7 +233,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
 
     // Send Hello directly on the sink, then (if this is a resume) replay the
     // buffered frames the previous socket may not have delivered.
-    let hello = ServerFrame::Hello { socket_id, user_id, resume_token }.to_json();
+    let hello = hello_frame(&state, socket_id, user_id, resume_token).await.to_json();
     let _ = sink.send(Message::Text(hello.into())).await;
     if resumed {
         if let Ok(frames) = session::replay_frames(&state.redis, user_id).await {
@@ -315,7 +353,30 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                     let resume_token = session::issue_resume(&state.redis, user_id)
                         .await
                         .unwrap_or_default();
-                    let _ = tx.send(ServerFrame::Hello { socket_id, user_id, resume_token }).await;
+                    let _ = tx
+                        .send(hello_frame(&state, socket_id, user_id, resume_token).await)
+                        .await;
+                }
+                Ok(ClientFrame::ClientHello { client_kind, client_version, capabilities }) => {
+                    // Recorded, not enforced: it identifies the connection for
+                    // telemetry and for marking what it creates. A connection
+                    // that never sends this stays what every client is today.
+                    let kind = client_kind.as_deref().unwrap_or("web");
+                    let _ = session::record_client(
+                        &state.redis,
+                        socket_id,
+                        kind,
+                        client_version.as_deref().unwrap_or(""),
+                        &capabilities,
+                    )
+                    .await;
+                    tracing::debug!(%socket_id, client_kind = %kind, "client identified itself");
+                }
+                Ok(ClientFrame::Unknown) => {
+                    // A client newer than this server. Nothing to do, and
+                    // nothing worth telling the user: silence is the compatible
+                    // answer.
+                    tracing::warn!(%socket_id, "ignoring an unrecognised client frame");
                 }
                 Ok(ClientFrame::GroupSend { chat_id, content, mentions }) => {
                     // Reliable team-chat send on the multiplexed socket; fan-out
@@ -437,12 +498,12 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                     let _ = tx.send(ServerFrame::Pong).await;
                 }
                 Err(e) => {
-                    let _ = tx
-                        .send(ServerFrame::ChatError {
-                            turn_id: None,
-                            message: format!("bad frame: {e}"),
-                        })
-                        .await;
+                    // Malformed JSON, now that an unrecognised frame type is a
+                    // variant of its own. Logged rather than sent back: the
+                    // client renders an error frame into the conversation, and
+                    // a transport-level fault is not something the person
+                    // typing caused or can act on.
+                    tracing::warn!(%socket_id, error = %e, "discarding an unparseable client frame");
                 }
             },
             Message::Ping(_) => {

@@ -25,7 +25,8 @@
                 "deep_research",
                 "audit_checkpoint",
                 "mcp_health",
-                "reindex_embeddings"
+                "reindex_embeddings",
+                "api_chat_cleanup"
               ]
             }
           }

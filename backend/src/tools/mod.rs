@@ -1871,8 +1871,8 @@ mod tests {
 
     #[test]
     fn code_interpreter_is_capability_gated() {
-        let off = FeaturesConfig { code_interpreter: false, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
-        let on = FeaturesConfig { code_interpreter: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
+        let off = FeaturesConfig { code_interpreter: false, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
+        let on = FeaturesConfig { code_interpreter: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
         assert!(!host_enabled("code_interpreter", &off));
         assert!(host_enabled("code_interpreter", &on));
         // Ordinary tools are always host-enabled.

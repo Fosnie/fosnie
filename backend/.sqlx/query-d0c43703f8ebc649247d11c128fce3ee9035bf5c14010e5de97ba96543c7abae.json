@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT model_agent_traceability->>'model' AS \"model?: String\",\n                  COALESCE(SUM((token_usage->>'prompt_tokens')::bigint), 0)::bigint AS \"prompt_tokens!: i64\",\n                  COALESCE(SUM((token_usage->>'completion_tokens')::bigint), 0)::bigint AS \"completion_tokens!: i64\",\n                  COUNT(*) AS \"count!: i64\"\n           FROM audit_events\n           WHERE action_type = 'chat.assistant.completed'\n           GROUP BY model_agent_traceability->>'model'\n           ORDER BY COUNT(*) DESC",
+  "query": "SELECT model_agent_traceability->>'model' AS \"model?: String\",\n                  COALESCE(SUM((token_usage->>'prompt_tokens')::bigint), 0)::bigint AS \"prompt_tokens!: i64\",\n                  COALESCE(SUM((token_usage->>'completion_tokens')::bigint), 0)::bigint AS \"completion_tokens!: i64\",\n                  COUNT(*) AS \"count!: i64\"\n           FROM audit_events\n           WHERE action_type = ANY($1)\n           GROUP BY model_agent_traceability->>'model'\n           ORDER BY COUNT(*) DESC",
   "describe": {
     "columns": [
       {
@@ -29,7 +29,9 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "TextArray"
+      ]
     },
     "nullable": [
       null,
@@ -38,5 +40,5 @@
       null
     ]
   },
-  "hash": "1a1cb3ae1cfe8c065d5df9de357c56ef75d0d05613a3da146ac21c36b696ce17"
+  "hash": "d0c43703f8ebc649247d11c128fce3ee9035bf5c14010e5de97ba96543c7abae"
 }

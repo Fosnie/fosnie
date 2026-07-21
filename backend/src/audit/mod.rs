@@ -42,6 +42,17 @@ const CHAIN_LOCK_KEY: i64 = 0x5041_4941_5544_4954u64 as i64;
 /// Domain-separation tag — bump if the canonical serialisation ever changes.
 const HASH_DOMAIN: &[u8] = b"pai.audit.chain.v1";
 
+/// The actions whose rows carry `token_usage`, and therefore the ones every
+/// usage rollup must aggregate over.
+///
+/// They stay separate action names rather than one shared name: a chat turn
+/// points at a conversation and an API completion has none, so collapsing them
+/// would produce rows that misdescribe themselves, and action names are a
+/// durable contract for exports and downstream monitoring. Keeping the list
+/// here instead is what stops a rollup quietly omitting one of them.
+pub const METERED_COMPLETION_ACTIONS: [&str; 2] =
+    ["chat.assistant.completed", "api.completion.finished"];
+
 /// Optional Ed25519 signing key. Set once at boot from
 /// `BootConfig.audit_signing_key`; absent = unsigned (hash-chain only).
 static SIGNING_KEY: std::sync::OnceLock<Option<ed25519_dalek::SigningKey>> =

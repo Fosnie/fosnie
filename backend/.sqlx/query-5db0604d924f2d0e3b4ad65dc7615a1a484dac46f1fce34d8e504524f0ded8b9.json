@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT a.actor_user_id, u.email AS \"email?\",\n                  COALESCE(SUM((a.token_usage->>'prompt_tokens')::bigint), 0)::bigint AS \"prompt_tokens!: i64\",\n                  COALESCE(SUM((a.token_usage->>'completion_tokens')::bigint), 0)::bigint AS \"completion_tokens!: i64\",\n                  COUNT(*) AS \"count!: i64\"\n           FROM audit_events a\n           LEFT JOIN users u ON u.id = a.actor_user_id\n           WHERE a.action_type = 'chat.assistant.completed'\n             AND a.actor_user_id = ANY($1)\n           GROUP BY a.actor_user_id, u.email\n           ORDER BY COUNT(*) DESC",
+  "query": "SELECT a.actor_user_id, u.email AS \"email?\",\n                  COALESCE(SUM((a.token_usage->>'prompt_tokens')::bigint), 0)::bigint AS \"prompt_tokens!: i64\",\n                  COALESCE(SUM((a.token_usage->>'completion_tokens')::bigint), 0)::bigint AS \"completion_tokens!: i64\",\n                  COUNT(*) AS \"count!: i64\"\n           FROM audit_events a\n           LEFT JOIN users u ON u.id = a.actor_user_id\n           WHERE a.action_type = ANY($1)\n             AND a.actor_user_id = ANY($2)\n           GROUP BY a.actor_user_id, u.email\n           ORDER BY COUNT(*) DESC",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,7 @@
     ],
     "parameters": {
       "Left": [
+        "TextArray",
         "UuidArray"
       ]
     },
@@ -57,5 +58,5 @@
       null
     ]
   },
-  "hash": "7bf123d59283e64d05ba491527ee948d8a5ecd4941404b1b61f7299b3b744845"
+  "hash": "5db0604d924f2d0e3b4ad65dc7615a1a484dac46f1fce34d8e504524f0ded8b9"
 }

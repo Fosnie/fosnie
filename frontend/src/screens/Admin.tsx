@@ -83,6 +83,8 @@ import {
   type CustomToolEntry,
   type CustomToolInput,
   useAdminUsers,
+  useUserApiKeys,
+  adminRevokeApiKey,
   useAgents,
   useAnalytics,
   useGroundednessAnalytics,
@@ -260,10 +262,55 @@ function OverviewDashboard({ selfId }: { selfId?: string }) {
 
 
 // ── Users ─────────────────────────────────────────────────────────────────────
+// A user's platform API keys, on demand. Read-and-revoke only: the secret is
+// unrecoverable for an administrator exactly as it is for its owner, so the
+// useful admin actions are seeing that keys exist and withdrawing one.
+function UserApiKeys({ userId }: { userId: string }) {
+  const keys = useUserApiKeys(userId);
+  const { busy, run } = useBusy();
+  const live = (keys.data ?? []).filter((k) => !k.revoked_at);
+
+  if (keys.isLoading) return <span className="text-xs text-slate/60">Loading…</span>;
+  if (live.length === 0) return <span className="text-xs text-slate/60">No active keys.</span>;
+  return (
+    <div className="flex flex-col gap-1">
+      {live.map((k) => (
+        <div key={k.id} className="flex items-center gap-2 text-xs">
+          <span>{k.name}</span>
+          <span className="font-mono text-slate/60">{k.display_prefix}…</span>
+          <span className="text-slate/60">
+            last used {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "never"}
+          </span>
+          <button
+            className={BTN_DANGER}
+            disabled={!!busy}
+            onClick={async () => {
+              if (
+                await confirmDialog({
+                  danger: true,
+                  title: "Revoke this key?",
+                  body: `Anything using "${k.name}" stops working immediately. This cannot be undone.`,
+                  confirmLabel: "Revoke key",
+                })
+              )
+                run("Revoke key", () => adminRevokeApiKey(userId, k.id).then(() => keys.refetch()), "Key revoked.");
+            }}
+          >
+            Revoke
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function UsersSection({ selfId }: { selfId?: string }) {
   const qc = useQueryClient();
   const users = useAdminUsers();
   const { busy, run } = useBusy();
+  const who = useWhoami();
+  const publicApi = !!who.data?.capabilities?.public_api;
+  const [openKeys, setOpenKeys] = useState<string | null>(null);
   const refresh = () => qc.invalidateQueries({ queryKey: ["admin-users"] });
 
   return (
@@ -283,6 +330,7 @@ function UsersSection({ selfId }: { selfId?: string }) {
               <th className={TH}>Role</th>
               <th className={TH}>Status</th>
               <th className={TH}>MFA</th>
+              {publicApi && <th className={TH}>API keys</th>}
               <th className={TH}></th>
             </tr>
           </thead>
@@ -297,6 +345,16 @@ function UsersSection({ selfId }: { selfId?: string }) {
                 <td className={TD}><Badge tone={u.role.includes("admin") ? "gold" : "slate"}>{u.role}</Badge></td>
                 <td className={TD}>{u.deactivated ? <Badge tone="red">deactivated</Badge> : <Badge tone="green">active</Badge>}</td>
                 <td className={TD}>{u.mfa_enabled ? <Badge tone="green">on</Badge> : <Badge tone="slate">off</Badge>}</td>
+                {publicApi && (
+                  <td className={TD}>
+                    <button
+                      className={BTN2}
+                      onClick={() => setOpenKeys((cur) => (cur === u.id ? null : u.id))}
+                    >
+                      {openKeys === u.id ? "Hide" : "View"}
+                    </button>
+                  </td>
+                )}
                 <td className={TD}>
                   {u.id === selfId ? (
                     <span className="text-sm text-slate/60">you</span>
@@ -326,6 +384,14 @@ function UsersSection({ selfId }: { selfId?: string }) {
             ))}
           </tbody>
         </table>
+      )}
+      {openKeys && (
+        <div className="mt-3 rounded border border-slate/20 p-3">
+          <div className="mb-2 text-xs text-slate/70">
+            API keys for {users.data?.find((u) => u.id === openKeys)?.email}
+          </div>
+          <UserApiKeys userId={openKeys} />
+        </div>
       )}
     </div>
   );
