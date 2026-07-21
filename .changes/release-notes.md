@@ -1,6 +1,7 @@
 ### Added
 
-- Added PowerPoint (.pptx) generation: editable 16:9 decks with native text, tables, charts and speaker notes.
-- Deep Research now checks each report section's evidence before writing and runs a targeted search to fill the gaps, so under-supported sections get real sources instead of padding.
+- Added speculative library search to live voice: the knowledge-base search now starts from the partial transcript while the speaker is still talking, so a grounded reply begins sooner.
+- Added an OpenAI-compatible API at `/v1`, authenticated by platform API keys minted in Profile: address a configured model directly, or an agent to answer from your own libraries.
+- Added an artefact panel: generated documents open beside the conversation with a preview per file type, and download stays one click away.
 
-Full notes: https://docs.fosnie.dev/changelog/v0.3.0
+Full notes: https://docs.fosnie.dev/changelog/v0.4.0
