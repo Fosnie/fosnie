@@ -86,27 +86,29 @@ async fn byok_gate_isolation_and_revert() {
     sqlx::query("INSERT INTO config_settings (key, value, value_type, scope) VALUES ('providers.user_byok_enabled','false','bool','global') ON CONFLICT (key) DO UPDATE SET value='false'")
         .execute(&pg).await.unwrap();
 
-    // OFF: GET works (read-only), PUT is refused.
+    // OFF: GET works (read-only), a BYOK write (create) is refused.
     let cfg: serde_json::Value = get(a).await.unwrap().json().await.unwrap();
     assert_eq!(cfg["user_byok_enabled"], false);
-    let put_off = api
-        .put(format!("{base}/api/me/providers/llm"))
+    let create_off = api
+        .post(format!("{base}/api/me/providers/llm"))
         .header("x-test-user", a.to_string())
-        .json(&serde_json::json!({ "base_url": "https://a.example/v1", "enabled": true }))
+        .json(&serde_json::json!({ "label": "A", "base_url": "https://a.example/v1", "enabled": true }))
         .send().await.unwrap();
-    assert_eq!(put_off.status(), 403, "BYOK off → PUT refused");
+    assert_eq!(create_off.status(), 403, "BYOK off → create refused");
 
     // Enable BYOK via the runtime override.
     sqlx::query("INSERT INTO config_settings (key, value, value_type, scope) VALUES ('providers.user_byok_enabled','true','bool','global') ON CONFLICT (key) DO UPDATE SET value='true'")
         .execute(&pg).await.unwrap();
 
-    // A sets its own LLM provider + key.
-    let put_on = api
-        .put(format!("{base}/api/me/providers/llm"))
+    // A creates its own named LLM provider + key. The first row at a scope becomes
+    // its default, so it resolves immediately.
+    let create_on = api
+        .post(format!("{base}/api/me/providers/llm"))
         .header("x-test-user", a.to_string())
-        .json(&serde_json::json!({ "base_url": "https://a.example/v1", "model": "claude-a", "api_key": "sk-a", "enabled": true }))
+        .json(&serde_json::json!({ "label": "A", "base_url": "https://a.example/v1", "model": "claude-a", "api_key": "sk-a", "enabled": true }))
         .send().await.unwrap();
-    assert_eq!(put_on.status(), 200);
+    assert_eq!(create_on.status(), 200);
+    let a_row_id = create_on.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
 
     // A's GET shows source=user + masked key.
     let av: serde_json::Value = get(a).await.unwrap().json().await.unwrap();
@@ -130,8 +132,8 @@ async fn byok_gate_isolation_and_revert() {
     assert_eq!(b_llm["api_key_set"], false);
     assert!(b_llm["base_url"].is_null());
 
-    // A clears it → reverts to default.
-    let del = api.delete(format!("{base}/api/me/providers/llm")).header("x-test-user", a.to_string()).send().await.unwrap();
+    // A removes its row → reverts to default.
+    let del = api.delete(format!("{base}/api/me/providers/llm/{a_row_id}")).header("x-test-user", a.to_string()).send().await.unwrap();
     assert_eq!(del.status(), 200);
     let av2: serde_json::Value = get(a).await.unwrap().json().await.unwrap();
     let a_llm2 = av2["providers"].as_array().unwrap().iter().find(|p| p["role"] == "llm").unwrap();
