@@ -113,6 +113,9 @@ pub async fn run(
                 None,
                 None,
                 None,
+                // No speculative retrieval on the API path: it has no partial
+                // transcript to speculate from.
+                None,
                 &tx,
                 cancel,
             )

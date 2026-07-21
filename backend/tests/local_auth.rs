@@ -95,6 +95,11 @@ async fn local_auth_end_to_end() {
     let anon = api.get(format!("{base}/api/whoami")).send().await.unwrap();
     assert_eq!(anon.status(), 401, "no session → unauthorized");
 
+    // Self-registration past the bootstrap admin is closed by default; open it via
+    // the runtime knob so B can self-register (cleaned up at the end).
+    sqlx::query("INSERT INTO config_settings (key, value, value_type, scope) VALUES ('auth.allow_registration','true','bool','global') ON CONFLICT (key) DO UPDATE SET value='true'")
+        .execute(&pg).await.unwrap();
+
     // Register user B → always a plain user (an admin now exists).
     let email_b = uniq_email();
     let rb = api
@@ -187,9 +192,12 @@ async fn local_auth_end_to_end() {
     }
     assert!(saw_429, "repeated failed logins must trip the rate limit (429)");
 
-    // Cleanup the rows this test created.
+    // Cleanup the rows and the runtime knob this test set.
     let _ = sqlx::query("DELETE FROM users WHERE email = ANY($1)")
         .bind(vec![email_a, email_b])
+        .execute(&pg)
+        .await;
+    let _ = sqlx::query("DELETE FROM config_settings WHERE key = 'auth.allow_registration'")
         .execute(&pg)
         .await;
 }
