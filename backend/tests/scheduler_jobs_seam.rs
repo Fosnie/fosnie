@@ -69,6 +69,6 @@ async fn injected_registrar_is_consumed() {
 async fn core_jobs_register_host_set() {
     let mut reg = JobRegistry::default();
     CoreJobs.register(&mut reg);
-    assert_eq!(reg.periodic.len(), 3, "Core host periodic jobs (audit-retention, mcp-health, artefact-cleanup); checkpoint + moderation-retention are Enterprise");
+    assert_eq!(reg.periodic.len(), 4, "Core host periodic jobs (audit-retention, mcp-health, artefact-cleanup, api-chat-cleanup); checkpoint + moderation-retention are Enterprise");
     assert!(reg.task_handler("audit_checkpoint").is_none(), "checkpoint is an Enterprise-only task handler — Core registers none");
 }

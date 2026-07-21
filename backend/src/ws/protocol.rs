@@ -22,7 +22,8 @@ use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// Frames the client sends. Unknown fields (e.g. `version`) are ignored.
+/// Frames the client sends. Unknown fields (e.g. `version`) are ignored, and so
+/// is an entirely unknown frame type — see [`ClientFrame::Unknown`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientFrame {
@@ -132,8 +133,38 @@ pub enum ClientFrame {
     /// Streaming dictation: close the session.
     #[serde(rename = "voice.dictate.stop")]
     VoiceDictateStop,
+    /// Optional first frame: who is on the other end.
+    ///
+    /// Clients are not all upgraded together — the web application ships with
+    /// the instance, anything installed does not — so the connection states its
+    /// kind, its version and what it can do, and the server answers with the
+    /// same about itself. Nothing is enforced on either side yet; this exists so
+    /// that when something does depend on it, the channel is already there and
+    /// old connections are already describing themselves.
+    ///
+    /// A connection that never sends this is treated exactly as the web
+    /// application, which is what every existing client is.
+    #[serde(rename = "client.hello")]
+    ClientHello {
+        /// `web` | `desktop`. Absent is read as `web`.
+        #[serde(default)]
+        client_kind: Option<String>,
+        #[serde(default)]
+        client_version: Option<String>,
+        /// Free-form capability names the client claims. Advisory only.
+        #[serde(default)]
+        capabilities: Vec<String>,
+    },
     #[serde(rename = "ping")]
     Ping,
+    /// Any frame type this server does not know.
+    ///
+    /// Present so that a newer client talking to an older server is a non-event:
+    /// the frame is logged and dropped, the connection lives on. Without it the
+    /// deserialiser fails on the whole frame and the only honest thing left to
+    /// do is complain to the user about a message they did not send.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Frames the server sends. Serialised wrapped in [`Envelope`] to carry `version`.
@@ -145,6 +176,12 @@ pub enum ServerFrame {
         socket_id: Uuid,
         user_id: Uuid,
         resume_token: String,
+        /// This build's version, so a client can tell what it is talking to.
+        server_version: String,
+        /// The capabilities this instance has switched on for this user. The
+        /// same set the application reads at startup, delivered here so a
+        /// non-browser client does not have to make a second call for it.
+        features: Vec<String>,
     },
     #[serde(rename = "chat.created")]
     ChatCreated { chat_id: Uuid },

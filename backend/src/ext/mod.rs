@@ -668,6 +668,7 @@ impl HostFeatureResolver {
             "code_interpreter" => state.boot.features.code_interpreter,
             "messaging" => state.boot.features.messaging,
             "workflows" => state.boot.features.workflows,
+            "public_api" => state.boot.features.public_api,
             // Edition capabilities: gated by edition, default off in Core.
             "white_label" => state.boot.features.white_label,
             "compliance_audit" => state.boot.features.compliance_audit,
@@ -682,8 +683,8 @@ impl HostFeatureResolver {
     }
 
     /// The host ceiling with a runtime override applied. `messaging`,
-    /// `workflows`, `voice`, `voice_live` and `groundedness` are admin-toggleable
-    /// at runtime (`config_settings["features.<name>"]`, bool) like BYOK; an
+    /// `workflows`, `voice`, `voice_live`, `groundedness` and `public_api` are
+    /// admin-toggleable at runtime (`config_settings["features.<name>"]`, bool) like BYOK; an
     /// absent row falls back to the boot flag. Other features keep the boot-only
     /// ceiling unchanged. When a runtime row is present it is authoritative — it
     /// can turn a feature ON even when the boot flag defaults off (so a
@@ -692,7 +693,7 @@ impl HostFeatureResolver {
     async fn global_runtime(state: &AppState, feature: &str) -> bool {
         if matches!(
             feature,
-            "messaging" | "workflows" | "voice" | "voice_live" | "groundedness"
+            "messaging" | "workflows" | "voice" | "voice_live" | "groundedness" | "public_api"
         ) {
             if let Ok(Some(e)) =
                 crate::config::runtime::get(&state.pg, &format!("features.{feature}")).await

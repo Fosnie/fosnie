@@ -131,6 +131,40 @@ pub async fn register_socket(
         .map_err(redis_err)
 }
 
+/// Record what kind of client owns a socket, from its opening handshake.
+///
+/// Stored beside the socket's own metadata and expiring with it: this is
+/// connection-scoped context (which client, which version, what it claims it can
+/// do), kept so the platform can tell where activity came from. Nothing reads it
+/// to make a decision yet, and a socket that never sends a handshake simply has
+/// no such fields.
+pub async fn record_client(
+    pool: &deadpool_redis::Pool,
+    socket_id: Uuid,
+    client_kind: &str,
+    client_version: &str,
+    capabilities: &[String],
+) -> Result<(), AppError> {
+    let mut c = conn(pool).await?;
+    redis::pipe()
+        .cmd("HSET")
+        .arg(sock_key(socket_id))
+        .arg("client_kind")
+        .arg(client_kind)
+        .arg("client_version")
+        .arg(client_version)
+        .arg("capabilities")
+        .arg(capabilities.join(","))
+        .ignore()
+        .cmd("EXPIRE")
+        .arg(sock_key(socket_id))
+        .arg(RESUME_TTL_SECS)
+        .ignore()
+        .query_async::<()>(&mut c)
+        .await
+        .map_err(redis_err)
+}
+
 /// Mint a resume token bound to the user; TTL = the resume window.
 pub async fn issue_resume(
     pool: &deadpool_redis::Pool,

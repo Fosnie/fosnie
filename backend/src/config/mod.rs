@@ -219,6 +219,16 @@ pub struct FeaturesConfig {
     /// `whoami.capabilities.messaging`.
     #[serde(default = "default_true")]
     pub messaging: bool,
+    /// The OpenAI-compatible programmatic surface (`/v1`) and the platform API
+    /// keys that authenticate it. A presence capability like `messaging`/`mcp`
+    /// (NOT an edition gate): when false both `/v1` and key management answer
+    /// 404, so an instance that never wants a machine door simply has none.
+    /// Default **on**: the surface is inert until a user mints a key, and a key
+    /// only ever carries that user's existing rights. Toggleable at runtime
+    /// (`config_settings["features.public_api"]`) as a kill-switch, and
+    /// restrictable per user group. Surfaced via `whoami.capabilities.public_api`.
+    #[serde(default = "default_true")]
+    pub public_api: bool,
     /// Edition capability — white-label branding (replace product identity: logo,
     /// name, colours). Off by default in Core (the branding section is hidden and
     /// the write endpoints 403); a `fosnie-enterprise` edition/licence resolver flips
@@ -649,7 +659,7 @@ impl Default for BootConfig {
                 client_secret: String::new(),
             },
             log_level: "info".into(),
-            features: FeaturesConfig { code_interpreter: false, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: true, messaging: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false },
+            features: FeaturesConfig { code_interpreter: false, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: true, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false },
             tool_timeout_secs: HashMap::new(),
             code_interpreter_vm: CodeInterpreterConfig::default(),
             code_interpreter: CodeInterpreterBackendConfig::default(),
@@ -824,6 +834,13 @@ mod tests {
     fn messaging_defaults_on() {
         // Teams + DMs are Core collaboration table-stakes; on unless toggled off.
         assert!(BootConfig::default().features.messaging);
+    }
+
+    #[test]
+    fn public_api_defaults_on() {
+        // The programmatic surface is inert until a user mints a key, so it ships
+        // present rather than requiring an .env edit before a first integration.
+        assert!(BootConfig::default().features.public_api);
     }
 
     #[test]

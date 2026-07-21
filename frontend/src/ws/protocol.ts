@@ -69,10 +69,17 @@ export type ClientFrame =
   // transcripts return as voice.partial (interim) + voice.transcript (settled).
   | { type: "voice.dictate.start" }
   | { type: "voice.dictate.stop" }
-  | { type: "ping" };
+  // Optional opening frame: which client this is. Nothing is enforced on it; a
+  // connection that omits it is treated as the web application.
+  | { type: "client.hello"; client_kind: string; client_version: string; capabilities: string[] }
+  | { type: "ping" }
+  // Forward compatibility: a frame type this build does not know about is still
+  // a valid thing to send. The server ignores unrecognised types rather than
+  // failing the connection.
+  | { type: string; [k: string]: unknown };
 
 export type ServerFrame =
-  | { type: "hello"; socket_id: string; user_id: string; resume_token: string }
+  | { type: "hello"; socket_id: string; user_id: string; resume_token: string; server_version?: string; features?: string[] }
   | { type: "chat.created"; chat_id: string }
   | { type: "chat.started"; turn_id: string; chat_id: string; message_id: string }
   | { type: "chat.token"; turn_id: string; delta: string }

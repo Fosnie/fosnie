@@ -43,6 +43,10 @@ pub struct ChatSummary {
     /// be re-opened prefilled ('Refine'). NULL for non-research chats.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub research_params: Option<serde_json::Value>,
+    /// Which client started this conversation (`web` | `desktop`). Present so an
+    /// interface can mark where a conversation came from; `api` never appears
+    /// here because that traffic is excluded from the list.
+    pub origin: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -67,9 +71,13 @@ pub async fn list_chats(
             return Err(AppError::Validation(format!("unknown chat mode '{other}'")));
         }
     };
+    // Conversations driven by an external application are excluded rather than
+    // "only web included": a conversation from any other first-class client
+    // belongs in this list, marked by its origin. Only machine traffic is kept
+    // out, and it stays reachable by direct URL for debugging.
     let rows = sqlx::query!(
-        "SELECT id, title, project_id, agent_id, created_at, mode, research_params \
-         FROM chats WHERE owner_user_id = $1 AND archived_at IS NULL \
+        "SELECT id, title, project_id, agent_id, created_at, mode, research_params, origin \
+         FROM chats WHERE owner_user_id = $1 AND archived_at IS NULL AND origin <> 'api' \
            AND (($2::text IS NULL AND mode <> 'research') OR mode = $2) \
          ORDER BY created_at DESC",
         uid,
@@ -87,6 +95,7 @@ pub async fn list_chats(
                 created_at: r.created_at.format(&Rfc3339).unwrap_or_default(),
                 mode: r.mode,
                 research_params: r.research_params,
+                origin: r.origin,
             })
             .collect(),
     ))

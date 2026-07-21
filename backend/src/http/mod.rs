@@ -25,6 +25,7 @@
 
 pub mod agents;
 pub mod announcements;
+pub mod api_keys;
 pub mod artefacts;
 pub mod auth;
 pub mod automations;
@@ -58,6 +59,7 @@ pub mod tabular;
 pub mod telemetry;
 pub mod tools;
 pub mod users_admin;
+pub mod v1;
 pub mod voice;
 pub mod voice_admin;
 pub mod workflows;
@@ -223,6 +225,20 @@ pub fn router(
                     .layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
             )
             .route("/api/users/{id}/avatar", get(profile::get_avatar))
+            // Platform API keys: minted from the browser, used by external apps.
+            .route(
+                "/api/me/api-keys",
+                post(api_keys::create_key).get(api_keys::list_keys),
+            )
+            .route("/api/me/api-keys/{id}", delete(api_keys::revoke_key))
+            .route(
+                "/api/admin/users/{id}/api-keys",
+                get(api_keys::admin_list_keys),
+            )
+            .route(
+                "/api/admin/users/{id}/api-keys/{key_id}",
+                delete(api_keys::admin_revoke_key),
+            )
             // Self-serve account deletion (soft-archive; emits `account.archived`).
             .route("/api/me/account", axum::routing::delete(profile::delete_account))
             // Agent runs: list (per chat) + pending-approval inbox + approve/reject + trajectory.
@@ -577,12 +593,35 @@ pub fn router(
         app = app.fallback_service(serve_dir);
     }
 
-    app.layer(axum::middleware::from_fn(spa_ok_status))
+    let csp_v1 = csp_value.clone();
+    let app = app
+        .layer(axum::middleware::from_fn(spa_ok_status))
         .layer(axum::middleware::from_fn(move |req, next| {
             security_headers(csp_value.clone(), req, next)
         }))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::new())
+        .layer(CorsLayer::new());
+
+    // The OpenAI-compatible surface is merged AFTER the global stack, so it
+    // carries its own. Two reasons it cannot simply live inside:
+    //  * the global `CorsLayer` denies cross-origin and answers preflight itself
+    //    without calling any inner service, so a permissive layer mounted under
+    //    it could never run — and `/v1` needs the option of allowing browser
+    //    tooling (see the module's CORS middleware);
+    //  * `spa_ok_status` and the SPA fallback belong to the app; an unmatched
+    //    `/v1` path must 404 as JSON, never as the index page.
+    // It keeps `security_headers` (HSTS in particular belongs on an API surface)
+    // and tracing.
+    let v1 = v1::router(&state)
+        .route_layer(axum::middleware::from_fn(http_metrics))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), v1::cors))
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn(move |req, next| {
+            security_headers(csp_v1.clone(), req, next)
+        }))
+        .layer(TraceLayer::new_for_http());
+
+    app.merge(v1)
 }
 
 /// Normalise the SPA deep-link/hard-reload status. The static fallback serves
@@ -594,6 +633,7 @@ async fn spa_ok_status(req: Request, next: Next) -> Response {
     let p = req.uri().path();
     let is_navigation = req.method() == axum::http::Method::GET
         && !p.starts_with("/api")
+        && !p.starts_with("/v1")
         && !p.starts_with("/ws")
         && !p.starts_with("/health")
         && !p.starts_with("/metrics");
@@ -755,6 +795,10 @@ async fn whoami(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> impl 
             .await
             .has_streaming_stt()
     };
+    // Core presence capability: the OpenAI-compatible surface and its keys.
+    // Resolved per user (a group can have it switched off), so the SPA hides the
+    // Profile key management for exactly the people who cannot use it.
+    let public_api = state.features.enabled_for(&state, &ctx, "public_api").await;
     // Edition capability: white-label branding, resolved through the
     // FeatureResolver seam (host flag ∧ group-restrict) so the SPA hides the
     // Enterprise-only branding section when off.
@@ -836,6 +880,7 @@ async fn whoami(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> impl 
             "groundedness_repair": groundedness_repair,
             "mcp": state.boot.features.mcp,
             "messaging": messaging,
+            "public_api": public_api,
             "white_label": white_label,
             "compliance_audit": compliance_audit,
             "moderation": moderation,

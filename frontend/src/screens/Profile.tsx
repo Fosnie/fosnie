@@ -41,6 +41,10 @@ import {
   useMyMcpConnections,
   connectMcpServer,
   disconnectMcpServer,
+  useMyApiKeys,
+  createApiKey,
+  revokeApiKey,
+  type CreatedApiKey,
   type MyProvider,
   type LlmProviderOption,
   type ProviderTestResult,
@@ -415,7 +419,161 @@ function MyProvidersSection() {
   );
 }
 
-type ProfileTab = "account" | "security" | "providers" | "connections" | "appearance" | "danger";
+// Keys that authenticate an external application AS this user. Deliberately a
+// separate tab from Providers: those are the credentials Fosnie uses to reach a
+// model provider, these are the credentials something else uses to reach Fosnie.
+// Confusing the two would be an easy way to paste the wrong secret somewhere.
+function ApiKeysSection() {
+  const keys = useMyApiKeys();
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState("");
+  const [expiry, setExpiry] = useState("");
+  const [fresh, setFresh] = useState<CreatedApiKey | null>(null);
+  const refresh = () => keys.refetch();
+
+  const live = (keys.data ?? []).filter((k) => !k.revoked_at);
+  const revoked = (keys.data ?? []).filter((k) => k.revoked_at);
+
+  const create = async () => {
+    setBusy(true);
+    try {
+      const days = expiry.trim() ? Number(expiry.trim()) : undefined;
+      if (days !== undefined && (!Number.isFinite(days) || days < 1)) {
+        toast("Expiry must be a number of days, or blank for no expiry.", { variant: "error" });
+        return;
+      }
+      const created = await createApiKey({ name: name.trim(), expires_in_days: days });
+      setFresh(created);
+      setName("");
+      setExpiry("");
+      refresh();
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string, label: string) => {
+    const ok = await confirmDialog({
+      danger: true,
+      title: "Revoke this key?",
+      body: `Anything still using "${label}" will stop working immediately. This cannot be undone; mint a new key instead.`,
+      confirmLabel: "Revoke key",
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await revokeApiKey(id);
+      refresh();
+      toast("Key revoked.", { variant: "success" });
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const when = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : "—");
+
+  return (
+    <div>
+      <div className="prof-card-title" style={{ marginBottom: 6 }}>Platform API keys</div>
+      <div className="ed-hint" style={{ marginBottom: 10 }}>
+        For connecting external applications to this instance. A key acts as you: it carries
+        your permissions and reaches the same libraries and agents you do. Point any
+        OpenAI-compatible client at this instance and use the key as its API key.
+      </div>
+
+      {fresh && (
+        <div className="prof-card" style={{ marginBottom: 12, display: "block" }}>
+          <div className="row" style={{ gap: 6, marginBottom: 6 }}>
+            <Icon.Alert size={14} />
+            <strong>Copy this key now. It is not shown again.</strong>
+          </div>
+          <div className="mono" style={{ wordBreak: "break-all", fontSize: 12, marginBottom: 8 }}>
+            {fresh.token}
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-line sm"
+              onClick={() => {
+                navigator.clipboard.writeText(fresh.token).then(
+                  () => toast("Key copied.", { variant: "success" }),
+                  () => toast("Could not copy — select the key and copy it manually.", { variant: "error" }),
+                );
+              }}
+            >
+              <Icon.Copy size={14} /> Copy
+            </button>
+            <button type="button" className="btn btn-ghost sm" onClick={() => setFresh(null)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="prof-card" style={{ marginBottom: 12, display: "block" }}>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <input
+            className="field"
+            style={{ flex: "1 1 200px" }}
+            placeholder="What is this key for?"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <input
+            className="field"
+            style={{ flex: "0 1 170px" }}
+            placeholder="Expires in days (optional)"
+            value={expiry}
+            onChange={(e) => setExpiry(e.target.value)}
+          />
+          <button type="button" className="btn btn-gold sm" disabled={busy} onClick={create}>
+            <Icon.Key size={14} /> Create key
+          </button>
+        </div>
+      </div>
+
+      {live.length === 0 && !keys.isLoading && (
+        <div className="ed-hint">No keys yet.</div>
+      )}
+      {live.map((k) => (
+        <div key={k.id} className="prof-card" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{k.name}</div>
+            <div className="mono" style={{ opacity: 0.5, fontSize: 10 }}>
+              {k.display_prefix}… · created {when(k.created_at)} · last used {when(k.last_used_at)}
+              {k.expires_at ? ` · expires ${when(k.expires_at)}` : ""}
+            </div>
+          </div>
+          <button type="button" className="btn btn-ghost sm" disabled={busy} onClick={() => revoke(k.id, k.name)}>
+            <Icon.Trash size={14} />
+          </button>
+        </div>
+      ))}
+
+      {revoked.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div className="ed-hint" style={{ marginBottom: 6 }}>Revoked</div>
+          {revoked.map((k) => (
+            <div key={k.id} className="prof-card" style={{ marginBottom: 6, opacity: 0.55 }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div>{k.name}</div>
+                <div className="mono" style={{ opacity: 0.6, fontSize: 10 }}>
+                  {k.display_prefix}… · revoked {when(k.revoked_at)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ProfileTab = "account" | "security" | "providers" | "api-keys" | "connections" | "appearance" | "danger";
 
 export function Profile() {
   const nav = useNavigate();
@@ -431,6 +589,9 @@ export function Profile() {
   const connectorsEnabled = !!who.data?.capabilities?.enterprise_connectors;
   const mcpEnabled = !!who.data?.capabilities?.mcp;
   const connectionsTabEnabled = connectorsEnabled || mcpEnabled;
+  // The key surface follows the programmatic API: with it switched off there is
+  // nothing a key could be used for, so the tab disappears with it.
+  const publicApiEnabled = !!who.data?.capabilities?.public_api;
   const isLocalAuth = authMode() === "local";
   const fileRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState<string | null>(null);
@@ -517,6 +678,7 @@ export function Profile() {
     // Security (2FA + password) is a local-auth surface; Keycloak owns its own.
     ...(isLocalAuth ? ([["security", "Security"]] as [ProfileTab, string][]) : []),
     ...(byokEnabled ? ([["providers", "Providers"]] as [ProfileTab, string][]) : []),
+    ...(publicApiEnabled ? ([["api-keys", "API keys"]] as [ProfileTab, string][]) : []),
     ...(connectionsTabEnabled ? ([["connections", "Connections"]] as [ProfileTab, string][]) : []),
     ["appearance", "Appearance"],
     ["danger", "Danger zone"],
@@ -611,6 +773,9 @@ export function Profile() {
 
         {/* My Providers — per-user BYOK, only when the deployment enables it. */}
         {tab === "providers" && <MyProvidersSection />}
+
+        {/* Platform API keys — credentials for external applications. */}
+        {tab === "api-keys" && <ApiKeysSection />}
 
         {/* Connections — the caller's own DMS/mailbox OAuth connections (Enterprise). */}
         {tab === "connections" && <ConnectionsSection />}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM chats WHERE origin = 'api' AND created_at < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "675ff91e5d3fbf091676ea9fc976bbc9a4a5b130d9f2bf44f465bbfdba62a7a8"
+}

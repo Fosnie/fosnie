@@ -22,6 +22,7 @@
 //! login is keycloak-js (PKCE) + Bearer JWT — there is no server-side OIDC flow.
 //! Crate versions are pinned in `Cargo.toml`, updates gated by the auth test.
 
+pub mod api_key;
 pub mod breakglass;
 pub mod keycloak;
 pub mod local;

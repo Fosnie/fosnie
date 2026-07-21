@@ -84,7 +84,7 @@ export interface WhoAmI {
   /** Fine-grained admin permissions the caller holds (custom RBAC). Empty in Core
    *  → gate admin sections by `is_admin`. A scoped-only holding is `perm:scoped`. */
   permissions: string[];
-  capabilities: { code_interpreter: boolean; voice: boolean; voice_live: boolean; dictation_streaming: boolean; workflows: boolean; groundedness: boolean; groundedness_repair: boolean; mcp: boolean; messaging: boolean; white_label: boolean; compliance_audit: boolean; moderation: boolean; message_review: boolean; data_owner_approval: boolean; federated_sso: boolean; custom_rbac: boolean; enterprise_connectors: boolean; reasoning: ReasoningCapability };
+  capabilities: { code_interpreter: boolean; voice: boolean; voice_live: boolean; dictation_streaming: boolean; workflows: boolean; groundedness: boolean; groundedness_repair: boolean; mcp: boolean; messaging: boolean; public_api: boolean; white_label: boolean; compliance_audit: boolean; moderation: boolean; message_review: boolean; data_owner_approval: boolean; federated_sso: boolean; custom_rbac: boolean; enterprise_connectors: boolean; reasoning: ReasoningCapability };
   /** Live-voice client dials (present only when `capabilities.voice_live`). */
   voice_live_opts: { ptt_default: boolean; aec_required: boolean; silence_threshold_ms: number } | null;
 }
@@ -2199,6 +2199,9 @@ export interface ChatSummary {
   mode: string;
   /** Saved Deep Research request params (research mode only) for 'Refine'. */
   research_params?: ResearchRefineParams | null;
+  /** Which client started this conversation: "web" | "desktop". Programmatic
+   * conversations are never listed, so "api" does not appear here. */
+  origin?: string;
 }
 
 /** The persisted params of a Deep Research run, replayed by 'Refine'. */
@@ -2445,6 +2448,56 @@ export function useResearchChats(enabled = true) {
     queryFn: () => apiFetch<ChatSummary[]>("/api/chats?mode=research"),
     enabled,
   });
+}
+
+// --- Platform API keys -------------------------------
+
+/** A key the user has minted for an external application. The secret itself is
+ * returned once, by createApiKey, and is unrecoverable afterwards. */
+export interface ApiKey {
+  id: string;
+  name: string;
+  display_prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface CreatedApiKey extends ApiKey {
+  /** Shown once. Never returned again. */
+  token: string;
+}
+
+export function useMyApiKeys(enabled = true) {
+  return useQuery({
+    queryKey: ["api-keys"],
+    queryFn: () => apiFetch<ApiKey[]>("/api/me/api-keys"),
+    enabled,
+  });
+}
+
+export async function createApiKey(body: { name: string; expires_in_days?: number | null }) {
+  return apiFetch<CreatedApiKey>("/api/me/api-keys", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function revokeApiKey(id: string) {
+  return apiFetch<void>(`/api/me/api-keys/${id}`, { method: "DELETE" });
+}
+
+export function useUserApiKeys(userId: string | null) {
+  return useQuery({
+    queryKey: ["admin-api-keys", userId],
+    queryFn: () => apiFetch<ApiKey[]>(`/api/admin/users/${userId}/api-keys`),
+    enabled: !!userId,
+  });
+}
+
+export async function adminRevokeApiKey(userId: string, keyId: string) {
+  return apiFetch<void>(`/api/admin/users/${userId}/api-keys/${keyId}`, { method: "DELETE" });
 }
 
 // --- Deep Research -----------------------------------

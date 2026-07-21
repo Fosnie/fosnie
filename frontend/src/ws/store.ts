@@ -66,6 +66,19 @@ async function open() {
   sock.onopen = () => {
     attempts = 0;
     setStatus("open");
+    // Identify this client to the server. Advisory: the server records it and
+    // enforces nothing, and an older server that has never heard of the frame
+    // ignores it. Sent directly on the socket rather than through `send`, which
+    // checks a readiness flag this handler is what sets.
+    sock.send(
+      JSON.stringify({
+        version: 1,
+        type: "client.hello",
+        client_kind: "web",
+        client_version: typeof __APP_RELEASE__ !== "undefined" ? __APP_RELEASE__ : "",
+        capabilities: [],
+      }),
+    );
   };
   sock.onmessage = (ev) => {
     let frame: ServerFrame;

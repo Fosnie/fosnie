@@ -57,6 +57,7 @@ pub enum TaskType {
     DeepResearch,
     McpHealth,
     ReindexEmbeddings,
+    ApiChatCleanup,
 }
 
 impl TaskType {
@@ -78,6 +79,7 @@ impl TaskType {
             TaskType::DeepResearch => "deep_research",
             TaskType::McpHealth => "mcp_health",
             TaskType::ReindexEmbeddings => "reindex_embeddings",
+            TaskType::ApiChatCleanup => "api_chat_cleanup",
         }
     }
 
@@ -100,6 +102,7 @@ impl TaskType {
             "deep_research" => Some(TaskType::DeepResearch),
             "mcp_health" => Some(TaskType::McpHealth),
             "reindex_embeddings" => Some(TaskType::ReindexEmbeddings),
+            "api_chat_cleanup" => Some(TaskType::ApiChatCleanup),
             _ => None,
         }
     }
@@ -440,6 +443,15 @@ async fn handle(
                 Err(e) => Err(e.to_string()),
             }
         }
+        TaskType::ApiChatCleanup => match run_api_chat_cleanup(state).await {
+            Ok(n) => {
+                if n > 0 {
+                    tracing::info!(removed = n, "aged API conversations pruned");
+                }
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        },
         TaskType::AuditRetention => {
             match run_audit_retention(state).await {
                 Ok(n) => {
@@ -638,6 +650,36 @@ async fn run_artefact_cleanup(state: &AppState) -> Result<u64, crate::error::App
         removed += 1;
     }
     Ok(removed)
+}
+
+/// Delete conversations created by external applications once they are older
+/// than the configured retention.
+///
+/// Off by default (`api.chat_retention_days` = 0 keeps them indefinitely): the
+/// conversations are the caller's own record, so discarding them is a choice an
+/// operator makes rather than one made for them. When it is set, this is the
+/// only sweep that touches them — they are invisible in the chat lists, so
+/// nobody would ever tidy them by hand.
+async fn run_api_chat_cleanup(state: &AppState) -> Result<u64, crate::error::AppError> {
+    let days = crate::config::runtime::get(&state.pg, "api.chat_retention_days")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|e| e.value.parse::<i64>().ok())
+        .unwrap_or(0);
+    if days <= 0 {
+        return Ok(0);
+    }
+    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(days);
+    // Messages, artefacts and the rest cascade from the conversation row.
+    let n = sqlx::query!(
+        "DELETE FROM chats WHERE origin = 'api' AND created_at < $1",
+        cutoff
+    )
+    .execute(&state.pg)
+    .await?
+    .rows_affected();
+    Ok(n)
 }
 
 /// Generate every (document × column) cell for a review via the Python pool,
