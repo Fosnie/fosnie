@@ -738,7 +738,7 @@ async fn run_agent_action(
     let turn_id = Uuid::now_v7();
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
     crate::chat::run_turn(
-        state, &ctx, turn_id, None, project_id, agent_id, prompt, Vec::new(), kb_ids, true, None, None, None, &tx, cancel,
+        state, &ctx, turn_id, None, project_id, agent_id, prompt, Vec::new(), kb_ids, true, None, None, None, None, &tx, cancel,
     )
     .await;
     drop(tx); // close the channel so the drain finishes

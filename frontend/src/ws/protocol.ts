@@ -102,7 +102,7 @@ export type ServerFrame =
   | { type: "pong" }
   // Live / streaming voice. The transcript + answer ride the relayed chat.* frames;
   // these carry the live state, the partial/final transcript, and the spoken reply.
-  | { type: "voice.state"; state: string }
+  | { type: "voice.state"; state: string; retrieving?: boolean }
   | { type: "voice.partial"; text: string }
   | { type: "voice.final"; text: string }
   | { type: "voice.transcript"; text: string }

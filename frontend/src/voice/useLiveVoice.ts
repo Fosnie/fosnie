@@ -51,6 +51,8 @@ export interface LiveVoice {
   active: boolean;
   state: VoiceState;
   partial: string;
+  /** A background search of the knowledge base is running for what is being said. */
+  retrieving: boolean;
   level: number;
   mode: VoiceMode;
   talking: boolean;
@@ -68,6 +70,7 @@ export function useLiveVoice(opts: UseLiveVoiceOpts): LiveVoice {
   const [active, setActive] = useState(false);
   const [state, setStateRaw] = useState<VoiceState>("idle");
   const [partial, setPartial] = useState("");
+  const [retrieving, setRetrieving] = useState(false);
   const [level, setLevel] = useState(0);
   const [mode, setModeState] = useState<VoiceMode>(opts.pttDefault === false ? "vad" : "ptt");
   const [talking, setTalking] = useState(false);
@@ -169,6 +172,7 @@ export function useLiveVoice(opts: UseLiveVoiceOpts): LiveVoice {
     setTalking(false);
     setActive(false);
     setPartial("");
+    setRetrieving(false);
     setLevel(0);
     setVState("idle");
   }, [closeCapture, setVState]);
@@ -216,9 +220,12 @@ export function useLiveVoice(opts: UseLiveVoiceOpts): LiveVoice {
     return wsStore.onFrame((f: ServerFrame) => {
       if (!activeRef.current) return;
       switch (f.type) {
-        case "voice.state":
-          setVState((f as { state?: string }).state as VoiceState);
+        case "voice.state": {
+          const s = f as { state?: string; retrieving?: boolean };
+          setVState(s.state as VoiceState);
+          setRetrieving(s.retrieving === true);
           break;
+        }
         case "voice.partial":
           setPartial((f as { text?: string }).text ?? "");
           break;
@@ -269,6 +276,7 @@ export function useLiveVoice(opts: UseLiveVoiceOpts): LiveVoice {
     active,
     state,
     partial,
+    retrieving,
     level,
     mode,
     talking,

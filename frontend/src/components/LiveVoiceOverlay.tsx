@@ -141,7 +141,17 @@ export function LiveVoiceOverlay({ live, messages, agentName, onSwitchToText }: 
         >
           <Icon.Mic size={48} style={{ color: meta.color }} />
         </div>
-        <div className="text-lg font-medium" style={{ color: meta.color }}>{meta.label}</div>
+        <div className="flex items-center gap-2 text-lg font-medium" style={{ color: meta.color }}>
+          {meta.label}
+          {/* A search of your Libraries is already running for what you are saying,
+              so the answer is ready sooner. Deliberately quiet: it is background
+              work, not something to act on. */}
+          {live.retrieving && (
+            <span className="animate-pulse text-xs font-normal" style={{ color: "var(--ink)" }}>
+              Searching your library...
+            </span>
+          )}
+        </div>
         <div className="min-h-[1.5rem] max-w-xl text-center text-sm" style={{ color: "var(--ink)" }}>
           {live.partial || (live.state === "speaking" ? agentName ?? "Assistant" : "")}
         </div>
