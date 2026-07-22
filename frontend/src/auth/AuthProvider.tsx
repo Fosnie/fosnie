@@ -14,13 +14,21 @@
 
 import { createContext, use, useEffect, useState, type ReactNode } from "react";
 import { initKeycloak, keycloak } from "@/auth/keycloak";
-import { authMode, loadAuthConfig, type AuthMode } from "@/auth/config";
+import { loadAuthConfig } from "@/auth/config";
+import {
+  apiUrl,
+  authMode,
+  configureInstance,
+  credentialsMode,
+  deviceMode,
+  type EffectiveAuthMode,
+} from "@/api/instance";
 import { queryClient } from "@/api/client";
 
 interface AuthState {
   ready: boolean;
   authenticated: boolean;
-  mode: AuthMode;
+  mode: EffectiveAuthMode;
   /** Keycloak SSO redirect (keycloak mode only). */
   login: () => void;
   logout: () => void;
@@ -42,7 +50,7 @@ const AuthContext = createContext<AuthState | null>(null);
 /** True if a local session cookie is currently valid (whoami succeeds). */
 async function hasLocalSession(): Promise<boolean> {
   try {
-    const res = await fetch("/api/whoami", { credentials: "include" });
+    const res = await fetch(apiUrl("/api/whoami"), { credentials: credentialsMode() });
     return res.ok;
   } catch {
     return false;
@@ -51,10 +59,10 @@ async function hasLocalSession(): Promise<boolean> {
 
 /** POST JSON with the session cookie; return the parsed body. Throws on non-ok. */
 async function postAuthJson<T = unknown>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    credentials: "include",
+    credentials: credentialsMode(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -69,11 +77,16 @@ async function postAuth(path: string, body: unknown): Promise<void> {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [ready, setReady] = useState(false);
-  const [authenticated, setAuthenticated] = useState(false);
-  const [mode, setMode] = useState<AuthMode>("keycloak");
+  // A paired device is authenticated the moment it has its token: there is no
+  // login flow to run and no deployment auth config to consult, so it boots
+  // straight into the app.
+  const device = deviceMode();
+  const [ready, setReady] = useState(device);
+  const [authenticated, setAuthenticated] = useState(device);
+  const [mode, setMode] = useState<EffectiveAuthMode>(() => authMode());
 
   useEffect(() => {
+    if (device) return;
     let alive = true;
     loadAuthConfig().then((cfg) => {
       if (!alive) return;
@@ -89,7 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [device]);
 
   const value: AuthState = {
     ready,
@@ -97,7 +110,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     mode,
     login: () => void keycloak.login(),
     logout: () => {
-      if (authMode() === "keycloak") {
+      if (authMode() === "device") {
+        // Nothing server-side to end: the token stays valid until the device is
+        // signed out from the web (Profile → Devices). Dropping it and starting
+        // the page afresh returns this client to how it launches — no instance
+        // configured, nothing held in memory.
+        configureInstance(null);
+        queryClient.clear();
+        window.location.reload();
+      } else if (authMode() === "keycloak") {
         void keycloak.logout({ redirectUri: window.location.origin });
       } else {
         void postAuth("/api/auth/logout", {}).finally(() => {

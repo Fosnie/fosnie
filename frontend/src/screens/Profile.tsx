@@ -61,7 +61,8 @@ import { PanelHead } from "@/components/editor";
 import { Icon } from "@/components/icons";
 import { useAppearance } from "@/app/AppearanceContext";
 import { useAuth } from "@/auth/AuthProvider";
-import { authConfig, authMode } from "@/auth/config";
+import { authConfig } from "@/auth/config";
+import { authMode } from "@/api/instance";
 
 // Minimum new-password length. The backend (`password_min_len`) is authoritative
 // and delivers it via /api/auth/config; fall back to 10 (the backend default)

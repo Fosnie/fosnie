@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "build:enterprise": "set \"EDITION_ENTRY=../../fosnie-enterprise/frontend/index.tsx\" && tsc -b && vite build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "preview": "vite preview",
     "test:visual": "playwright test",
     "test:visual:update": "playwright test --update-snapshots"
@@ -40,6 +41,7 @@
     "babel-plugin-react-compiler": "^1.0.0",
     "tailwindcss": "^4.3.0",
     "typescript": "^6.0.3",
-    "vite": "^8.0.14"
+    "vite": "^8.0.14",
+    "vitest": "^3.2.7"
   }
 }

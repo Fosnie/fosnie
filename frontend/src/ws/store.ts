@@ -14,6 +14,7 @@
 
 import { useSyncExternalStore } from "react";
 import { apiFetch } from "@/api/client";
+import { deviceMode, wsBase } from "@/api/instance";
 import type { ClientFrame, ServerFrame, WsStatus } from "@/ws/protocol";
 
 // One multiplexed socket per user. Status is exposed via
@@ -36,11 +37,6 @@ const frameHandlers = new Set<FrameHandler>();
 function setStatus(s: WsStatus) {
   status = s;
   statusListeners.forEach((l) => l());
-}
-
-function wsBase(): string {
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/ws`;
 }
 
 async function open() {
@@ -74,7 +70,7 @@ async function open() {
       JSON.stringify({
         version: 1,
         type: "client.hello",
-        client_kind: "web",
+        client_kind: deviceMode() ? "desktop" : "web",
         client_version: typeof __APP_RELEASE__ !== "undefined" ? __APP_RELEASE__ : "",
         capabilities: [],
       }),

@@ -785,6 +785,7 @@ fn desktop_cors(origins: &[String]) -> CorsLayer {
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::PUT,
             axum::http::Method::PATCH,
             axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,

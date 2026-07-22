@@ -24,6 +24,7 @@ import {
   createNote,
   deleteNote,
   fetchGroupMessages,
+  messageAttachmentBlob,
   messageAttachmentUrl,
   removeGroupChatMember,
   sendGroupMessageRest,
@@ -41,6 +42,7 @@ import {
   type MessageAttachment,
   type ReactionAgg,
 } from "@/api/client";
+import { saveBlob } from "@/api/instance";
 import { Avatar } from "@/components/Avatar";
 import { Icon } from "@/components/icons";
 import { Dropdown } from "@/components/Dropdown";
@@ -392,8 +394,10 @@ function AttachmentView({ att }: { att: MessageAttachment }) {
     }
     return () => { cancelled = true; if (u) URL.revokeObjectURL(u); };
   }, [att.id, isImage]);
+  // Save rather than open in a tab: the bytes come from a credential-gated route,
+  // so there is no URL a new tab could load on its own.
   async function open() {
-    try { window.open(await messageAttachmentUrl(att.id), "_blank"); }
+    try { saveBlob(await messageAttachmentBlob(att.id), att.filename); }
     catch (e) { toast((e as Error).message); }
   }
   if (isImage) {

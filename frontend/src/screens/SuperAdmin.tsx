@@ -18,6 +18,7 @@
 // in memory only (never localStorage) and sent as `X-Break-Glass` on every call;
 // when its TTL runs out the panel re-locks. Reachable without Keycloak by design.
 
+import { apiUrl } from "@/api/instance";
 import { promptDialog } from "@/components/dialogs";
 import { BreakGlass } from "@/components/custom-icons";
 import { Dropdown } from "@/components/Dropdown";
@@ -28,7 +29,7 @@ const HDR = "X-Break-Glass";
 async function bg(grant: string, path: string, init?: RequestInit): Promise<Response> {
   const headers: Record<string, string> = { [HDR]: grant, ...(init?.headers as Record<string, string>) };
   if (init?.body) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, { ...init, headers });
+  const res = await fetch(apiUrl(path), { ...init, headers });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`${res.status} ${res.statusText}${body ? ": " + body.slice(0, 200) : ""}`);
