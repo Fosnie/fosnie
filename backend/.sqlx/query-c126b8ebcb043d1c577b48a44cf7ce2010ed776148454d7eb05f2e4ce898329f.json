@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_pairing_codes SET consumed_at = now() WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > now() RETURNING user_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "device_pairing_codes",
+            "name": "user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c126b8ebcb043d1c577b48a44cf7ce2010ed776148454d7eb05f2e4ce898329f"
+}

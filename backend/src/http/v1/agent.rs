@@ -99,7 +99,10 @@ pub async fn run(
         tokio::spawn(async move {
             crate::chat::run_turn(
                 &st,
-                &c,
+                // The conversation already exists with origin 'api' (created up
+                // front by this surface), so resolve_chat takes the existing-chat
+                // branch and the value here is never written.
+                crate::chat::origin::TurnContext::web(&c),
                 turn_id,
                 Some(chat_id),
                 None,

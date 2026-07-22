@@ -24,6 +24,7 @@
 
 pub mod api_key;
 pub mod breakglass;
+pub mod device;
 pub mod keycloak;
 pub mod local;
 pub mod mfa;

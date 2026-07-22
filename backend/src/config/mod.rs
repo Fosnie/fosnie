@@ -448,6 +448,22 @@ pub struct ServerConfig {
     /// Each entry is a scheme://host[:port] with no path.
     #[serde(default)]
     pub allowed_ws_origins: Vec<String>,
+    /// Origins the desktop client presents. They are cross-origin to this server
+    /// by construction (the client serves its own shell from a local scheme), so
+    /// they must be permitted for both the WebSocket upgrade and ordinary
+    /// cross-origin requests to the native surface. The default covers the
+    /// standard desktop shell; it is overridable so a repackaged client using a
+    /// different local scheme can be admitted, and an operator who runs no
+    /// desktop clients can empty it to switch the allowance off entirely.
+    #[serde(default = "default_desktop_origins")]
+    pub desktop_origins: Vec<String>,
+}
+
+fn default_desktop_origins() -> Vec<String> {
+    ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -619,6 +635,7 @@ impl Default for BootConfig {
                 static_dir: "../frontend/dist".into(),
                 public_url: "http://localhost:8080".into(),
                 allowed_ws_origins: Vec::new(),
+                desktop_origins: default_desktop_origins(),
             },
             database_url: String::new(),
             redis_url: "redis://localhost:6379".into(),

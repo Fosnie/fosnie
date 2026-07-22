@@ -31,6 +31,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::audit::{self, AuditEvent};
+use crate::auth::device::MaybeDevice;
 use crate::auth::keycloak::AuthUser;
 use crate::auth::AuthContext;
 use crate::error::{AppError, Result};
@@ -241,7 +242,11 @@ pub async fn delete_avatar(
 pub async fn delete_account(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
+    device: MaybeDevice,
 ) -> Result<Json<serde_json::Value>> {
+    // Deleting the account is barred from a paired device: an irreversible act
+    // on the whole account must come from an interactive web session.
+    device.require_session()?;
     let uid = me(&ctx)?;
     // Deterministic tombstone — frees the unique email and removes the address.
     let tombstone = format!("deleted-{}@deleted.invalid", uid.simple());

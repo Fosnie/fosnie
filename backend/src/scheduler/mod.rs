@@ -1194,7 +1194,7 @@ async fn run_automation(state: &AppState, automation_id: Uuid) -> Result<(), cra
     let turn_id = Uuid::now_v7();
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
     crate::chat::run_turn(
-        state, &ctx, turn_id, None, a.project_id, a.agent_id, a.prompt, Vec::new(), a.kb_ids, true, None, None, None, None, &tx, cancel,
+        state, crate::chat::origin::TurnContext::web(&ctx), turn_id, None, a.project_id, a.agent_id, a.prompt, Vec::new(), a.kb_ids, true, None, None, None, None, &tx, cancel,
     )
     .await;
     drop(tx); // close the channel so the drain finishes

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
@@ -44,6 +44,10 @@ import {
   useMyApiKeys,
   createApiKey,
   revokeApiKey,
+  useMyDevices,
+  createPairingCode,
+  revokeDevice,
+  type Device,
   type CreatedApiKey,
   type MyProvider,
   type LlmProviderOption,
@@ -573,7 +577,159 @@ function ApiKeysSection() {
   );
 }
 
-type ProfileTab = "account" | "security" | "providers" | "api-keys" | "connections" | "appearance" | "danger";
+const PLATFORM_LABEL: Record<Device["platform"], string> = {
+  windows: "Windows",
+  macos: "macOS",
+  linux: "Linux",
+};
+
+// Paired desktop machines. A sibling of the API-keys tab, deliberately apart: a
+// device is minted by pairing (a code read into the app), not typed in here, and
+// a device token reaches this instance's own surface rather than the
+// OpenAI-compatible one a key is for.
+function DevicesSection() {
+  const devices = useMyDevices();
+  const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState<{ code: string; expires_at: string } | null>(null);
+  const [remaining, setRemaining] = useState<number>(0);
+  const refresh = () => devices.refetch();
+
+  const live = (devices.data ?? []).filter((d) => !d.revoked_at);
+  const revoked = (devices.data ?? []).filter((d) => d.revoked_at);
+
+  // Count the shown code down to its expiry, then clear it: a lapsed code is
+  // useless and leaving it on screen only invites a failed pairing attempt.
+  useEffect(() => {
+    if (!code) return;
+    const tick = () => {
+      const secs = Math.max(0, Math.round((new Date(code.expires_at).getTime() - Date.now()) / 1000));
+      setRemaining(secs);
+      if (secs === 0) setCode(null);
+    };
+    tick();
+    const h = setInterval(tick, 1000);
+    return () => clearInterval(h);
+  }, [code]);
+
+  const pair = async () => {
+    setBusy(true);
+    try {
+      setCode(await createPairingCode());
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string, label: string) => {
+    const ok = await confirmDialog({
+      danger: true,
+      title: "Sign this device out?",
+      body: `"${label}" will be signed out immediately and will need to be paired again to reconnect.`,
+      confirmLabel: "Sign out device",
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await revokeDevice(id);
+      refresh();
+      toast("Device signed out.", { variant: "success" });
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const when = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : "—");
+  // Group the code as two blocks of four for readability; the server ignores the
+  // separator when the device redeems it.
+  const grouped = (c: string) => (c.length === 8 ? `${c.slice(0, 4)}-${c.slice(4)}` : c);
+
+  return (
+    <div>
+      <div className="prof-card-title" style={{ marginBottom: 6 }}>Connected devices</div>
+      <div className="ed-hint" style={{ marginBottom: 10 }}>
+        A paired desktop app signs in with its own token and acts as you. Generate a code
+        below, then enter it in the app to pair it. You can sign any device out from here at
+        any time, and it stops working at once.
+      </div>
+
+      {code && (
+        <div className="prof-card" style={{ marginBottom: 12, display: "block" }}>
+          <div className="row" style={{ gap: 6, marginBottom: 6 }}>
+            <Icon.Desktop size={14} />
+            <strong>Enter this code in the desktop app.</strong>
+          </div>
+          <div className="mono" style={{ fontSize: 26, letterSpacing: 3, marginBottom: 8 }}>
+            {grouped(code.code)}
+          </div>
+          <div className="row" style={{ gap: 8, alignItems: "center" }}>
+            <button
+              type="button"
+              className="btn btn-line sm"
+              onClick={() => {
+                navigator.clipboard.writeText(code.code).then(
+                  () => toast("Code copied.", { variant: "success" }),
+                  () => toast("Could not copy — read the code off the screen.", { variant: "error" }),
+                );
+              }}
+            >
+              <Icon.Copy size={14} /> Copy
+            </button>
+            <span className="ed-hint">Expires in {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, "0")}</span>
+            <button type="button" className="btn btn-ghost sm" style={{ marginLeft: "auto" }} onClick={() => setCode(null)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="prof-card" style={{ marginBottom: 12, display: "block" }}>
+        <button type="button" className="btn btn-gold sm" disabled={busy} onClick={pair}>
+          <Icon.Desktop size={14} /> Pair a device
+        </button>
+      </div>
+
+      {live.length === 0 && !devices.isLoading && (
+        <div className="ed-hint">No devices paired yet.</div>
+      )}
+      {live.map((d) => (
+        <div key={d.id} className="prof-card" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+            <div className="mono" style={{ opacity: 0.5, fontSize: 10 }}>
+              {PLATFORM_LABEL[d.platform]} · paired {when(d.created_at)} · last seen{" "}
+              {d.last_seen_at ? when(d.last_seen_at) : "never"}
+            </div>
+          </div>
+          <button type="button" className="btn btn-ghost sm" disabled={busy} onClick={() => revoke(d.id, d.name)}>
+            <Icon.Trash size={14} />
+          </button>
+        </div>
+      ))}
+
+      {revoked.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div className="ed-hint" style={{ marginBottom: 6 }}>Signed out</div>
+          {revoked.map((d) => (
+            <div key={d.id} className="prof-card" style={{ marginBottom: 6, opacity: 0.55 }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div>{d.name}</div>
+                <div className="mono" style={{ opacity: 0.6, fontSize: 10 }}>
+                  {PLATFORM_LABEL[d.platform]} · signed out {when(d.revoked_at)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ProfileTab = "account" | "security" | "providers" | "api-keys" | "devices" | "connections" | "appearance" | "danger";
 
 export function Profile() {
   const nav = useNavigate();
@@ -679,6 +835,8 @@ export function Profile() {
     ...(isLocalAuth ? ([["security", "Security"]] as [ProfileTab, string][]) : []),
     ...(byokEnabled ? ([["providers", "Providers"]] as [ProfileTab, string][]) : []),
     ...(publicApiEnabled ? ([["api-keys", "API keys"]] as [ProfileTab, string][]) : []),
+    // Pairing a desktop app is a core capability, so the tab is always present.
+    ["devices", "Connected devices"],
     ...(connectionsTabEnabled ? ([["connections", "Connections"]] as [ProfileTab, string][]) : []),
     ["appearance", "Appearance"],
     ["danger", "Danger zone"],
@@ -776,6 +934,9 @@ export function Profile() {
 
         {/* Platform API keys — credentials for external applications. */}
         {tab === "api-keys" && <ApiKeysSection />}
+
+        {/* Connected devices — paired desktop apps and their tokens. */}
+        {tab === "devices" && <DevicesSection />}
 
         {/* Connections — the caller's own DMS/mailbox OAuth connections (Enterprise). */}
         {tab === "connections" && <ConnectionsSection />}

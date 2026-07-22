@@ -355,7 +355,7 @@ impl Session {
                     "live-voice turn retrieval"
                 );
                 crate::chat::run_turn(
-                    &st, &ctx, turn_id, chat_id, pid, aid, text, Vec::new(), Vec::new(), false, None, None, None, settled.prefetched, &tap_tx,
+                    &st, crate::chat::origin::TurnContext::web(&ctx), turn_id, chat_id, pid, aid, text, Vec::new(), Vec::new(), false, None, None, None, settled.prefetched, &tap_tx,
                     cancel2,
                 )
                 .await;

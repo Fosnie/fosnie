@@ -52,6 +52,13 @@ pub struct WsAuth {
     /// True when the socket was authorised via a `?resume=` token (reconnect),
     /// so the handler replays buffered frames after `Hello`.
     pub resumed: bool,
+    /// Set when the socket was authenticated as a paired desktop device. Carried
+    /// so a reconnect re-mints a resume token that still names the device, and so
+    /// a conversation the socket starts is stamped with where it came from.
+    pub device_id: Option<Uuid>,
+    /// Where a conversation started on this socket is recorded as coming from,
+    /// derived from how the socket authenticated.
+    pub origin: crate::chat::origin::ChatOrigin,
 }
 
 impl FromRequestParts<AppState> for WsAuth {
@@ -88,21 +95,38 @@ impl FromRequestParts<AppState> for WsAuth {
             Some(KeycloakAuthStatus::Success(_))
         );
         if token_present {
+            // A validated JWT is always a browser session; a desktop client never
+            // reaches this branch (it holds no JWT), so its origin is web.
             let ctx = state.auth.authenticate(parts, state).await?;
-            return Ok(WsAuth { ctx, resumed: false });
+            return Ok(WsAuth {
+                ctx,
+                resumed: false,
+                device_id: None,
+                origin: crate::chat::origin::ChatOrigin::Web,
+            });
         }
         if let Some(token) = parts.uri.query().and_then(|q| query_param(q, "resume")) {
-            if let Some(user_id) = session::lookup_resume(&state.redis, &token).await? {
+            if let Some((user_id, device_id)) = session::lookup_resume(&state.redis, &token).await? {
                 let ctx = auth::load_context(&state.pg, user_id).await?;
-                return Ok(WsAuth { ctx, resumed: true });
+                return Ok(WsAuth {
+                    ctx,
+                    resumed: true,
+                    device_id,
+                    origin: crate::chat::origin::ChatOrigin::from_device(device_id),
+                });
             }
         }
         // Single-use connect ticket (minted over the authenticated HTTP path) —
         // keeps the JWT out of the socket URL. load_context re-checks deactivation.
         if let Some(ticket) = parts.uri.query().and_then(|q| query_param(q, "ticket")) {
-            if let Some(user_id) = session::redeem_ticket(&state.redis, &ticket).await? {
+            if let Some((user_id, device_id)) = session::redeem_ticket(&state.redis, &ticket).await? {
                 let ctx = auth::load_context(&state.pg, user_id).await?;
-                return Ok(WsAuth { ctx, resumed: false });
+                return Ok(WsAuth {
+                    ctx,
+                    resumed: false,
+                    device_id,
+                    origin: crate::chat::origin::ChatOrigin::from_device(device_id),
+                });
             }
         }
         Err(AppError::Unauthorized(
@@ -116,6 +140,13 @@ impl FromRequestParts<AppState> for WsAuth {
 /// origin of `server.public_url`. Exact match on scheme://host[:port].
 fn origin_allowed(server: &crate::config::ServerConfig, origin: &str) -> bool {
     let origin = origin.trim();
+    // A desktop client is admitted regardless of what the browser allow-list
+    // says. It is not a browsing context, so it is not a cross-site hijacking
+    // vector, and an operator who narrows `allowed_ws_origins` for the web must
+    // not thereby lock out their own desktop clients.
+    if server.desktop_origins.iter().any(|o| o.trim() == origin) {
+        return true;
+    }
     if !server.allowed_ws_origins.is_empty() {
         return server.allowed_ws_origins.iter().any(|o| o.trim() == origin);
     }
@@ -141,7 +172,7 @@ pub async fn ws_handler(
     auth: WsAuth,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(state, socket, auth.ctx, auth.resumed))
+    ws.on_upgrade(move |socket| handle_socket(state, socket, auth))
 }
 
 /// Frames worth retaining for replay — discrete events, not the high-volume
@@ -216,7 +247,8 @@ async fn hello_frame(
     }
 }
 
-async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, resumed: bool) {
+async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
+    let WsAuth { ctx, resumed, device_id, origin } = auth;
     // Break-glass principals have no user identity and cannot own/drive chats.
     let Some(user_id) = ctx.user_id else {
         return;
@@ -227,7 +259,9 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
 
     state.hub.register(socket_id, user_id, tx.clone());
     let _ = session::register_socket(&state.redis, socket_id, user_id).await;
-    let resume_token = session::issue_resume(&state.redis, user_id)
+    // The resume token carries the device id too, so a reconnect within the
+    // window keeps marking what this socket creates as coming from the desktop.
+    let resume_token = session::issue_resume(&state.redis, user_id, device_id)
         .await
         .unwrap_or_default();
 
@@ -298,7 +332,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                         let attachments =
                             crate::http::chat_attachments::take_attachments(&st, &ctxc, &attachment_ids).await;
                         crate::chat::run_turn(
-                            &st, &ctxc, turn_id, chat_id, project_id, agent_id, content, attachments,
+                            &st, crate::chat::origin::TurnContext::new(&ctxc, origin), turn_id, chat_id, project_id, agent_id, content, attachments,
                             Vec::new(), false, None, reasoning, llm_provider_id, None, &txc, cancel,
                         )
                         .await;
@@ -326,7 +360,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                         match crate::chat::regenerate_prepare(&st, &ctxc, chat_id, from_message_id, content).await {
                             Ok((anchor_id, anchor_content)) => {
                                 crate::chat::run_turn(
-                                    &st, &ctxc, turn_id, Some(chat_id), None, None, anchor_content,
+                                    &st, crate::chat::origin::TurnContext::new(&ctxc, origin), turn_id, Some(chat_id), None, None, anchor_content,
                                     Vec::new(), Vec::new(), false, Some(anchor_id), None, None, None, &txc, cancel,
                                 )
                                 .await;
@@ -350,7 +384,9 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                     // upgrade-time auth stands; this keeps a long-lived socket's
                     // session alive past the original token's expiry.)
                     let _ = session::refresh_presence(&state.redis, user_id).await;
-                    let resume_token = session::issue_resume(&state.redis, user_id)
+                    // Keep the device on the refreshed resume token, so a desktop
+                    // socket that refreshes mid-session stays a desktop socket.
+                    let resume_token = session::issue_resume(&state.redis, user_id, device_id)
                         .await
                         .unwrap_or_default();
                     let _ = tx
@@ -358,8 +394,10 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                         .await;
                 }
                 Ok(ClientFrame::ClientHello { client_kind, client_version, capabilities }) => {
-                    // Recorded, not enforced: it identifies the connection for
-                    // telemetry and for marking what it creates. A connection
+                    // Recorded, not enforced: descriptive telemetry only. What a
+                    // conversation is marked with comes from how the socket
+                    // authenticated, never from this self-declared field — a web
+                    // client could otherwise call itself a desktop. A connection
                     // that never sends this stays what every client is today.
                     let kind = client_kind.as_deref().unwrap_or("web");
                     let _ = session::record_client(
@@ -550,6 +588,7 @@ mod tests {
             static_dir: String::new(),
             public_url: public_url.into(),
             allowed_ws_origins: allowed.iter().map(|s| s.to_string()).collect(),
+            desktop_origins: Vec::new(),
         }
     }
 

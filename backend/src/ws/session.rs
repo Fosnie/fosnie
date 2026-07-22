@@ -165,16 +165,37 @@ pub async fn record_client(
         .map_err(redis_err)
 }
 
-/// Mint a resume token bound to the user; TTL = the resume window.
+/// A ticket or resume token records how its socket was authenticated, not just
+/// whose it is: a conversation started from a paired desktop client has to be
+/// recognisable as such, and that fact must survive the hop through Redis. The
+/// stored form is `<user id>` or `<user id>|<device id>`; a value with no
+/// separator is read as an ordinary session — which is also what every token
+/// minted before this existed looks like, so a rolling restart signs no one out.
+fn encode_principal(user_id: Uuid, device_id: Option<Uuid>) -> String {
+    match device_id {
+        Some(did) => format!("{user_id}|{did}"),
+        None => user_id.to_string(),
+    }
+}
+
+fn decode_principal(raw: &str) -> Option<(Uuid, Option<Uuid>)> {
+    match raw.split_once('|') {
+        Some((u, d)) => Some((Uuid::parse_str(u).ok()?, Some(Uuid::parse_str(d).ok()?))),
+        None => Some((Uuid::parse_str(raw).ok()?, None)),
+    }
+}
+
+/// Mint a resume token bound to the principal; TTL = the resume window.
 pub async fn issue_resume(
     pool: &deadpool_redis::Pool,
     user_id: Uuid,
+    device_id: Option<Uuid>,
 ) -> Result<String, AppError> {
     let token = Uuid::now_v7().to_string();
     let mut c = conn(pool).await?;
     redis::cmd("SET")
         .arg(resume_key(&token))
-        .arg(user_id.to_string())
+        .arg(encode_principal(user_id, device_id))
         .arg("EX")
         .arg(RESUME_TTL_SECS)
         .query_async::<()>(&mut c)
@@ -183,32 +204,35 @@ pub async fn issue_resume(
     Ok(token)
 }
 
-/// Resolve a resume token to its user id, if still within the window.
+/// Resolve a resume token to its (user id, device id), if still within the
+/// window.
 pub async fn lookup_resume(
     pool: &deadpool_redis::Pool,
     token: &str,
-) -> Result<Option<Uuid>, AppError> {
+) -> Result<Option<(Uuid, Option<Uuid>)>, AppError> {
     let mut c = conn(pool).await?;
     let val: Option<String> = redis::cmd("GET")
         .arg(resume_key(token))
         .query_async(&mut c)
         .await
         .map_err(redis_err)?;
-    Ok(val.and_then(|s| Uuid::parse_str(&s).ok()))
+    Ok(val.as_deref().and_then(decode_principal))
 }
 
-/// Mint a single-use WS connect ticket bound to the user (TTL = `TICKET_TTL_SECS`).
-/// Issued by `POST /api/ws-ticket` over the authenticated Bearer path, so the
-/// access token stays in the `Authorization` header and never reaches a URL.
+/// Mint a single-use WS connect ticket bound to the principal (TTL =
+/// `TICKET_TTL_SECS`). Issued by `POST /api/ws-ticket` over the authenticated
+/// Bearer path, so the access token stays in the `Authorization` header and
+/// never reaches a URL.
 pub async fn issue_ticket(
     pool: &deadpool_redis::Pool,
     user_id: Uuid,
+    device_id: Option<Uuid>,
 ) -> Result<String, AppError> {
     let token = Uuid::now_v7().to_string();
     let mut c = conn(pool).await?;
     redis::cmd("SET")
         .arg(ticket_key(&token))
-        .arg(user_id.to_string())
+        .arg(encode_principal(user_id, device_id))
         .arg("EX")
         .arg(TICKET_TTL_SECS)
         .query_async::<()>(&mut c)
@@ -217,19 +241,19 @@ pub async fn issue_ticket(
     Ok(token)
 }
 
-/// Redeem a WS ticket → its user id, deleting it atomically so it cannot be
-/// replayed (single-use). `None` if unknown/expired/already used.
+/// Redeem a WS ticket → its (user id, device id), deleting it atomically so it
+/// cannot be replayed (single-use). `None` if unknown/expired/already used.
 pub async fn redeem_ticket(
     pool: &deadpool_redis::Pool,
     token: &str,
-) -> Result<Option<Uuid>, AppError> {
+) -> Result<Option<(Uuid, Option<Uuid>)>, AppError> {
     let mut c = conn(pool).await?;
     let val: Option<String> = redis::cmd("GETDEL")
         .arg(ticket_key(token))
         .query_async(&mut c)
         .await
         .map_err(redis_err)?;
-    Ok(val.and_then(|s| Uuid::parse_str(&s).ok()))
+    Ok(val.as_deref().and_then(decode_principal))
 }
 
 /// Refresh presence TTL on heartbeat.
@@ -284,4 +308,31 @@ pub async fn deregister_socket(
 
 fn redis_err(e: redis::RedisError) -> AppError {
     AppError::Other(anyhow::anyhow!("redis: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn principal_roundtrips_both_forms() {
+        let u = Uuid::now_v7();
+        let d = Uuid::now_v7();
+        assert_eq!(decode_principal(&encode_principal(u, None)), Some((u, None)));
+        assert_eq!(decode_principal(&encode_principal(u, Some(d))), Some((u, Some(d))));
+    }
+
+    #[test]
+    fn bare_uuid_reads_as_a_session() {
+        // A token minted before device provenance existed is a plain uuid; it
+        // must still decode, as an ordinary session, across a rolling restart.
+        let u = Uuid::now_v7();
+        assert_eq!(decode_principal(&u.to_string()), Some((u, None)));
+    }
+
+    #[test]
+    fn garbage_decodes_to_none() {
+        assert_eq!(decode_principal("not-a-uuid"), None);
+        assert_eq!(decode_principal("also|not|uuid"), None);
+    }
 }
