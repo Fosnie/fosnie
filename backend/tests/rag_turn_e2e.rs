@@ -184,7 +184,7 @@ async fn drive_turn(
     let q = question.to_string();
     let handle = tokio::spawn(async move {
         chat::run_turn(
-            &st, &cx, turn_id, Some(chat_id), None, None, q, Vec::new(), vec![kb_id], false,
+            &st, chat::origin::TurnContext::web(&cx), turn_id, Some(chat_id), None, None, q, Vec::new(), vec![kb_id], false,
             None, None, None, None, &tx, cancel,
         )
         .await;

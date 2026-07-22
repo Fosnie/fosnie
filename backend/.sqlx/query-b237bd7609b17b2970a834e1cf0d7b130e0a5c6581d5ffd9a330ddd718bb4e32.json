@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO chats (id, owner_user_id, project_id, agent_id, title) VALUES ($1, $2, $3, $4, $5)",
+  "query": "INSERT INTO chats (id, owner_user_id, project_id, agent_id, title, origin) VALUES ($1, $2, $3, $4, $5, $6)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -9,10 +9,11 @@
         "Uuid",
         "Uuid",
         "Uuid",
+        "Text",
         "Text"
       ]
     },
     "nullable": []
   },
-  "hash": "46135852dde29704d7048b5e8cd8b4add9e22370b2820a30316af49641795cbe"
+  "hash": "b237bd7609b17b2970a834e1cf0d7b130e0a5c6581d5ffd9a330ddd718bb4e32"
 }

@@ -69,21 +69,76 @@ pub fn hash_token(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
-/// Resolve a presented token to its key id and the owner's auth context.
+/// Which surface a token is allowed to drive. The two kinds are deliberately
+/// non-interchangeable: an application key must never reach the native
+/// endpoints (they carry no stability contract and change freely), and a device
+/// token must never reach the compatibility surface (it is minted by an
+/// interactive pairing flow, not by the key-management screen). Every lookup
+/// states which kind it expects, and a mismatch is simply "no such key" — the
+/// caller learns nothing about what the token actually is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    Api,
+    Device,
+}
+
+impl KeyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyKind::Api => "api",
+            KeyKind::Device => "device",
+        }
+    }
+}
+
+/// A successfully resolved token.
+pub struct ResolvedKey {
+    pub key_id: Uuid,
+    /// The paired device, for a `device` token. Always `None` for `api`.
+    pub device_id: Option<Uuid>,
+    pub ctx: AuthContext,
+}
+
+/// Read a bearer token out of an `Authorization` header, tolerating either
+/// letter case of the scheme and surrounding whitespace. Shared so every path
+/// that authenticates a platform token parses the header identically.
+pub fn bearer_token(parts: &Parts) -> Option<&str> {
+    let raw = parts.headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok())?;
+    Some(
+        raw.strip_prefix("Bearer ")
+            .or_else(|| raw.strip_prefix("bearer "))
+            .unwrap_or(raw)
+            .trim(),
+    )
+}
+
+/// Resolve a presented token of the expected kind to its key id, the paired
+/// device (device tokens only) and the owner's auth context.
 ///
-/// Expiry and revocation are enforced in the query; deactivated owners are
-/// rejected by `load_context`. Every failure returns the same message: which of
-/// the four reasons applied is not the caller's business.
-pub async fn resolve(state: &AppState, token: &str) -> Result<(Uuid, AuthContext), ApiError> {
+/// Kind, expiry and revocation are all enforced in the query, and for a device
+/// token the join additionally requires the device itself to be live — that is
+/// what makes withdrawing a device take effect on the very next request, with no
+/// wait for a token to expire and no separate token update strictly required.
+/// Deactivated owners are rejected by `load_context`. Every failure returns the
+/// same message: which of the reasons applied is not the caller's business.
+pub async fn resolve(
+    state: &AppState,
+    token: &str,
+    expect: KeyKind,
+) -> Result<ResolvedKey, ApiError> {
     if !token.starts_with(TOKEN_PREFIX) {
         return Err(invalid_key());
     }
     let hash = hash_token(token);
     let row = sqlx::query!(
-        "SELECT id, user_id FROM api_keys \
-         WHERE token_hash = $1 AND revoked_at IS NULL \
-           AND (expires_at IS NULL OR expires_at > now())",
-        &hash
+        "SELECT k.id, k.user_id, k.device_id \
+         FROM api_keys k \
+         LEFT JOIN devices d ON d.id = k.device_id \
+         WHERE k.token_hash = $1 AND k.kind = $2 AND k.revoked_at IS NULL \
+           AND (k.expires_at IS NULL OR k.expires_at > now()) \
+           AND (k.device_id IS NULL OR d.revoked_at IS NULL)",
+        &hash,
+        expect.as_str(),
     )
     .fetch_optional(&state.pg)
     .await
@@ -93,7 +148,7 @@ pub async fn resolve(state: &AppState, token: &str) -> Result<(Uuid, AuthContext
     let ctx = crate::auth::load_context(&state.pg, row.user_id)
         .await
         .map_err(|_| invalid_key())?;
-    Ok((row.id, ctx))
+    Ok(ResolvedKey { key_id: row.id, device_id: row.device_id, ctx })
 }
 
 fn invalid_key() -> ApiError {
@@ -102,13 +157,15 @@ fn invalid_key() -> ApiError {
     )
 }
 
-/// Record that a key was used, at most once a minute.
+/// Record that a token was used, at most once a minute.
 ///
-/// `last_used_at` is bookkeeping for the owner ("is this key still in use?"),
-/// not an audit record, so a coarse write is right: throttling through the
-/// existing fixed-window limiter avoids an `UPDATE` per request without adding
-/// a second Redis primitive. Fire-and-forget; a lost tick is immaterial.
-pub async fn touch_last_used(state: &AppState, key_id: Uuid) {
+/// `last_used_at` (and, for a device token, `devices.last_seen_at`) is
+/// bookkeeping for the owner ("is this still in use?"), not an audit record, so
+/// a coarse write is right: throttling through the existing fixed-window limiter
+/// avoids an `UPDATE` per request without adding a second Redis primitive. Both
+/// timestamps move together under one gate and one task so they stay coherent.
+/// Fire-and-forget; a lost tick is immaterial.
+pub async fn touch_used(state: &AppState, key_id: Uuid, device_id: Option<Uuid>) {
     let fresh =
         crate::cache::rate_limit_ok(&state.redis, &format!("apikey-touch:{key_id}"), 1, 60).await;
     if !fresh {
@@ -119,6 +176,11 @@ pub async fn touch_last_used(state: &AppState, key_id: Uuid) {
         let _ = sqlx::query!("UPDATE api_keys SET last_used_at = now() WHERE id = $1", key_id)
             .execute(&pg)
             .await;
+        if let Some(did) = device_id {
+            let _ = sqlx::query!("UPDATE devices SET last_seen_at = now() WHERE id = $1", did)
+                .execute(&pg)
+                .await;
+        }
     });
 }
 
@@ -135,23 +197,12 @@ impl FromRequestParts<AppState> for ApiKeyAuth {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let raw = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::unauthorised(
-                    "missing API key — provide one as 'Authorization: Bearer <key>'",
-                )
-            })?;
-        let token = raw
-            .strip_prefix("Bearer ")
-            .or_else(|| raw.strip_prefix("bearer "))
-            .unwrap_or(raw)
-            .trim();
+        let token = bearer_token(parts).ok_or_else(|| {
+            ApiError::unauthorised("missing API key — provide one as 'Authorization: Bearer <key>'")
+        })?;
 
-        let (key_id, ctx) = resolve(state, token).await?;
-        touch_last_used(state, key_id).await;
+        let ResolvedKey { key_id, ctx, .. } = resolve(state, token, KeyKind::Api).await?;
+        touch_used(state, key_id, None).await;
         Ok(ApiKeyAuth(ctx, key_id))
     }
 }

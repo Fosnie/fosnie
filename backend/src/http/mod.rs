@@ -31,6 +31,7 @@ pub mod auth;
 pub mod automations;
 pub mod chat_attachments;
 pub mod chats;
+pub mod devices;
 pub mod agent_runs;
 pub mod config_admin;
 pub mod documents;
@@ -69,21 +70,41 @@ use std::path::Path;
 use std::time::Instant;
 
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::json;
-use tower_http::cors::CorsLayer;
+use tower::ServiceExt;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::auth::breakglass::SuperAdmin;
+use crate::auth::device::MaybeDevice;
 use crate::auth::keycloak::AuthUser;
 use crate::auth::AuthContext;
 use crate::error::{AppError, Result};
 use crate::state::AppState;
+
+/// Whether a request carries one of our platform tokens rather than an identity
+/// provider's JWT. Decided on the prefix alone — never on a successful lookup —
+/// so an invalid token is still refused inside the extractor and the two routing
+/// branches behind the JWT layer answer identically.
+fn is_platform_token(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|raw| {
+            raw.strip_prefix("Bearer ")
+                .or_else(|| raw.strip_prefix("bearer "))
+                .unwrap_or(raw)
+                .trim()
+                .starts_with(crate::auth::api_key::TOKEN_PREFIX)
+        })
+        .unwrap_or(false)
+}
 
 /// Edition-capability gate. An Enterprise-only `feature` resolved
 /// through the [`crate::ext::FeatureResolver`] seam (host flag ∧ group-restrict);
@@ -145,6 +166,11 @@ pub fn router(
         // record keyed on `state`, not from a session, so it sits ahead of the auth gate
         // (like /login). Rate-limited inside the handler; never returns a 500.
         .route("/api/mcp/oauth/callback", get(mcp_oauth::callback))
+        // Desktop pairing: public by necessity — the client has no credential
+        // yet. The short-lived, single-use code minted from an authenticated
+        // browser session is the whole authority. Per-IP rate limited in the
+        // handler.
+        .route("/api/device/pair", post(devices::pair_device))
         .with_state(state.clone());
 
     // Edition public-route extension: merge a private edition's *public* routes
@@ -238,6 +264,17 @@ pub fn router(
             .route(
                 "/api/admin/users/{id}/api-keys/{key_id}",
                 delete(api_keys::admin_revoke_key),
+            )
+            // Connected devices: a paired desktop client and its token. Distinct
+            // from the API keys above — a device is minted by pairing, not from
+            // this screen, and lists beside keys rather than among them.
+            .route("/api/me/devices/pairing-code", post(devices::create_pairing_code))
+            .route("/api/me/devices", get(devices::list_devices))
+            .route("/api/me/devices/{id}", delete(devices::revoke_device))
+            .route("/api/admin/users/{id}/devices", get(devices::admin_list_devices))
+            .route(
+                "/api/admin/users/{id}/devices/{device_id}",
+                delete(devices::admin_revoke_device),
             )
             // Self-serve account deletion (soft-archive; emits `account.archived`).
             .route("/api/me/account", axum::routing::delete(profile::delete_account))
@@ -559,7 +596,34 @@ pub fn router(
         // Keycloak mode: gate every protected route behind the Bearer-JWT layer.
         // Local mode (no layer): the AuthUser extractor reads the session cookie.
         if let Some(kc) = kc_layer {
-            protected = protected.layer(kc);
+            // A paired desktop client presents a platform token, not a JWT, so
+            // the Bearer-validation layer would refuse it before the request
+            // ever reached the extractor that knows how to read it. Requests
+            // bearing a platform token are therefore routed to an identical,
+            // unlayered copy of these routes, where `AuthUser` authenticates
+            // them via the device fallback. The choice is made on the token's
+            // prefix alone — never on a successful lookup — so an invalid token
+            // still fails inside the extractor and both branches answer alike.
+            let bypass: Router = protected
+                .clone()
+                .route_layer(axum::middleware::from_fn(http_metrics))
+                .with_state(state.clone());
+            protected = protected.layer(kc).layer(axum::middleware::from_fn(
+                move |req: Request, next: Next| {
+                    let bypass = bypass.clone();
+                    async move {
+                        if is_platform_token(req.headers()) {
+                            // The router service is infallible, so the `Err` arm
+                            // is uninhabited and the match stays exhaustive.
+                            match bypass.oneshot(req).await {
+                                Ok(resp) => resp,
+                            }
+                        } else {
+                            next.run(req).await
+                        }
+                    }
+                },
+            ));
         }
         // route_layer → runs after routing, so MatchedPath (low-cardinality
         // route label) is available to the metrics middleware.
@@ -600,7 +664,7 @@ pub fn router(
             security_headers(csp_value.clone(), req, next)
         }))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::new());
+        .layer(desktop_cors(&state.boot.server.desktop_origins));
 
     // The OpenAI-compatible surface is merged AFTER the global stack, so it
     // carries its own. Two reasons it cannot simply live inside:
@@ -693,6 +757,41 @@ async fn security_headers(csp: HeaderValue, req: Request, next: Next) -> Respons
 /// local-auth mode there is no external auth origin and the policy stays
 /// same-origin only. A third-party deployment thus gets its own auth origin, not
 /// a baked-in one.
+/// The cross-origin policy for the native surface. The global stack otherwise
+/// denies cross-origin and answers preflight itself, so a desktop client — which
+/// serves its shell from its own local origin — has to be admitted here, at the
+/// outer layer, or its preflight never reaches a handler.
+///
+/// Credentials are deliberately not allowed: a desktop client authenticates with
+/// its own token in the `Authorization` header, never an ambient cookie, so
+/// granting the origin cookie access would only widen what a compromised client
+/// could reach. With no configured origins the layer is `CorsLayer::new()` —
+/// the deny-cross-origin default, unchanged from before this existed.
+fn desktop_cors(origins: &[String]) -> CorsLayer {
+    let parsed: Vec<HeaderValue> =
+        origins.iter().filter_map(|o| match HeaderValue::from_str(o.trim()) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                tracing::warn!(origin = %o, "ignoring unparseable desktop origin");
+                None
+            }
+        })
+        .collect();
+    if parsed.is_empty() {
+        return CorsLayer::new();
+    }
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(parsed))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+}
+
 fn build_csp(boot: &crate::config::BootConfig) -> String {
     build_csp_inner(
         &boot.server.public_url,
@@ -989,14 +1088,21 @@ async fn http_metrics(req: Request, next: Next) -> Response {
 /// The browser calls this with its Bearer token in the `Authorization` header
 /// (never a URL) and then opens `/ws?ticket=<t>`, so the JWT never appears in a
 /// socket URL / access log. The ticket is short-lived and single-use.
-async fn ws_ticket(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> impl IntoResponse {
+///
+/// `MaybeDevice` follows `AuthUser` so a device token's ticket carries the device
+/// id forward: the socket opened with it inherits the desktop provenance.
+async fn ws_ticket(
+    State(state): State<AppState>,
+    AuthUser(ctx): AuthUser,
+    MaybeDevice(device_id): MaybeDevice,
+) -> impl IntoResponse {
     let Some(user_id) = ctx.user_id else {
         return (axum::http::StatusCode::FORBIDDEN, "no user").into_response();
     };
     if !crate::cache::rate_limit_ok(&state.redis, &format!("ws-ticket:{user_id}"), 30, 60).await {
         return (axum::http::StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
-    match crate::ws::session::issue_ticket(&state.redis, user_id).await {
+    match crate::ws::session::issue_ticket(&state.redis, user_id, device_id).await {
         Ok(ticket) => Json(json!({ "ticket": ticket })).into_response(),
         Err(e) => {
             tracing::warn!(error = %e, "ws-ticket mint failed");

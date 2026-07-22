@@ -19,6 +19,7 @@
 
 pub mod budget;
 pub mod compose;
+pub mod origin;
 pub mod prefetch;
 
 use std::sync::Arc;
@@ -170,7 +171,10 @@ pub async fn regenerate_prepare(
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn(
     state: &AppState,
-    ctx: &AuthContext,
+    // Who is asking and from which client. Carries the connection's provenance
+    // (see `TurnContext`) so a conversation created by this turn is stamped with
+    // where it began.
+    turn: origin::TurnContext<'_>,
     turn_id: Uuid,
     chat_id: Option<Uuid>,
     project_id: Option<Uuid>,
@@ -195,7 +199,7 @@ pub async fn run_turn(
     cancel: Arc<Notify>,
 ) {
     if let Err(e) =
-        run_turn_inner(state, ctx, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel).await
+        run_turn_inner(state, turn, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel).await
     {
         let _ = tx
             .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string() })
@@ -206,7 +210,7 @@ pub async fn run_turn(
 #[allow(clippy::too_many_arguments)]
 async fn run_turn_inner(
     state: &AppState,
-    ctx: &AuthContext,
+    turn: origin::TurnContext<'_>,
     turn_id: Uuid,
     chat_id: Option<Uuid>,
     project_id: Option<Uuid>,
@@ -222,11 +226,12 @@ async fn run_turn_inner(
     tx: &mpsc::Sender<ServerFrame>,
     cancel: Arc<Notify>,
 ) -> Result<()> {
+    let ctx = turn.auth;
     // New chats start with a generic placeholder; the real title is named by the
     // LLM in a background task below (keeps TTFT untouched — no naming call before
     // the first token).
     let (chat_id, chat_project_id, chat_agent_id, chat_mode, created) =
-        resolve_chat(state, ctx, chat_id, project_id, agent_id, "New chat").await?;
+        resolve_chat(state, ctx, chat_id, project_id, agent_id, "New chat", turn.origin).await?;
     if created {
         let _ = tx.send(ServerFrame::ChatCreated { chat_id }).await;
         // Title the chat from the prompt off the hot path. On any failure the chat
@@ -2309,6 +2314,7 @@ async fn resolve_chat(
     project_id: Option<Uuid>,
     agent_id: Option<Uuid>,
     title: &str,
+    origin: origin::ChatOrigin,
 ) -> Result<(Uuid, Option<Uuid>, Option<Uuid>, String, bool)> {
     let owner = ctx
         .user_id
@@ -2331,8 +2337,8 @@ async fn resolve_chat(
         None => {
             let id = Uuid::now_v7();
             sqlx::query!(
-                "INSERT INTO chats (id, owner_user_id, project_id, agent_id, title) VALUES ($1, $2, $3, $4, $5)",
-                id, owner, project_id, agent_id, title
+                "INSERT INTO chats (id, owner_user_id, project_id, agent_id, title, origin) VALUES ($1, $2, $3, $4, $5, $6)",
+                id, owner, project_id, agent_id, title, origin.as_str()
             )
             .execute(&state.pg)
             .await?;

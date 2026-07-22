@@ -2500,6 +2500,51 @@ export async function adminRevokeApiKey(userId: string, keyId: string) {
   return apiFetch<void>(`/api/admin/users/${userId}/api-keys/${keyId}`, { method: "DELETE" });
 }
 
+// --- Connected devices -------------------------------
+
+/** A desktop machine paired to the account. Its token is returned once, by
+ * createPairingCode's redemption on the device, and is unrecoverable here. */
+export interface Device {
+  id: string;
+  name: string;
+  platform: "windows" | "macos" | "linux";
+  created_at: string;
+  last_seen_at: string | null;
+  revoked_at: string | null;
+}
+
+export function useMyDevices(enabled = true) {
+  return useQuery({
+    queryKey: ["devices"],
+    queryFn: () => apiFetch<Device[]>("/api/me/devices"),
+    enabled,
+  });
+}
+
+/** Mint a single-use pairing code from the current web session. The code is
+ * shown once; the device redeems it (unauthenticated) for its own token. */
+export async function createPairingCode() {
+  return apiFetch<{ code: string; expires_at: string }>("/api/me/devices/pairing-code", {
+    method: "POST",
+  });
+}
+
+export async function revokeDevice(id: string) {
+  return apiFetch<void>(`/api/me/devices/${id}`, { method: "DELETE" });
+}
+
+export function useUserDevices(userId: string | null) {
+  return useQuery({
+    queryKey: ["admin-devices", userId],
+    queryFn: () => apiFetch<Device[]>(`/api/admin/users/${userId}/devices`),
+    enabled: !!userId,
+  });
+}
+
+export async function adminRevokeDevice(userId: string, deviceId: string) {
+  return apiFetch<void>(`/api/admin/users/${userId}/devices/${deviceId}`, { method: "DELETE" });
+}
+
 // --- Deep Research -----------------------------------
 
 export interface ResearchRequestBody {

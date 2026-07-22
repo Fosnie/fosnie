@@ -85,6 +85,8 @@ import {
   useAdminUsers,
   useUserApiKeys,
   adminRevokeApiKey,
+  useUserDevices,
+  adminRevokeDevice,
   useAgents,
   useAnalytics,
   useGroundednessAnalytics,
@@ -304,6 +306,47 @@ function UserApiKeys({ userId }: { userId: string }) {
   );
 }
 
+// A user's paired devices, on demand. Read-and-sign-out only, mirroring the key
+// view: an administrator sees which machines are connected and can withdraw one.
+function UserDevices({ userId }: { userId: string }) {
+  const devices = useUserDevices(userId);
+  const { busy, run } = useBusy();
+  const live = (devices.data ?? []).filter((d) => !d.revoked_at);
+
+  if (devices.isLoading) return <span className="text-xs text-slate/60">Loading…</span>;
+  if (live.length === 0) return <span className="text-xs text-slate/60">No connected devices.</span>;
+  return (
+    <div className="flex flex-col gap-1">
+      {live.map((d) => (
+        <div key={d.id} className="flex items-center gap-2 text-xs">
+          <span>{d.name}</span>
+          <span className="text-slate/60">{d.platform}</span>
+          <span className="text-slate/60">
+            last seen {d.last_seen_at ? new Date(d.last_seen_at).toLocaleDateString() : "never"}
+          </span>
+          <button
+            className={BTN_DANGER}
+            disabled={!!busy}
+            onClick={async () => {
+              if (
+                await confirmDialog({
+                  danger: true,
+                  title: "Sign this device out?",
+                  body: `"${d.name}" is signed out immediately and must be paired again to reconnect.`,
+                  confirmLabel: "Sign out device",
+                })
+              )
+                run("Sign out device", () => adminRevokeDevice(userId, d.id).then(() => devices.refetch()), "Device signed out.");
+            }}
+          >
+            Sign out
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function UsersSection({ selfId }: { selfId?: string }) {
   const qc = useQueryClient();
   const users = useAdminUsers();
@@ -311,6 +354,7 @@ function UsersSection({ selfId }: { selfId?: string }) {
   const who = useWhoami();
   const publicApi = !!who.data?.capabilities?.public_api;
   const [openKeys, setOpenKeys] = useState<string | null>(null);
+  const [openDevices, setOpenDevices] = useState<string | null>(null);
   const refresh = () => qc.invalidateQueries({ queryKey: ["admin-users"] });
 
   return (
@@ -331,6 +375,7 @@ function UsersSection({ selfId }: { selfId?: string }) {
               <th className={TH}>Status</th>
               <th className={TH}>MFA</th>
               {publicApi && <th className={TH}>API keys</th>}
+              <th className={TH}>Devices</th>
               <th className={TH}></th>
             </tr>
           </thead>
@@ -355,6 +400,14 @@ function UsersSection({ selfId }: { selfId?: string }) {
                     </button>
                   </td>
                 )}
+                <td className={TD}>
+                  <button
+                    className={BTN2}
+                    onClick={() => setOpenDevices((cur) => (cur === u.id ? null : u.id))}
+                  >
+                    {openDevices === u.id ? "Hide" : "View"}
+                  </button>
+                </td>
                 <td className={TD}>
                   {u.id === selfId ? (
                     <span className="text-sm text-slate/60">you</span>
@@ -391,6 +444,14 @@ function UsersSection({ selfId }: { selfId?: string }) {
             API keys for {users.data?.find((u) => u.id === openKeys)?.email}
           </div>
           <UserApiKeys userId={openKeys} />
+        </div>
+      )}
+      {openDevices && (
+        <div className="mt-3 rounded border border-slate/20 p-3">
+          <div className="mb-2 text-xs text-slate/70">
+            Devices for {users.data?.find((u) => u.id === openDevices)?.email}
+          </div>
+          <UserDevices userId={openDevices} />
         </div>
       )}
     </div>

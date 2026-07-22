@@ -371,7 +371,12 @@ export function Sidebar() {
                 onClick={() => nav(`/c/${c.id}`)}
               >
                 <div className="chat-item-main">
-                  <span className="chat-title" title={c.title}>{c.title}</span>
+                  <span className="chat-title-row">
+                    {c.origin === "desktop" && (
+                      <Icon.Desktop size={12} className="chat-origin-icon" aria-label="Created on desktop" />
+                    )}
+                    <span className="chat-title" title={c.title}>{c.title}</span>
+                  </span>
                   <span className="chat-meta mono">{relTime(c.created_at)}</span>
                 </div>
                 <div className="chat-item-actions">
