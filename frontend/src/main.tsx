@@ -26,14 +26,39 @@ import { installGlobalErrorHandlers } from "@/telemetry/report";
 // Catch window-level errors (async, resource, uncaught) before React mounts.
 installGlobalErrorHandlers();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </QueryClientProvider>
-    </ErrorBoundary>
-  </StrictMode>,
-);
+const root = createRoot(document.getElementById("root")!);
+
+function renderApp() {
+  root.render(
+    <StrictMode>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <AuthProvider>
+            <App />
+          </AuthProvider>
+        </QueryClientProvider>
+      </ErrorBoundary>
+    </StrictMode>,
+  );
+}
+
+// `#/connect` is a development affordance for driving a remote instance from a
+// browser (see app/DevConnect). The whole branch — and the module it loads — is
+// dropped from a production build, where the only way into the remote mode is a
+// native shell configuring the instance before boot.
+if (import.meta.env.DEV && window.location.hash.startsWith("#/connect")) {
+  void import("@/app/DevConnect").then(({ DevConnect }) => {
+    root.render(
+      <StrictMode>
+        <DevConnect
+          onReady={() => {
+            history.replaceState(null, "", window.location.pathname);
+            renderApp();
+          }}
+        />
+      </StrictMode>,
+    );
+  });
+} else {
+  renderApp();
+}

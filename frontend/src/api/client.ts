@@ -13,8 +13,7 @@
 // limitations under the License.
 
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import { freshToken } from "@/auth/keycloak";
-import { authMode } from "@/auth/config";
+import { apiRequest, apiUrl, authHeaders, credentialsMode, saveBlob } from "@/api/instance";
 import type { Citation } from "@/ws/protocol";
 
 export const queryClient = new QueryClient({
@@ -33,16 +32,14 @@ export const queryClient = new QueryClient({
   },
 });
 
-/** Authenticated fetch against the backend (same-origin; Vite proxies in dev).
- *  Keycloak mode attaches a Bearer token; local mode relies on the session cookie
- *  (`credentials: "include"`) and sends no token. */
+/** Authenticated JSON fetch against the instance. Where it goes and how it
+ *  authenticates is decided in one place (`@/api/instance`): same-origin with a
+ *  session cookie or an identity-provider token in the browser, a configured
+ *  remote instance with a device token on the native surface. */
 export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (authMode() === "keycloak") {
-    headers.set("Authorization", `Bearer ${await freshToken()}`);
-  }
+  const headers = await authHeaders(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const res = await fetch(path, { ...init, headers, credentials: "include" });
+  const res = await fetch(apiUrl(path), { ...init, headers, credentials: credentialsMode() });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`${res.status} ${res.statusText}: ${body.slice(0, 200)}`);
@@ -968,17 +965,9 @@ export function accessCheck(q: { user: string; permission: string; resource_type
 }
 
 export async function downloadAuditExport(): Promise<void> {
-  const token = await freshToken();
-  const res = await fetch("/api/admin/audit/export", { headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest("/api/admin/audit/export");
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const url = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "audit-evidence.json";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveBlob(await res.blob(), "audit-evidence.json");
 }
 
 // --- A2 evidence pack / checkpoints / erasure --------------------------------
@@ -994,7 +983,6 @@ export interface EvidenceFilters {
 }
 /** Download a filtered, signed evidence pack (JSON bundle or PDF report). */
 export async function downloadEvidencePack(f: EvidenceFilters): Promise<void> {
-  const token = await freshToken();
   const qs = new URLSearchParams();
   (["from", "to", "action", "actor_user_id", "resource_id", "interaction_id"] as const).forEach((k) => {
     const val = f[k];
@@ -1002,16 +990,9 @@ export async function downloadEvidencePack(f: EvidenceFilters): Promise<void> {
   });
   if (f.include_pii) qs.set("include_pii", "true");
   qs.set("format", f.format);
-  const res = await fetch(`/api/admin/audit/evidence?${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest(`/api/admin/audit/evidence?${qs}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const url = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = f.format === "pdf" ? "evidence-pack.pdf" : "evidence-pack.json";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveBlob(await res.blob(), f.format === "pdf" ? "evidence-pack.pdf" : "evidence-pack.json");
 }
 
 /** GDPR right-to-erasure: crypto-shred a subject's key. The chain still verifies. */
@@ -1642,11 +1623,10 @@ export function useTheme() {
 }
 /** Upload a branding asset (logo|favicon) — raw bytes + ?mime (admin). */
 export async function uploadBranding(kind: string, file: File): Promise<void> {
-  const token = await freshToken();
   const mime = file.type || "image/png";
-  const res = await fetch(`/api/admin/branding/${kind}?mime=${encodeURIComponent(mime)}`, {
+  const res = await apiRequest(`/api/admin/branding/${kind}?mime=${encodeURIComponent(mime)}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": mime },
+    headers: { "Content-Type": mime },
     body: file,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -1675,15 +1655,14 @@ export function useReadiness() {
 
 // ── Voice (dictation + read-aloud) ───────────────────────────────────────────
 // Gated server-side on features.voice (400 if off, 503 if the engine is down).
-// Binary bodies → raw fetch + Bearer (not apiFetch).
+// Binary bodies → raw request (not apiFetch, which is JSON-shaped).
 
 /** STT: raw audio bytes → transcript. */
 export async function transcribeAudio(blob: Blob): Promise<{ text: string }> {
-  const token = await freshToken();
   const mime = blob.type || "application/octet-stream";
-  const res = await fetch(`/api/voice/transcribe?mime=${encodeURIComponent(mime)}`, {
+  const res = await apiRequest(`/api/voice/transcribe?mime=${encodeURIComponent(mime)}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": mime },
+    headers: { "Content-Type": mime },
     body: blob,
   });
   if (!res.ok) {
@@ -1695,10 +1674,9 @@ export async function transcribeAudio(blob: Blob): Promise<{ text: string }> {
 
 /** TTS: text → audio blob (mime from the engine). */
 export async function speakText(text: string, voice?: string): Promise<Blob> {
-  const token = await freshToken();
-  const res = await fetch("/api/voice/speech", {
+  const res = await apiRequest("/api/voice/speech", {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, voice }),
   });
   if (!res.ok) {
@@ -2085,23 +2063,29 @@ export function startDm(userId: string): Promise<{ id: string }> {
 
 /** Upload an image/file for a group/DM message; returns the stored attachment ref. */
 export async function uploadMessageAttachment(file: File): Promise<MessageAttachment> {
-  const token = await freshToken();
   const qs = new URLSearchParams({ filename: file.name, mime: file.type || "application/octet-stream" });
-  const res = await fetch(`/api/message-attachments?${qs}`, {
+  const res = await apiRequest(`/api/message-attachments?${qs}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+    headers: { "Content-Type": "application/octet-stream" },
     body: file,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
-/** Fetch a message attachment's bytes (Bearer) → object URL for inline render. */
+/** Fetch a message attachment's bytes (authenticated) → object URL for inline
+ *  render. The caller owns the URL and must revoke it. */
 export async function messageAttachmentUrl(id: string): Promise<string> {
-  const token = await freshToken();
-  const res = await fetch(`/api/message-attachments/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest(`/api/message-attachments/${id}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return URL.createObjectURL(await res.blob());
+}
+
+/** A message attachment's bytes, for saving to disk. */
+export async function messageAttachmentBlob(id: string): Promise<Blob> {
+  const res = await apiRequest(`/api/message-attachments/${id}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.blob();
 }
 
 export function useGroupChats() {
@@ -2162,19 +2146,11 @@ export function deleteNote(chatId: string, noteId: string): Promise<{ ok: boolea
   return apiFetch(`/api/group-chats/${chatId}/notes/${noteId}`, { method: "DELETE" });
 }
 
-/** Download an artefact's bytes via an anchor (needs Bearer → blob). */
+/** Download an artefact's bytes via an anchor (authenticated fetch → blob). */
 export async function downloadArtefact(id: string, title: string, kind: string): Promise<void> {
-  const token = await freshToken();
-  const res = await fetch(`/api/artefacts/${id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest(`/api/artefacts/${id}/download`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const url = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = kind === "file" ? title : `${title}.${kind}`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveBlob(await res.blob(), kind === "file" ? title : `${title}.${kind}`);
 }
 
 export function useCalendar(from?: string, to?: string) {
@@ -2274,24 +2250,23 @@ export interface MessageOut {
   citations?: Citation[] | null;
 }
 
-/** URL to fetch an attachment's bytes — usable directly as an <img src> (cookie auth). */
-export function chatAttachmentUrl(id: string): string {
-  return `/api/chat-attachments/${id}`;
+/** A chat attachment's bytes. The route is credential-gated, so an `<img>` cannot
+ *  point at it directly — fetch here and hand the element an object URL. */
+async function chatAttachmentBlob(id: string): Promise<Blob> {
+  const res = await apiRequest(`/api/chat-attachments/${id}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.blob();
 }
 
-/** Download a chat attachment via an authorised fetch (bearer) → blob → save. */
+/** An object URL for a chat attachment, for inline rendering. The caller owns it
+ *  and must revoke it. */
+export async function chatAttachmentUrl(id: string): Promise<string> {
+  return URL.createObjectURL(await chatAttachmentBlob(id));
+}
+
+/** Download a chat attachment via an authenticated fetch → blob → save. */
 export async function downloadChatAttachment(id: string, filename: string): Promise<void> {
-  const token = await freshToken();
-  const res = await fetch(`/api/chat-attachments/${id}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const url = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveBlob(await chatAttachmentBlob(id), filename);
 }
 
 // ── Agent action audit view: the consolidated per-turn review bundle + sign-off ──
@@ -2731,8 +2706,7 @@ export function createPage(id: string) {
 /** Fetch an artefact's raw text (e.g. an html artefact's source for a sandboxed
  *  preview). Reuses the download endpoint and reads the body as text. */
 export async function fetchArtefactText(id: string): Promise<string> {
-  const token = await freshToken();
-  const res = await fetch(`/api/artefacts/${id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest(`/api/artefacts/${id}/download`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
 }
@@ -2743,8 +2717,7 @@ export async function fetchArtefactText(id: string): Promise<string> {
  *  the artefact is too large, so the caller can offer a download instead of
  *  pulling megabytes of text into the DOM. */
 export async function fetchArtefactTextCapped(id: string, maxBytes: number): Promise<string | null> {
-  const token = await freshToken();
-  const res = await fetch(`/api/artefacts/${id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest(`/api/artefacts/${id}/download`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const len = Number(res.headers.get("content-length") ?? "");
   if (Number.isFinite(len) && len > maxBytes) {
@@ -2772,8 +2745,7 @@ export async function artefactBlobUrl(id: string, forcedType?: string): Promise<
 /** An artefact's bytes (Bearer) for renderers that want the Blob itself rather
  *  than a URL — docx-preview, for one. */
 export async function artefactBlob(id: string): Promise<Blob> {
-  const token = await freshToken();
-  const res = await fetch(`/api/artefacts/${id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest(`/api/artefacts/${id}/download`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.blob();
 }
@@ -2793,36 +2765,18 @@ export function useChatMessages(chatId: string | undefined) {
   });
 }
 
-/** Download a chat transcript (md/json/pdf) via an anchor (Bearer → blob). */
+/** Download a chat transcript (md/json/pdf) via an anchor (authenticated → blob). */
 export async function exportChat(id: string, format: "md" | "json" | "pdf"): Promise<void> {
-  const token = await freshToken();
-  const res = await fetch(`/api/chats/${id}/export?format=${format}`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest(`/api/chats/${id}/export?format=${format}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const url = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `chat.${format}`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveBlob(await res.blob(), `chat.${format}`);
 }
 
-/** Download a groundedness verification report (md/pdf/docx) via an anchor (Bearer → blob). */
+/** Download a groundedness verification report (md/pdf/docx) via an anchor. */
 export async function downloadVerificationReport(runId: string, format: "md" | "pdf" | "docx"): Promise<void> {
-  const token = await freshToken();
-  const res = await fetch(`/api/verification-runs/${runId}/report?format=${format}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await apiRequest(`/api/verification-runs/${runId}/report?format=${format}`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const url = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `groundedness-report.${format}`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveBlob(await res.blob(), `groundedness-report.${format}`);
 }
 
 export function renameChat(id: string, title: string): Promise<{ ok: boolean }> {
@@ -2884,11 +2838,10 @@ export async function changePassword(current_password: string, new_password: str
 }
 
 export async function uploadMyAvatar(file: File): Promise<void> {
-  const token = await freshToken();
   const mime = file.type || "image/png";
-  const res = await fetch(`/api/me/avatar?mime=${encodeURIComponent(mime)}`, {
+  const res = await apiRequest(`/api/me/avatar?mime=${encodeURIComponent(mime)}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": mime },
+    headers: { "Content-Type": mime },
     body: file,
   });
   if (!res.ok) throw new Error(`${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
@@ -2951,11 +2904,10 @@ export function createKnowledge(projectId: string): Promise<unknown> {
 
 /** Binary upload — bypasses the JSON path of apiFetch (raw bytes body). */
 export async function uploadDocument(projectId: string, file: File): Promise<void> {
-  const token = await freshToken();
   const qs = new URLSearchParams({ filename: file.name, mime: file.type || "application/octet-stream" });
-  const res = await fetch(`/api/projects/${projectId}/documents?${qs}`, {
+  const res = await apiRequest(`/api/projects/${projectId}/documents?${qs}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+    headers: { "Content-Type": "application/octet-stream" },
     body: file,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -3014,11 +2966,10 @@ export function deleteLibrary(id: string): Promise<unknown> {
   return apiFetch(`/api/kb/${id}`, { method: "DELETE" });
 }
 export async function uploadLibraryDocument(kbId: string, file: File): Promise<void> {
-  const token = await freshToken();
   const qs = new URLSearchParams({ filename: file.name, mime: file.type || "application/octet-stream" });
-  const res = await fetch(`/api/kb/${kbId}/documents?${qs}`, {
+  const res = await apiRequest(`/api/kb/${kbId}/documents?${qs}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+    headers: { "Content-Type": "application/octet-stream" },
     body: file,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -3158,11 +3109,10 @@ export function useWorkspaceDocs(projectId: string | undefined) {
 
 /** Binary upload of a workspace document (mirrors uploadDocument). */
 export async function uploadWorkspaceDoc(projectId: string, file: File): Promise<void> {
-  const token = await freshToken();
   const qs = new URLSearchParams({ filename: file.name, mime: file.type || "application/octet-stream" });
-  const res = await fetch(`/api/projects/${projectId}/workspace/documents?${qs}`, {
+  const res = await apiRequest(`/api/projects/${projectId}/workspace/documents?${qs}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+    headers: { "Content-Type": "application/octet-stream" },
     body: file,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -3171,7 +3121,6 @@ export async function uploadWorkspaceDoc(projectId: string, file: File): Promise
 /** Upload a per-turn chat attachment → staged server-side; returns its id to pass
  *  in the next chat.send (the model reads its text for that turn only). */
 export async function uploadChatAttachment(file: File): Promise<{ id: string; filename: string; chars: number }> {
-  const token = await freshToken();
   const qs = new URLSearchParams({ filename: file.name, mime: file.type || "application/octet-stream" });
   // Bound the request so a stalled upload / slow server-side extraction surfaces as a
   // clear "timed out" rather than the browser's opaque "Failed to fetch". 5 min is
@@ -3180,9 +3129,9 @@ export async function uploadChatAttachment(file: File): Promise<{ id: string; fi
   const timer = setTimeout(() => ctl.abort(), 5 * 60 * 1000);
   let res: Response;
   try {
-    res = await fetch(`/api/chat-attachments?${qs}`, {
+    res = await apiRequest(`/api/chat-attachments?${qs}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+      headers: { "Content-Type": "application/octet-stream" },
       body: file,
       signal: ctl.signal,
     });
@@ -3249,22 +3198,11 @@ export function rerunCell(id: string, documentId: string, columnKey: string): Pr
   });
 }
 
-/** Download the xlsx export via an anchor (needs the Bearer header → blob). */
+/** Download the xlsx export via an anchor (authenticated fetch → blob). */
 export async function exportReview(id: string, name: string): Promise<void> {
-  const token = await freshToken();
-  const res = await fetch(`/api/tabular-reviews/${id}/export`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await apiRequest(`/api/tabular-reviews/${id}/export`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${name || "review"}.xlsx`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  saveBlob(await res.blob(), `${name || "review"}.xlsx`);
 }
 
 // ── Workspace documents + tracked changes ────────────────────────────────────
@@ -3331,12 +3269,9 @@ export function useDocEdits(documentId: string | undefined, status: "pending" | 
   });
 }
 
-/** Raw DOCX bytes of a version (for docx-preview). Bearer fetch → Blob. */
+/** Raw DOCX bytes of a version (for docx-preview). Authenticated fetch → Blob. */
 export async function fetchVersionDocx(documentId: string, versionId: string): Promise<Blob> {
-  const token = await freshToken();
-  const res = await fetch(`/api/documents/${documentId}/versions/${versionId}/download`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await apiRequest(`/api/documents/${documentId}/versions/${versionId}/download`);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.blob();
 }
@@ -3349,22 +3284,14 @@ export async function fetchVersionText(documentId: string, versionId: string): P
 
 /** Render (or fetch cached) the version's PDF and return it as a blob (for inline embed). */
 export async function fetchVersionPdf(documentId: string, versionId: string): Promise<Blob> {
-  const token = await freshToken();
-  const res = await fetch(`/api/documents/${documentId}/versions/${versionId}/pdf`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await apiRequest(`/api/documents/${documentId}/versions/${versionId}/pdf`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.blob();
 }
 
 /** Render (or fetch cached) the version's PDF and open it in a new tab. */
 export async function openVersionPdf(documentId: string, versionId: string): Promise<void> {
-  const token = await freshToken();
-  const res = await fetch(`/api/documents/${documentId}/versions/${versionId}/pdf`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await apiRequest(`/api/documents/${documentId}/versions/${versionId}/pdf`, { method: "POST" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const url = URL.createObjectURL(await res.blob());
   window.open(url, "_blank", "noopener");
@@ -3373,8 +3300,7 @@ export async function openVersionPdf(documentId: string, versionId: string): Pro
 }
 
 async function postEdit(path: string): Promise<ResolvedVersion> {
-  const token = await freshToken();
-  const res = await fetch(path, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+  const res = await apiRequest(path, { method: "POST" });
   if (res.status === 409) throw new ConflictError();
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
   return res.json();

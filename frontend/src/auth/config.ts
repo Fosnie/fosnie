@@ -18,6 +18,8 @@
 // is touched, so the SPA renders the right login UI and the API client knows
 // whether to attach a Bearer token.
 
+import { apiUrl, credentialsMode } from "@/api/instance";
+
 export type AuthMode = "local" | "keycloak";
 
 export interface AuthConfig {
@@ -49,7 +51,7 @@ let cached: AuthConfig | null = null;
 export async function loadAuthConfig(): Promise<AuthConfig> {
   if (cached) return cached;
   try {
-    const res = await fetch("/api/auth/config", { credentials: "include" });
+    const res = await fetch(apiUrl("/api/auth/config"), { credentials: credentialsMode() });
     cached = res.ok ? ((await res.json()) as AuthConfig) : { mode: "keycloak", local_enabled: false };
   } catch {
     cached = { mode: "keycloak", local_enabled: false };
@@ -57,8 +59,14 @@ export async function loadAuthConfig(): Promise<AuthConfig> {
   return cached;
 }
 
-/** The resolved mode after `loadAuthConfig()`. Defaults to `keycloak` until then. */
-export function authMode(): AuthMode {
+/** The mode this deployment serves, after `loadAuthConfig()`. Defaults to
+ *  `keycloak` until then.
+ *
+ *  This is the *server's* answer, which a paired device overrides — a device
+ *  authenticates with its own token whatever the deployment's login flow is. Use
+ *  `authMode()` from `@/api/instance` wherever that distinction matters; this one
+ *  is for deciding what the deployment itself supports. */
+export function serverAuthMode(): AuthMode {
   return cached?.mode ?? "keycloak";
 }
 

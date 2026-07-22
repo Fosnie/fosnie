@@ -880,7 +880,7 @@
 /* User message attachments: a full-width row under the bubble, right-aligned to
    match it. Images render as thumbnails (click → full); other files as chips. */
 .msg-attachments { width: 100%; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 6px; }
-.msg-attach-img { display: inline-block; line-height: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line-warm); max-width: 220px; max-height: 220px; }
+.msg-attach-img { display: inline-block; line-height: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line-warm); max-width: 220px; max-height: 220px; padding: 0; background: none; cursor: pointer; }
 .msg-attach-img img { max-width: 220px; max-height: 220px; object-fit: cover; display: block; }
 .ai-avatar { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: none; border: 1px solid var(--line-2); color: var(--ink-2); flex-shrink: 0; }
 .ai-avatar.legal { background: none; border: 1px solid var(--line-2); color: var(--ink-2); }

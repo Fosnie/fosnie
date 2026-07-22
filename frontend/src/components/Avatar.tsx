@@ -14,7 +14,7 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 import { useUsers } from "@/api/client";
-import { freshToken } from "@/auth/keycloak";
+import { apiRequest } from "@/api/instance";
 
 /** Two-letter initials from a name or email — the avatar fallback. */
 export function initialsOf(name?: string | null): string {
@@ -23,8 +23,8 @@ export function initialsOf(name?: string | null): string {
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || name.slice(0, 2).toUpperCase();
 }
 
-// The avatar route is Bearer-gated, so a plain <img src> 401s. Fetch the bytes
-// with the token once per (id, version) and hand the <img> a blob URL. Cached +
+// The avatar route is credential-gated, so a plain <img src> 401s. Fetch the
+// bytes once per (id, version) and hand the <img> a blob URL. Cached +
 // in-flight-deduped across every avatar on screen; URLs live for the session.
 const urlCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
@@ -37,10 +37,7 @@ function loadAvatar(id: string, ts: number): Promise<string | null> {
   if (!pending) {
     pending = (async () => {
       try {
-        const token = await freshToken();
-        const res = await fetch(`/api/users/${id}/avatar?v=${ts}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const res = await apiRequest(`/api/users/${id}/avatar?v=${ts}`);
         if (!res.ok) return null;
         const url = URL.createObjectURL(await res.blob());
         urlCache.set(key, url);

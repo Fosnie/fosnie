@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import Keycloak from "keycloak-js";
-import { authMode } from "@/auth/config";
+import { serverAuthMode } from "@/auth/config";
 
 // Single keycloak-js instance (public SPA client, PKCE). Tokens live in memory
 // only — no localStorage for sensitive data.
@@ -41,7 +41,7 @@ export function initKeycloak(): Promise<boolean> {
  *  In local mode there is no Bearer token (the session is a cookie) — return an
  *  empty string so callers can attach a harmless header the backend ignores. */
 export async function freshToken(): Promise<string> {
-  if (authMode() === "local") return "";
+  if (serverAuthMode() === "local") return "";
   try {
     await keycloak.updateToken(30);
   } catch {

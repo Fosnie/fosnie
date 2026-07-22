@@ -85,6 +85,41 @@ interface Msg {
   attachments?: ChatAttachmentMeta[];
 }
 
+// An image attachment under a user message. The bytes route is credential-gated,
+// so the element is handed an object URL fetched with the caller's credentials
+// rather than a link to the endpoint; the URL is revoked when the message
+// scrolls out of the list. Clicking saves the file.
+function AttachmentImage({ att }: { att: ChatAttachmentMeta }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let held: string | null = null;
+    let cancelled = false;
+    chatAttachmentUrl(att.id)
+      .then((u) => {
+        if (cancelled) URL.revokeObjectURL(u);
+        else {
+          held = u;
+          setUrl(u);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (held) URL.revokeObjectURL(held);
+    };
+  }, [att.id]);
+  if (!url) return <div className="ed-hint mono">Loading image…</div>;
+  return (
+    <button
+      className="msg-attach-img"
+      title={att.filename}
+      onClick={() => downloadChatAttachment(att.id, att.filename).catch((e) => toast((e as Error).message))}
+    >
+      <img src={url} alt={att.filename} loading="lazy" />
+    </button>
+  );
+}
+
 export function Chat() {
   const { chatId } = useParams();
   const nav = useNavigate();
@@ -952,16 +987,7 @@ export function Chat() {
                       <div className="msg-attachments">
                         {atts.map((a) =>
                           a.mime.startsWith("image/") ? (
-                            <a
-                              key={a.id}
-                              href={chatAttachmentUrl(a.id)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="msg-attach-img"
-                              title={a.filename}
-                            >
-                              <img src={chatAttachmentUrl(a.id)} alt={a.filename} loading="lazy" />
-                            </a>
+                            <AttachmentImage key={a.id} att={a} />
                           ) : (
                             <button
                               key={a.id}

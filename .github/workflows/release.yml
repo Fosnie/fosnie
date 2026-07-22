@@ -17,7 +17,28 @@ permissions:
   packages: write   # push to GHCR
 
 jobs:
+  # Gate. The frontend suite includes structural guards that a review cannot
+  # reliably catch by eye — every request going through one layer, no credential
+  # leaving it — so they have to be machine-enforced or they decay. Typechecking
+  # is not repeated here: the image build runs `npm run build` (tsc -b) inside
+  # backend/Dockerfile and fails on a type error anyway. Interim measure until a
+  # full CI workflow lands with publication; nothing ships past a red suite.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # `npm install`, not `npm ci`: the committed lockfile is generated on
+      # Windows and omits linux-only optional deps (see backend/Dockerfile).
+      - run: npm install --no-audit --no-fund
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+
   images:
+    needs: checks
     runs-on: ubuntu-latest
     strategy:
       matrix:
