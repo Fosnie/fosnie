@@ -1,0 +1,20 @@
+# Line endings are LF in the repository and LF in every working tree, whatever
+# the contributor's platform or their `core.autocrlf` setting. Without this, a
+# Windows checkout rewrites text files to CRLF on the way out and back, which
+# turns every review into a diff of invisible characters.
+#
+# `text=auto` lets git decide what is text by content; `eol=lf` then pins the
+# working-tree form. Files listed as `binary` are exempt from both, so no byte of
+# a font, an image or a fixture document is ever touched.
+* text=auto eol=lf
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.docx  binary
+*.pdf   binary
