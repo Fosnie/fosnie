@@ -1,0 +1,1 @@
+{"version":1,"type":"agent.approval","run_id":"07070707-0707-0707-0707-070707070707","turn_id":"03030303-0303-0303-0303-030303030303","tool":"web_search","summary":"search the web for rainfall data","args":{"depth":"deep","query":"rainfall"}}
