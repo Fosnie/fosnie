@@ -50,3 +50,9 @@ Thumbs.db
 # NOTE: backend/.sqlx is intentionally committed — sqlx offline query cache,
 # required to build without a live database.
 target-test/
+
+# --- Shared crates + desktop client (cargo build output, node deps) ---
+/crates/*/target/
+/desktop/src-tauri/target/
+/desktop/node_modules/
+/desktop/src-tauri/gen/

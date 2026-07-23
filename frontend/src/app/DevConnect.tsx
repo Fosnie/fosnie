@@ -22,22 +22,13 @@
 
 import { useState } from "react";
 import { configureInstance } from "@/api/instance";
+// The same folding the desktop client's pairing screen does, so a code that
+// works there works here.
+import { normaliseBase, normaliseCode } from "@/shell/format";
 
 /** The prefix every platform token carries, so a pasted secret can be told apart
  *  from a pairing code without asking which one it is. */
 const TOKEN_PREFIX = "sk-fosnie-";
-
-/** Pairing codes are read off one screen and typed into another, so people group
- *  and lower-case them. Fold that back before sending. */
-function normaliseCode(raw: string): string {
-  return raw.replace(/[\s-]/g, "").toUpperCase();
-}
-
-/** Add a scheme when the operator typed a bare host, and drop trailing slashes. */
-function normaliseBase(raw: string): string {
-  const t = raw.trim().replace(/\/+$/, "");
-  return /^https?:\/\//i.test(t) ? t : `https://${t}`;
-}
 
 function guessPlatform(): string {
   const ua = navigator.userAgent;

@@ -37,6 +37,114 @@ jobs:
       - run: npm test
         working-directory: frontend
 
+  # The wire format, checked on its own. The server and the installed client are
+  # released separately and meet at whatever versions a user happens to have, so
+  # the frame snapshots are the one thing that must not move quietly. No database
+  # and no toolchain beyond stable Rust: seconds, not minutes.
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+        working-directory: crates/fosnie-protocol
+
+  # The installable client. Built from the same frontend the images build, so the
+  # interface cannot drift between the two.
+  #
+  # Artefacts only: nothing here is attached to the Release. An unsigned
+  # application that connects to a company's systems and runs in the background is
+  # the exact shape endpoint protection exists to stop, so an unsigned build goes
+  # to testers by hand and no further. Signing is switched on by the Azure
+  # secrets appearing (see desktop/docs/updater-keys.md); until then the Windows
+  # job says in its summary that what it produced is not publishable.
+  desktop:
+    needs: [checks, protocol]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: desktop-windows
+          - os: macos-latest
+            artifact: desktop-macos
+    runs-on: ${{ matrix.os }}
+    # Resolved here because the secrets context cannot be read from a step's `if`.
+    env:
+      SIGNING_CONFIGURED: ${{ secrets.AZURE_SIGNING_ACCOUNT != '' }}
+      UPDATER_KEY_CONFIGURED: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # `npm install`, not `npm ci`: the committed lockfile is generated on
+      # Windows and omits linux-only optional deps (see backend/Dockerfile).
+      - run: npm install --no-audit --no-fund
+        working-directory: frontend
+      - run: npm install --no-audit --no-fund
+        working-directory: desktop
+
+      # An update artefact is signed as it is produced, so a build that is asked
+      # for one without a key fails outright — the installer is written and the
+      # command still exits non-zero. Two builds rather than one flag: with the
+      # key, the full release; without it, the same client minus the update
+      # artefact it could not sign.
+      - name: Build the client
+        if: env.UPDATER_KEY_CONFIGURED == 'true'
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run build
+
+      - name: Build the client (no update artefact, no signing key here)
+        if: env.UPDATER_KEY_CONFIGURED != 'true'
+        working-directory: desktop
+        run: npm run build:unsigned
+
+      # Signs the installer once the Trusted Signing account exists. UNPROVEN
+      # until then: it has never run with real credentials, so the first signed
+      # release must be checked by hand (signature present, SmartScreen
+      # behaviour) before it is published. See desktop/docs/updater-keys.md.
+      - name: Sign the installer
+        if: matrix.os == 'windows-latest' && env.SIGNING_CONFIGURED == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: desktop/src-tauri/target/release/bundle/msi
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Say whether this build can be published
+        if: matrix.os == 'windows-latest' && env.SIGNING_CONFIGURED != 'true'
+        shell: bash
+        run: |
+          echo "### Desktop client: UNSIGNED" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Code signing is not configured, so this installer is for testing only and must not be published. See desktop/docs/updater-keys.md." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            desktop/src-tauri/target/release/bundle/msi/*
+            desktop/src-tauri/target/release/bundle/dmg/*
+            desktop/src-tauri/target/release/bundle/macos/*
+
   images:
     needs: checks
     runs-on: ubuntu-latest

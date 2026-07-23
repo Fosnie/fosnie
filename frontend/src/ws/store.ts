@@ -1,4 +1,4 @@
-﻿// Copyright 2026 Private AI Ltd (SC881079)
+// Copyright 2026 Private AI Ltd (SC881079)
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,136 +13,92 @@
 // limitations under the License.
 
 import { useSyncExternalStore } from "react";
-import { apiFetch } from "@/api/client";
-import { deviceMode, wsBase } from "@/api/instance";
+import { isShell } from "@/shell/detect";
 import type { ClientFrame, ServerFrame, WsStatus } from "@/ws/protocol";
+import type { Transport } from "@/ws/transport";
+import { browserTransport } from "@/ws/transport-browser";
 
-// One multiplexed socket per user. Status is exposed via
-// useSyncExternalStore; frames are pushed to registered handlers. Reconnect uses
-// the server-issued resume token within its TTL, else a freshly-minted connect
-// ticket — the access token is never placed in the socket URL.
+// One multiplexed socket per user. Status is exposed via useSyncExternalStore;
+// frames are pushed to registered handlers.
+//
+// Who actually holds the socket is decided once, at startup: a browser holds its
+// own, the desktop client holds one on the window's behalf. Everything above
+// this line — every screen, every handler, the status indicator — is written
+// against this store and cannot tell which it got.
 
 type FrameHandler = (f: ServerFrame) => void;
 
-let ws: WebSocket | null = null;
 let status: WsStatus = "idle";
-let resumeToken: string | null = null;
-let attempts = 0;
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let stopped = false;
-
+let serverVersion: string | null = null;
 const statusListeners = new Set<() => void>();
 const frameHandlers = new Set<FrameHandler>();
+
+const transport: Transport = isShell() ? shellTransportLazily() : browserTransport();
+
+// The desktop transport reaches the client's runtime, which a browser build has
+// no business loading. Selecting it is synchronous, so the module is pulled in
+// through a thin proxy that queues the handful of calls made before it lands.
+function shellTransportLazily(): Transport {
+  let real: Transport | null = null;
+  const pending: Array<(t: Transport) => void> = [];
+  const withTransport = (fn: (t: Transport) => void) => (real ? fn(real) : pending.push(fn));
+
+  void import("@/ws/transport-shell").then(({ shellTransport }) => {
+    real = shellTransport();
+    real.onFrame(deliver);
+    real.onStatus(setStatus);
+    for (const fn of pending) fn(real);
+    pending.length = 0;
+  });
+
+  return {
+    start: () => withTransport((t) => t.start()),
+    stop: () => withTransport((t) => t.stop()),
+    send: (payload) => withTransport((t) => t.send(payload)),
+    // Handlers are wired straight to the store above; the proxy does not need to
+    // forward the registrations.
+    onFrame: () => {},
+    onStatus: () => {},
+  };
+}
 
 function setStatus(s: WsStatus) {
   status = s;
   statusListeners.forEach((l) => l());
 }
 
-async function open() {
-  if (stopped) return;
-  setStatus("connecting");
-  let url: string;
+function deliver(raw: string) {
+  let frame: ServerFrame;
   try {
-    if (resumeToken) {
-      url = `${wsBase()}?resume=${encodeURIComponent(resumeToken)}`;
-    } else {
-      // Mint a single-use ticket over the authenticated HTTP path (Bearer token
-      // in the Authorization header) so the JWT never lands in the socket URL.
-      const { ticket } = await apiFetch<{ ticket: string }>("/api/ws-ticket", { method: "POST" });
-      url = `${wsBase()}?ticket=${encodeURIComponent(ticket)}`;
-    }
+    frame = JSON.parse(raw) as ServerFrame;
   } catch {
-    setStatus("closed");
     return;
   }
-  const sock = new WebSocket(url);
-  ws = sock;
-
-  sock.onopen = () => {
-    attempts = 0;
-    setStatus("open");
-    // Identify this client to the server. Advisory: the server records it and
-    // enforces nothing, and an older server that has never heard of the frame
-    // ignores it. Sent directly on the socket rather than through `send`, which
-    // checks a readiness flag this handler is what sets.
-    sock.send(
-      JSON.stringify({
-        version: 1,
-        type: "client.hello",
-        client_kind: deviceMode() ? "desktop" : "web",
-        client_version: typeof __APP_RELEASE__ !== "undefined" ? __APP_RELEASE__ : "",
-        capabilities: [],
-      }),
-    );
-  };
-  sock.onmessage = (ev) => {
-    let frame: ServerFrame;
-    try {
-      frame = JSON.parse(ev.data as string) as ServerFrame;
-    } catch {
-      return;
+  // The instance names its own build in the opening frame. Kept because a client
+  // that ships separately from the instance is often several releases away from
+  // it, and the pair of numbers is the first thing worth knowing about a report.
+  if (frame.type === "hello") {
+    const version = (frame as { server_version?: string }).server_version;
+    if (version) {
+      serverVersion = version;
+      statusListeners.forEach((l) => l());
     }
-    if (frame.type === "hello") resumeToken = (frame as { resume_token: string }).resume_token;
-    frameHandlers.forEach((h) => h(frame));
-  };
-  sock.onclose = () => {
-    if (ws === sock) ws = null;
-    setStatus("closed");
-    scheduleReconnect();
-  };
-  sock.onerror = () => sock.close();
-}
-
-function scheduleReconnect() {
-  if (stopped || reconnectTimer) return;
-  // Keep retrying indefinitely (capped backoff ≤30s) so the socket self-heals
-  // after a backend restart — never permanently give up while mounted.
-  const delay = Math.min(30_000, 500 * 2 ** Math.min(attempts, 6));
-  attempts += 1;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    void open();
-  }, delay);
-}
-
-// Reconnect immediately (reset backoff) — fired on network/focus/visibility
-// recovery so a dropped socket comes back at once instead of after the backoff.
-function reconnectNow() {
-  if (stopped) return;
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-  attempts = 0;
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
   }
-  void open();
+  frameHandlers.forEach((h) => h(frame));
 }
 
-if (typeof window !== "undefined") {
-  window.addEventListener("online", reconnectNow);
-  window.addEventListener("focus", reconnectNow);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") reconnectNow();
-  });
-}
+transport.onFrame(deliver);
+transport.onStatus(setStatus);
 
 export const wsStore = {
   start() {
-    stopped = false;
-    if (!ws && status !== "connecting") void open();
+    transport.start();
   },
   stop() {
-    stopped = true;
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    ws?.close();
-    ws = null;
+    transport.stop();
   },
   send(frame: ClientFrame) {
-    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ version: 1, ...frame }));
+    transport.send(JSON.stringify({ version: 1, ...frame }));
   },
   onFrame(h: FrameHandler): () => void {
     frameHandlers.add(h);
@@ -153,8 +109,15 @@ export const wsStore = {
     return () => statusListeners.delete(l);
   },
   getStatus: (): WsStatus => status,
+  /** The connected instance's version, once it has said hello. */
+  getServerVersion: (): string | null => serverVersion,
 };
 
 export function useWsStatus(): WsStatus {
   return useSyncExternalStore(wsStore.subscribe, wsStore.getStatus);
+}
+
+/** The connected instance's version, or `null` before the socket has opened. */
+export function useServerVersion(): string | null {
+  return useSyncExternalStore(wsStore.subscribe, wsStore.getServerVersion);
 }

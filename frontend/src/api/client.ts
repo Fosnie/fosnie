@@ -13,7 +13,14 @@
 // limitations under the License.
 
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import { apiRequest, apiUrl, authHeaders, credentialsMode, saveBlob } from "@/api/instance";
+import {
+  apiRequest,
+  apiUrl,
+  authHeaders,
+  credentialsMode,
+  noteUnauthorised,
+  saveBlob,
+} from "@/api/instance";
 import type { Citation } from "@/ws/protocol";
 
 export const queryClient = new QueryClient({
@@ -40,6 +47,8 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
   const headers = await authHeaders(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const res = await fetch(apiUrl(path), { ...init, headers, credentials: credentialsMode() });
+  // A refused credential is the request layer's business, not each caller's.
+  noteUnauthorised(res.status);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`${res.status} ${res.statusText}: ${body.slice(0, 200)}`);

@@ -1,0 +1,89 @@
+# Copyright 2026 Private AI Ltd (SC881079)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[package]
+name = "fosnie-desktop"
+# The desktop client versions itself. It is installed once and updated on its own
+# schedule, so its number says nothing about the instance it connects to; both are
+# shown side by side in the application's About panel.
+version = "0.1.0"
+edition = "2021"
+description = "Fosnie desktop client — a governed window onto an instance."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "fosnie_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fosnie-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+# The socket's frame types, compiled from the same source as the server's.
+fosnie-protocol = { path = "../../crates/fosnie-protocol" }
+futures-util = "0.3"
+# The device token lives in the operating system's credential store and nowhere
+# else: no file this process writes, no browser storage, no configuration entry.
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+# Notifications go through the plugin everywhere except Windows, where the
+# toast is built directly (below) so that clicking it can lead somewhere.
+tauri-plugin-deep-link = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Updating in place is the one capability that can replace this binary, so the
+# plugin is pinned exactly rather than floated: an unreviewed minor bump here is
+# an unreviewed change to how a signature is checked.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "=2.10.1"
+
+# The Windows toast API, used directly for one reason: the notification plugin's
+# desktop path discards the handle an activation is delivered on, so a
+# notification sent through it can never open the thing it is about. This crate
+# is already in the tree beneath the plugin; naming it here adds no new
+# dependency, only access to the callback.
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.7.3"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+# A client that ships to end machines: strip and optimise for size, and abort on
+# panic rather than unwinding into an unknown state on someone's desktop.
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

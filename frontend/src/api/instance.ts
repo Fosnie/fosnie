@@ -109,6 +109,31 @@ export async function authHeaders(init?: HeadersInit): Promise<Headers> {
   return headers;
 }
 
+/** Called when the instance refuses the device token: the pairing is over.
+ *
+ *  A device can be signed out from the web at any moment, and the client that
+ *  was signed out may be sitting on an open socket with a screen full of content
+ *  it can no longer refresh. Whichever request notices first says so, once. */
+type UnauthorisedHandler = () => void;
+let onUnauthorised: UnauthorisedHandler | null = null;
+let alreadyReported = false;
+
+/** Register what to do when the device token stops being accepted. Set by the
+ *  native surface's boot path; unused in a browser, where a rejected request is
+ *  the sign-in flow's business. */
+export function setUnauthorisedHandler(handler: UnauthorisedHandler | null): void {
+  onUnauthorised = handler;
+  alreadyReported = false;
+}
+
+/** Report a refused request. Only in device mode, and only once: a screen with
+ *  eight queries on it would otherwise report eight times. */
+export function noteUnauthorised(status: number): void {
+  if (status !== 401 || !runtime || alreadyReported || !onUnauthorised) return;
+  alreadyReported = true;
+  onUnauthorised();
+}
+
 /** An authenticated request to the instance, returned unread and unchecked.
  *
  *  This is the raw seam for the calls that cannot use `apiFetch`: binary bodies,
@@ -117,9 +142,12 @@ export async function authHeaders(init?: HeadersInit): Promise<Headers> {
  *  what a failure means differs (a 409 is a conflict to resolve, an over-long
  *  body is a download to offer instead). */
 export function apiRequest(path: string, init: RequestInit = {}): Promise<Response> {
-  return authHeaders(init.headers).then((headers) =>
-    fetch(apiUrl(path), { ...init, headers, credentials: credentialsMode() }),
-  );
+  return authHeaders(init.headers)
+    .then((headers) => fetch(apiUrl(path), { ...init, headers, credentials: credentialsMode() }))
+    .then((res) => {
+      noteUnauthorised(res.status);
+      return res;
+    });
 }
 
 /** The WebSocket endpoint: derived from the configured instance in device mode,
