@@ -59,6 +59,7 @@ import { MfaEnrolFlow, RecoveryCodesPanel } from "@/components/MfaEnrol";
 import { confirmDialog, toast } from "@/components/dialogs";
 import { PanelHead } from "@/components/editor";
 import { Icon } from "@/components/icons";
+import { ShellAbout } from "@/shell/About";
 import { useAppearance } from "@/app/AppearanceContext";
 import { useAuth } from "@/auth/AuthProvider";
 import { authConfig } from "@/auth/config";
@@ -937,7 +938,15 @@ export function Profile() {
         {tab === "api-keys" && <ApiKeysSection />}
 
         {/* Connected devices — paired desktop apps and their tokens. */}
-        {tab === "devices" && <DevicesSection />}
+        {tab === "devices" && (
+          <>
+            {/* When this window IS one of those devices, say which one and what
+                it is talking to, and let it sign itself out. Renders nothing in
+                a browser. */}
+            <ShellAbout />
+            <DevicesSection />
+          </>
+        )}
 
         {/* Connections — the caller's own DMS/mailbox OAuth connections (Enterprise). */}
         {tab === "connections" && <ConnectionsSection />}

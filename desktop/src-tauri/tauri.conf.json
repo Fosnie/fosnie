@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Fosnie",
+  "version": "0.1.0",
+  "identifier": "dev.fosnie.desktop",
+  "build": {
+    "frontendDist": "../../frontend/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run frontend:dev",
+    "beforeBuildCommand": "npm run frontend:build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Fosnie",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 880,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; worker-src 'self' blob:; frame-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https: wss: http: ws:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["fosnie"]
+      }
+    },
+    "updater": {
+      "endpoints": ["https://get.fosnie.dev/desktop/latest.json"],
+      "pubkey": "REPLACE_WITH_THE_RELEASE_PUBLIC_KEY"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "app", "dmg"],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Private AI Ltd",
+    "copyright": "Copyright 2026 Private AI Ltd (SC881079)",
+    "category": "Productivity",
+    "shortDescription": "The Fosnie desktop client.",
+    "longDescription": "Connect to a Fosnie instance and work in it from your desktop.",
+    "windows": {
+      "wix": {
+        "upgradeCode": "DC8F855B-F35C-47C9-8232-4738B74B0584"
+      }
+    }
+  }
+}

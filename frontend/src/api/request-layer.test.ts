@@ -71,9 +71,14 @@ describe("the device token stays inside the request layer", () => {
     const offenders = files
       .filter((f) => f.path !== SEAM)
       .filter((f) => /\bconfigureInstance\b/.test(f.text))
-      // Configuring the instance is the one legitimate touch: the boot path
-      // hands over what it was given and keeps no copy.
-      .filter((f) => !/^(app[\\/]DevConnect\.tsx|auth[\\/]AuthProvider\.tsx)$/.test(f.path))
+      // Configuring the instance is the one legitimate touch: the boot paths
+      // hand over what they were given and keep no copy.
+      .filter(
+        (f) =>
+          !/^(app[\\/]DevConnect\.tsx|auth[\\/]AuthProvider\.tsx|shell[\\/]boot\.tsx)$/.test(
+            f.path,
+          ),
+      )
       .map((f) => f.path);
     expect(offenders).toEqual([]);
   });

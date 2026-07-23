@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The whole of what the window may ask the client to do. This application is a governed window onto an instance: it has NO local capabilities. There is no filesystem access, no command execution, no arbitrary network client, and the plugins that would provide them are not dependencies of this crate at all, so no configuration change can switch them on. The only permission granted here is listening for the events the client emits (socket frames, connection state, pairing loss, notification clicks). Everything else the window can do goes through the client's own handful of commands, each of which is written to do one named thing. Adding to this list is a deliberate change and should be reviewed as one.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}

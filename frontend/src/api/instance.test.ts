@@ -28,6 +28,8 @@ const {
   credentialsMode,
   deviceMode,
   instanceBase,
+  noteUnauthorised,
+  setUnauthorisedHandler,
   wsBase,
 } = await import("@/api/instance");
 
@@ -111,5 +113,48 @@ describe("socket endpoint", () => {
   it("follows the serving origin when no instance is configured", () => {
     vi.stubGlobal("window", { location: { protocol: "https:", host: "app.example.com" } });
     expect(wsBase()).toBe("wss://app.example.com/ws");
+  });
+});
+
+describe("a refused device token", () => {
+  afterEach(() => setUnauthorisedHandler(null));
+
+  it("is reported once, however many screens notice it", () => {
+    const handler = vi.fn();
+    configureInstance({ baseUrl: "https://ai.example.com", token: "t" });
+    setUnauthorisedHandler(handler);
+    noteUnauthorised(401);
+    noteUnauthorised(401);
+    noteUnauthorised(401);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not confused with the other ways a request can fail", () => {
+    const handler = vi.fn();
+    configureInstance({ baseUrl: "https://ai.example.com", token: "t" });
+    setUnauthorisedHandler(handler);
+    for (const status of [200, 204, 403, 404, 409, 500]) noteUnauthorised(status);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("is the browser's own business, not this seam's", () => {
+    // In a browser a 401 means the session lapsed, which the sign-in flow
+    // already handles. Only a device pairing ends here.
+    const handler = vi.fn();
+    setUnauthorisedHandler(handler);
+    noteUnauthorised(401);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("can be reported again after the machine is paired afresh", () => {
+    const handler = vi.fn();
+    configureInstance({ baseUrl: "https://ai.example.com", token: "t" });
+    setUnauthorisedHandler(handler);
+    noteUnauthorised(401);
+    // Pairing again re-arms the seam, exactly as the boot path does.
+    configureInstance({ baseUrl: "https://ai.example.com", token: "t2" });
+    setUnauthorisedHandler(handler);
+    noteUnauthorised(401);
+    expect(handler).toHaveBeenCalledTimes(2);
   });
 });
