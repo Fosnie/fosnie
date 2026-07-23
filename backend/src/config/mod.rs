@@ -173,6 +173,14 @@ pub struct FeaturesConfig {
     /// The code-interpreter tool (Firecracker microVM, Linux+KVM only). The tool
     /// is never advertised or dispatchable while this is false.
     pub code_interpreter: bool,
+    /// Working in a folder on a paired machine. A presence capability, not an
+    /// egress one: the work happens on the user's own computer, at their own
+    /// request, after they have connected a folder there and agreed to each
+    /// change. Default **on**, because the gates that matter are the folder
+    /// itself and the approval in front of the person — this switch is for an
+    /// administrator who wants the whole family off the instance regardless.
+    #[serde(default = "default_true")]
+    pub desktop_execution: bool,
     /// Voice (dictation + read-aloud). Requires STT/TTS engines configured on the
     /// ML service; the voice endpoints/frames are refused while this is false.
     #[serde(default)]
@@ -676,7 +684,7 @@ impl Default for BootConfig {
                 client_secret: String::new(),
             },
             log_level: "info".into(),
-            features: FeaturesConfig { code_interpreter: false, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: true, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false },
+            features: FeaturesConfig { code_interpreter: false, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: true, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false },
             tool_timeout_secs: HashMap::new(),
             code_interpreter_vm: CodeInterpreterConfig::default(),
             code_interpreter: CodeInterpreterBackendConfig::default(),

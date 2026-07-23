@@ -47,7 +47,16 @@ pub fn device_name() -> String {
 pub struct Shell {
     pub http: reqwest::Client,
     pub bridge: Bridge,
+    /// Commands still running in a connected folder, so one can be stopped from
+    /// the window and none outlives the socket that asked for it.
+    pub executor: crate::executor::Running,
+    /// This run of the client, which is how backups are grouped.
+    pub session: String,
     pairing: RwLock<Option<Pairing>>,
+    /// Where the instance is, readable without waiting. The pairing behind the
+    /// lock is the same answer; a folder request is resolved on a path that has
+    /// no business awaiting anything, and the address is not a secret.
+    base_url: std::sync::RwLock<Option<String>>,
     /// The address someone is part-way through typing on the pairing screen, so
     /// the link to its profile page can be opened before there is a pairing.
     candidate: RwLock<Option<String>>,
@@ -55,12 +64,21 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(http: reqwest::Client, pairing: Option<Pairing>) -> Self {
+        let base_url = pairing.as_ref().map(|p| p.base_url.clone());
         Self {
             http,
             bridge: Bridge::default(),
+            executor: crate::executor::Running::default(),
+            session: crate::executor::session_id(),
             pairing: RwLock::new(pairing),
+            base_url: std::sync::RwLock::new(base_url),
             candidate: RwLock::new(None),
         }
+    }
+
+    /// The instance this client is paired with, without waiting.
+    pub fn paired_base_url(&self) -> Option<String> {
+        self.base_url.read().unwrap().clone()
     }
 
     pub async fn pairing(&self) -> Option<Pairing> {
@@ -70,12 +88,14 @@ impl Shell {
     /// Take up a pairing and bring the socket up on it.
     pub async fn adopt(&self, app: AppHandle, pairing: Pairing) -> Result<()> {
         *self.pairing.write().await = Some(pairing.clone());
+        *self.base_url.write().unwrap() = Some(pairing.base_url.clone());
         *self.candidate.write().await = Some(pairing.base_url.clone());
         self.bridge.start(app, self.http.clone(), pairing).await
     }
 
     pub async fn clear_pairing(&self) {
         *self.pairing.write().await = None;
+        *self.base_url.write().unwrap() = None;
     }
 
     pub async fn remember_candidate(&self, base_url: String) {

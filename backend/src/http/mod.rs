@@ -64,6 +64,7 @@ pub mod v1;
 pub mod voice;
 pub mod voice_admin;
 pub mod workflows;
+pub mod workspaces;
 
 use std::path::Path;
 
@@ -275,6 +276,33 @@ pub fn router(
             .route(
                 "/api/admin/users/{id}/devices/{device_id}",
                 delete(devices::admin_revoke_device),
+            )
+            // Folders a paired machine has been told it may work in. Connecting
+            // one starts on that machine (device token only); everything else —
+            // seeing them, withdrawing them, choosing one for a conversation,
+            // agreeing to a command — works from wherever the owner is.
+            .route(
+                "/api/me/workspaces",
+                post(workspaces::connect_workspace).get(workspaces::list_workspaces),
+            )
+            .route("/api/me/workspaces/{id}", delete(workspaces::revoke_workspace))
+            .route(
+                "/api/admin/users/{id}/workspaces",
+                get(workspaces::admin_list_workspaces),
+            )
+            .route(
+                "/api/chats/{id}/workspace",
+                get(workspaces::get_chat_workspace)
+                    .put(workspaces::bind_chat_workspace)
+                    .delete(workspaces::unbind_chat_workspace),
+            )
+            .route(
+                "/api/workspaces/{id}/command-prefixes",
+                post(workspaces::add_prefix).get(workspaces::list_prefixes),
+            )
+            .route(
+                "/api/workspaces/{id}/command-prefixes/{prefix_id}",
+                delete(workspaces::remove_prefix),
             )
             // Self-serve account deletion (soft-archive; emits `account.archived`).
             .route("/api/me/account", axum::routing::delete(profile::delete_account))

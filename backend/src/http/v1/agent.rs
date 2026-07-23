@@ -410,6 +410,7 @@ mod tests {
             tool: "some_tool".into(),
             summary: "Run some_tool?".into(),
             args: json!({}),
+            detail: None,
         })
         .await
         .unwrap();

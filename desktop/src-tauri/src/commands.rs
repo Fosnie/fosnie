@@ -14,16 +14,23 @@
 
 //! Everything the web view is allowed to ask this process to do.
 //!
-//! The list is short on purpose, and it is the whole of it: pair, unpair, learn
-//! where it is pointed, put a frame on the socket, open a link in the user's own
-//! browser. There is no file access, no command execution, and no general
-//! request proxy — this client cannot reach the machine it runs on, and adding
-//! that reach would be a deliberate change to this file and to the capability
-//! list beside it.
+//! The list is short on purpose and each entry does one named thing: pair,
+//! unpair, learn where it is pointed, put a frame on the socket, open a link in
+//! the user's own browser, and — since the client works in folders — choose a
+//! folder, connect one, see and undo what was done in it, stop a running
+//! command, and show a file in the file manager.
+//!
+//! What is deliberately absent is as much the point as what is here. There is no
+//! "read this file", no "run this command" and no general request proxy: the
+//! window cannot ask for work in a folder at all. Those requests arrive on the
+//! socket, from the instance, for a conversation bound to a folder somebody
+//! connected at this keyboard, and every one that changes anything has been
+//! agreed to first.
 
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
+use crate::folders::{self, Folder, Tier};
 use crate::instance;
 use crate::state::Shell;
 use crate::store::{self, Pairing};
@@ -161,6 +168,151 @@ pub async fn open_external(shell: State<'_, Shell>, url: String) -> CmdResult<()
         return Err("that link does not belong to the connected instance".into());
     }
     tauri_plugin_opener::open_url(url, None::<&str>).map_err(message)
+}
+
+// ── Folders on this machine ─────────────────────────────────────────────────
+
+/// Ask the person which folder, using the operating system's own picker.
+///
+/// Only a path comes back. Nothing in the folder is opened, listed or read here:
+/// choosing a folder is not agreeing to anything, and the agreement is the next
+/// call.
+#[tauri::command]
+pub async fn choose_folder(app: AppHandle) -> CmdResult<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let picked = rx.await.map_err(|_| "the folder picker was closed".to_string())?;
+    Ok(picked.and_then(|p| p.into_path().ok()).map(|p| folders::display(&p)))
+}
+
+/// Connect a folder at a level of trust the person has just agreed to: tell the
+/// instance, and record it here as what this machine may work in.
+#[tauri::command]
+pub async fn connect_folder(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    path: String,
+    tier: String,
+) -> CmdResult<Folder> {
+    let tier = Tier::parse(&tier).ok_or("that is not a level of trust")?;
+    let pairing = shell.pairing().await.ok_or("this computer is not paired with an instance")?;
+    // Canonicalised here, on the machine that has the folder, so what is recorded
+    // and what is checked later are the same thing.
+    let canonical = std::fs::canonicalize(&path).map_err(|_| format!("no such folder: {path}"))?;
+    let display = folders::display(&canonical);
+
+    let (workspace_id, _stored_path, _tier) = instance::connect_folder(
+        &shell.http,
+        &pairing.base_url,
+        &pairing.token,
+        &display,
+        tier.as_str(),
+    )
+    .await
+    .map_err(message)?;
+
+    let folder =
+        Folder { workspace_id, path: display, tier, base_url: pairing.base_url.clone() };
+    folders::remember(&app, folder.clone()).map_err(message)?;
+    Ok(folder)
+}
+
+/// The folders this machine holds for the instance it is paired with, after
+/// checking with the instance which of them still stand.
+#[tauri::command]
+pub async fn list_folders(app: AppHandle, shell: State<'_, Shell>) -> CmdResult<Vec<Folder>> {
+    let Some(pairing) = shell.pairing().await else { return Ok(Vec::new()) };
+    if let Some(live) =
+        instance::live_workspaces(&shell.http, &pairing.base_url, &pairing.token).await
+    {
+        let _ = folders::keep_only(&app, &pairing.base_url, &live);
+    }
+    Ok(folders::list(&app, &pairing.base_url))
+}
+
+/// Stop working in a folder on this machine. Withdrawing the grant itself is
+/// done on the instance, from wherever the owner happens to be.
+#[tauri::command]
+pub fn forget_folder(app: AppHandle, workspace_id: String) -> CmdResult<()> {
+    folders::forget(&app, &workspace_id).map_err(message)
+}
+
+/// What was changed in one turn, so it can be listed and undone.
+#[tauri::command]
+pub fn turn_changes(app: AppHandle, turn_id: String) -> CmdResult<Vec<crate::backup::Change>> {
+    Ok(crate::backup::for_turn(&app, &turn_id))
+}
+
+/// Put one file back the way it was. Refuses, unless `force`, when the file has
+/// been edited since the agent changed it — a restore then would discard that.
+#[tauri::command]
+pub fn restore_change(app: AppHandle, id: String, force: bool) -> CmdResult<String> {
+    crate::backup::restore_one(&app, &id, force).map_err(message)
+}
+
+/// Put back everything one turn changed. Returns how many were restored and how
+/// many were left alone because they had been edited since (skipped unless `force`).
+#[tauri::command]
+pub fn restore_turn(app: AppHandle, turn_id: String, force: bool) -> CmdResult<(usize, usize)> {
+    crate::backup::restore_turn(&app, &turn_id, force).map_err(message)
+}
+
+/// Stop the command running for a turn. The window knows a command by the turn
+/// that asked for it — it never sees the call id — so this is how the stop button
+/// beside the output reaches the process. False when nothing is running for it.
+#[tauri::command]
+pub fn cancel_local_call(shell: State<'_, Shell>, turn_id: String) -> CmdResult<bool> {
+    let pids = shell.executor.pids_for_turn(&turn_id);
+    let stopped = !pids.is_empty();
+    for pid in pids {
+        crate::executor::stop(pid);
+    }
+    Ok(stopped)
+}
+
+/// The difference a proposed write would make, computed here because this is
+/// where the file is. The instance has never seen its contents and cannot show
+/// the change; without this the person would be agreeing to a description of a
+/// change rather than to the change.
+#[tauri::command]
+pub fn preview_change(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    workspace_id: String,
+    path: String,
+    new_content: String,
+) -> CmdResult<crate::diff::Preview> {
+    let base_url = shell.paired_base_url().ok_or("this computer is not paired")?;
+    let folder = folders::resolve(&app, &base_url, &workspace_id)
+        .ok_or("this computer has no record of that folder")?;
+    let target = folders::within(std::path::Path::new(&folder.path), &path, false)
+        .map_err(message)?;
+    let before = std::fs::read_to_string(&target).ok();
+    Ok(crate::diff::preview(before.as_deref(), &new_content))
+}
+
+/// Show a file in the operating system's file manager.
+///
+/// Scoped to a connected folder for the same reason opening a link is scoped to
+/// the paired instance: this exists so somebody can find what the agent just
+/// wrote, not so that anything rendered in the window can point the system
+/// wherever it likes.
+#[tauri::command]
+pub fn reveal_path(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    workspace_id: String,
+    path: String,
+) -> CmdResult<()> {
+    let base_url = shell.paired_base_url().ok_or("this computer is not paired")?;
+    let folder = folders::resolve(&app, &base_url, &workspace_id)
+        .ok_or("this computer has no record of that folder")?;
+    let target =
+        folders::within(std::path::Path::new(&folder.path), &path, true).map_err(message)?;
+    tauri_plugin_opener::reveal_item_in_dir(target).map_err(message)
 }
 
 /// Whether `url` addresses `base` (same scheme, host and port). Compared on the

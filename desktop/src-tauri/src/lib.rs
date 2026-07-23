@@ -14,15 +14,33 @@
 
 //! The Fosnie desktop client.
 //!
-//! A window onto an instance, and nothing more. It renders the same application
-//! a browser does, holds the socket outside the web view because web views are
-//! unreliable at holding one, and keeps the device credential in the operating
-//! system's store. It has no access to the machine it runs on: no files, no
-//! commands, no local tools. That is a property of what is compiled in — the
-//! plugins that would grant such access are not dependencies — and not merely of
-//! configuration.
+//! A window onto an instance. It renders the same application a browser does,
+//! holds the socket outside the web view because web views are unreliable at
+//! holding one, and keeps the device credential in the operating system's store.
+//!
+//! It also does one thing a browser cannot: work in a folder on this machine.
+//! That reach is narrow by construction, and the shape of the narrowness is
+//! worth stating, because "a desktop application that can touch your files" is
+//! otherwise a sentence to be nervous about.
+//!
+//! - It reaches **only** folders somebody chose at this keyboard, through the
+//!   system's own picker, and agreed a level of trust for. Nothing in a folder is
+//!   read before that agreement.
+//! - Every path is resolved against the real filesystem and checked to land
+//!   inside that folder, after links are followed — the instance checks the same
+//!   thing on the path as written, and this is the check that can see where it
+//!   actually leads.
+//! - Every write, deletion and command is put in front of the person first, and
+//!   every write and deletion is copied aside so it can be put back.
+//! - The **window cannot ask for any of it**. The commands it may call are listed
+//!   in [`commands`] and none of them reads a file or runs a program; the work
+//!   comes from the socket, for a conversation the owner bound to that folder.
 
+pub mod backup;
 pub mod commands;
+pub mod diff;
+pub mod executor;
+pub mod folders;
 pub mod instance;
 pub mod notify;
 pub mod state;
@@ -51,6 +69,11 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        // The system's folder picker. Reached only from this process's own
+        // `choose_folder` command, so the window cannot open a picker of its own
+        // — and there is nothing in the capability list beside this file that
+        // would let it.
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(notify::PendingChat::default())
@@ -65,6 +88,16 @@ pub fn run() {
             commands::unpair,
             commands::ws_send,
             commands::open_external,
+            commands::choose_folder,
+            commands::connect_folder,
+            commands::list_folders,
+            commands::forget_folder,
+            commands::turn_changes,
+            commands::restore_change,
+            commands::restore_turn,
+            commands::cancel_local_call,
+            commands::preview_change,
+            commands::reveal_path,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -91,6 +124,11 @@ pub fn run() {
             build_tray(app.handle())?;
             register_deep_link(app.handle());
             update::spawn_checks(handle);
+            // Copies of files changed weeks ago are of no use to anybody and are
+            // somebody's disk. Swept once, at startup, off the path of anything
+            // a person is waiting for.
+            let sweeping = app.handle().clone();
+            tauri::async_runtime::spawn(async move { backup::sweep(&sweeping) });
             Ok(())
         })
         .on_window_event(|window, event| {

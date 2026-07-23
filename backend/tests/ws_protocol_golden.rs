@@ -92,6 +92,7 @@ fn the_server_writes_exactly_the_snapshotted_bytes() {
                 tool: "web_search".into(),
                 summary: "search the web for rainfall data".into(),
                 args: serde_json::json!({ "query": "rainfall", "depth": "deep" }),
+                detail: None,
             }
             .to_json(),
         ),

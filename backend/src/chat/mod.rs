@@ -256,6 +256,60 @@ async fn run_turn_inner(
         });
     }
 
+    // The composer chose a folder for this chat and sent it with the message. Bind
+    // it now — the chat exists as of `resolve_chat` above — so this very turn can
+    // work in it, which is what lets a new chat's first message reach a folder that
+    // could not have been bound before the chat existed. Only a live folder the
+    // sender's own account holds is accepted; anything else is quietly ignored
+    // rather than failing the turn, because a stale composer selection is not a
+    // reason to refuse to talk.
+    if let Some(ws_id) = turn.workspace_id {
+        if let Some(uid) = ctx.user_id {
+            let owned = sqlx::query_scalar!(
+                "SELECT EXISTS(SELECT 1 FROM device_workspaces \
+                 WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL)",
+                ws_id,
+                uid,
+            )
+            .fetch_one(&state.pg)
+            .await
+            .unwrap_or(Some(false))
+            .unwrap_or(false);
+            if owned {
+                let bound = sqlx::query!(
+                    "INSERT INTO chat_workspace (chat_id, workspace_id) VALUES ($1, $2) \
+                     ON CONFLICT (chat_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, set_at = now() \
+                     RETURNING workspace_id",
+                    chat_id,
+                    ws_id,
+                )
+                .fetch_optional(&state.pg)
+                .await
+                .ok()
+                .flatten();
+                // Recorded like the explicit bind, so a folder attached by riding
+                // the first message is as visible in the trail as one attached from
+                // the composer — the audit does not care which door it came through.
+                if bound.is_some() {
+                    if let Ok(w) = sqlx::query!(
+                        "SELECT device_id, path FROM device_workspaces WHERE id = $1",
+                        ws_id
+                    )
+                    .fetch_one(&state.pg)
+                    .await
+                    {
+                        let mut ev = crate::audit::AuditEvent::action("workspace.bound", ctx.role.as_str());
+                        ev.actor_user_id = Some(uid);
+                        ev.resource_type = Some("device_workspace".into());
+                        ev.resource_id = Some(ws_id);
+                        ev.payload = Some(json!({ "chat_id": chat_id, "device_id": w.device_id, "path": w.path, "via": "message" }));
+                        let _ = crate::audit::append(&state.pg, &ev).await;
+                    }
+                }
+            }
+        }
+    }
+
     // Resolve the effective LLM provider ONCE for this turn (multi-LLM): an explicit
     // composer pick wins, else the chat's remembered provider, else the deployment
     // default. A visible explicit pick is persisted to the chat so it sticks — and a
@@ -568,9 +622,20 @@ async fn run_turn_inner(
     let prompt = effective_prompt(&agent.system_prompt, &state.boot.default_system_prompt);
     // `skills` and `memory_facts` were loaded in the join above.
 
+    // The folder this turn may work in, if there is one: the conversation was
+    // bound to a folder, and this turn came in from the very machine that folder
+    // is on. Anything else — a browser tab, another of the owner's machines, a
+    // folder since withdrawn — resolves to nothing, the note below is absent and
+    // the tools are never advertised. A capability the model cannot see is one it
+    // cannot promise the user it has.
+    let desktop_ctx = crate::tools::desktop::load_ctx(&state.pg, chat_id, turn.device_id).await;
+    let workspace_note = desktop_ctx
+        .as_ref()
+        .map(|d| (d.workspace.path.as_str(), d.workspace.tier.describe()));
+
     // [1]–[4] prefix WITHOUT RAG, measured and reserved first (no [5] note here — it
     // measures only the stable cacheable prefix).
-    let prefix = compose::build_system(&prompt, ctx, &skills, &memory_facts, None, unattended, false);
+    let prefix = compose::build_system(&prompt, ctx, &skills, &memory_facts, None, unattended, false, None);
 
     // [5] general-knowledge fallback: when nothing was retrieved and the workspace mode
     // permits it (general/legal, not Deep Research), let the agent answer from general
@@ -586,7 +651,7 @@ async fn run_turn_inner(
     // Trim [5] RAG to its budget (rare guard; chunks are already capped upstream).
     let rag_trimmed = rag_context.as_deref().map(|r| trim_to_tokens(r, alloc.rag_budget));
     let system =
-        compose::build_system(&prompt, ctx, &skills, &memory_facts, rag_trimmed.as_deref(), unattended, gk_fallback);
+        compose::build_system(&prompt, ctx, &skills, &memory_facts, rag_trimmed.as_deref(), unattended, gk_fallback, workspace_note);
 
     // `history` was loaded in the join above; compact it to the budget now.
     // Notify the user as the chat approaches the budget (compaction still runs).
@@ -614,6 +679,17 @@ async fn run_turn_inner(
         .filter(|t| t.as_str() != "generate_artefact")
         .filter(|t| crate::tools::host_enabled(t, &state.boot.features))
         .filter(|t| t.as_str() != "code_interpreter" || ci_ok)
+        // A folder tool is advertised only when there is a folder, and only when
+        // the agreed level of trust admits it. Asking somebody to approve a write
+        // to a folder they marked read only teaches them to approve things that
+        // were never going to happen; the tool simply is not there.
+        .filter(|t| {
+            !crate::tools::desktop::is_desktop_tool(t)
+                || desktop_ctx
+                    .as_ref()
+                    .map(|d| crate::tools::desktop::tier_allows(d.workspace.tier, t).is_ok())
+                    .unwrap_or(false)
+        })
         .filter(|t| tool_overrides.get(t.as_str()).map(|o| o.enabled).unwrap_or(true))
         .cloned()
         .collect();
@@ -825,7 +901,7 @@ async fn run_turn_inner(
 
     if !tool_defs.is_empty() {
         let outcome = run_tool_loop(
-            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary,
+            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary,
         )
         .await?;
         interrupted = outcome.interrupted;
@@ -943,7 +1019,7 @@ async fn run_turn_inner(
         // (already finished) kept its own skills-bearing prefix.
         {
             let synth_system =
-                compose::build_system(&prompt, ctx, &[], &memory_facts, rag_trimmed.as_deref(), unattended, gk_fallback);
+                compose::build_system(&prompt, ctx, &[], &memory_facts, rag_trimmed.as_deref(), unattended, gk_fallback, workspace_note);
             if let Some(first) = messages.first_mut() {
                 first["content"] = json!(synth_system);
             }
@@ -1042,7 +1118,7 @@ async fn run_turn_inner(
                     {
                         // Cancel-aware: the tool dispatch is not itself cancel-wrapped, so race it here.
                         crate::tools::NativeDecision::Allowed(w) => tokio::select! {
-                            r = crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), &[], &custom_tools, &w, &tc.arguments) =>
+                            r = crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), &[], &custom_tools, &w, &tc.arguments) =>
                                 r.unwrap_or_else(|e| format!("error: {e}")),
                             _ = cancel.notified() => { interrupted = true; "error: cancelled".to_string() }
                         },
@@ -1208,6 +1284,7 @@ async fn run_turn_inner(
                         tool: "generate_artefact".into(),
                         summary: format!("Generate “{title}” as a downloadable document?"),
                         args: pending,
+                        detail: None,
                     };
                     let _ = tx.send(frame.clone()).await;
                     if let Some(uid) = ctx.user_id {
@@ -1829,6 +1906,7 @@ async fn run_tool_loop(
     ci_files: &[crate::code_interpreter::InputFile],
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     rag_ctx: Option<&crate::tools::RagToolCtx>,
+    desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     messages: &mut Vec<Value>,
     activity: &mut Activity,
     reasoning: Option<&crate::reasoning::ReasoningSpec>,
@@ -1981,16 +2059,41 @@ async fn run_tool_loop(
             }
             // A gated call pauses for human approval: a side-effecting MCP tool, or
             // a custom tool that is side-effecting or a script.
-            let hitl = run_id.is_some()
-                && ((crate::mcp::is_namespaced(&tc.name)
-                    && match crate::mcp::split(&tc.name) {
-                        Some((s, t)) => crate::mcp::is_side_effecting(state, s, t).await,
-                        None => false,
-                    })
-                    || custom_tools
-                        .get(&tc.name)
-                        .map(|r| r.kind == "script" || r.side_effecting)
-                        .unwrap_or(false));
+            // Changing or running something in somebody's own folder is asked
+            // about, every time, with one exception: a command they have already
+            // agreed to by how it starts. Deleting is never that exception —
+            // there is no version of it that running again more carefully undoes.
+            // Only something actually offered this turn is worth asking about. A
+            // name the model produced that was never on its list is not a request
+            // to weigh up — it is the tell of an injected instruction, and putting
+            // it in front of the user as a card would both mislead them and teach
+            // them to click through. It goes down the ordinary path, where the
+            // authorisation seam refuses it and records why.
+            let desktop_gated = crate::tools::desktop::is_desktop_tool(&tc.name)
+                && authorised.contains(&tc.name)
+                && !matches!(
+                    crate::tools::effect(&tc.name),
+                    crate::tools::ToolEffect::ReadOnly
+                )
+                && !(tc.name == crate::tools::desktop::TERMINAL_RUN
+                    && desktop_ctx
+                        .and_then(|d| {
+                            tc.arguments
+                                .get("command")
+                                .and_then(|v| v.as_str())
+                                .and_then(|c| d.allowed_prefix(c))
+                        })
+                        .is_some());
+            let mcp_gated = crate::mcp::is_namespaced(&tc.name)
+                && match crate::mcp::split(&tc.name) {
+                    Some((s, t)) => crate::mcp::is_side_effecting(state, s, t).await,
+                    None => false,
+                };
+            let custom_gated = custom_tools
+                .get(&tc.name)
+                .map(|r| r.kind == "script" || r.side_effecting)
+                .unwrap_or(false);
+            let hitl = run_id.is_some() && (desktop_gated || mcp_gated || custom_gated);
             if hitl {
                 gated.push(tc);
             } else {
@@ -2001,7 +2104,7 @@ async fn run_tool_loop(
             let sem = sem.clone();
             async move {
                 let _permit = sem.acquire().await.expect("semaphore");
-                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, authorised, overrides, ci_files, custom_tools, rag_ctx, tc).await
+                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, authorised, overrides, ci_files, custom_tools, rag_ctx, desktop_ctx, tc).await
             }
         }))
         .await;
@@ -2010,7 +2113,7 @@ async fn run_tool_loop(
         }
         for tc in gated {
             let (id, r) = gated_call(
-                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, tc,
+                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, desktop_ctx, tc,
             )
             .await;
             by_id.insert(id, r);
@@ -2048,13 +2151,14 @@ async fn run_one_call(
     ci_files: &[crate::code_interpreter::InputFile],
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     rag_ctx: Option<&crate::tools::RagToolCtx>,
+    desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     tc: &ml::ToolCall,
 ) -> (String, String) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
     let _ = tx
         .send(ServerFrame::ChatTool { turn_id, name: tc.name.clone(), phase: "started".into(), detail: None })
         .await;
-    audit_tool(state, ctx, chat_id, &tc.name, "invoked");
+    audit_tool(state, ctx, chat_id, &tc.name, "invoked", desktop_ctx);
     let started = OffsetDateTime::now_utc();
     let is_mcp = crate::mcp::is_namespaced(&tc.name);
     let custom_row = custom_tools.get(&tc.name);
@@ -2101,7 +2205,7 @@ async fn run_one_call(
                 .await
                 {
                     crate::tools::NativeDecision::Allowed(w) => {
-                        crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, ci_files, custom_tools, &w, &tc.arguments).await
+                        crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, desktop_ctx, ci_files, custom_tools, &w, &tc.arguments).await
                     }
                     crate::tools::NativeDecision::Recoverable(m) => Ok(m),
                     crate::tools::NativeDecision::Denied(e) => Err(e),
@@ -2115,7 +2219,7 @@ async fn run_one_call(
         }
     };
     let ms = (OffsetDateTime::now_utc() - started).whole_milliseconds();
-    audit_tool(state, ctx, chat_id, &tc.name, "completed");
+    audit_tool(state, ctx, chat_id, &tc.name, "completed", desktop_ctx);
     let _ = tx
         .send(ServerFrame::ChatTool { turn_id, name: tc.name.clone(), phase: "finished".into(), detail: None })
         .await;
@@ -2150,6 +2254,7 @@ async fn gated_call(
     authorised: &crate::tools::AuthorisedTools,
     overrides: &std::collections::HashMap<String, crate::tools::Override>,
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
+    desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     tc: &ml::ToolCall,
 ) -> (String, String) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
@@ -2160,10 +2265,18 @@ async fn gated_call(
     {
         return (id, format!("error: {e}"));
     }
-    let summary = if custom_tools.contains_key(&tc.name) {
-        format!("Run custom tool `{}`?", tc.name)
-    } else {
-        format!("Run MCP tool `{}`?", tc.name)
+    // What the user is being asked. A folder action says what it would do to
+    // which file, in a shape a client can render as the change itself; everything
+    // else asks in a sentence, as it always has.
+    let (summary, detail) = match desktop_ctx.filter(|_| crate::tools::desktop::is_desktop_tool(&tc.name)) {
+        Some(d) => (
+            crate::tools::desktop::approval_summary(d, &tc.name, &tc.arguments),
+            crate::tools::desktop::approval_detail(d, &tc.name, &tc.arguments),
+        ),
+        None if custom_tools.contains_key(&tc.name) => {
+            (format!("Run custom tool `{}`?", tc.name), None)
+        }
+        None => (format!("Run MCP tool `{}`?", tc.name), None),
     };
     let frame = ServerFrame::AgentApproval {
         run_id,
@@ -2171,6 +2284,7 @@ async fn gated_call(
         tool: tc.name.clone(),
         summary,
         args: tc.arguments.clone(),
+        detail,
     };
     let _ = tx.send(frame.clone()).await;
     if let Some(uid) = ctx.user_id {
@@ -2189,7 +2303,7 @@ async fn gated_call(
         Ok(Ok(true)) => {
             // Gated tools are MCP/custom side-effecting calls, never code_interpreter or
             // search_library → no CI files, no RAG-tool context.
-            let (_id, r) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, tc).await;
+            let (_id, r) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, desktop_ctx, tc).await;
             crate::agent::mark_running(state, run_id).await;
             (id, r)
         }
@@ -2950,7 +3064,7 @@ async fn synthesize_per_part(
     // Spawn one generate task per part, each forwarding its GenEvents to an ordered channel.
     let mut receivers: Vec<mpsc::Receiver<ml::GenEvent>> = Vec::with_capacity(parts.len());
     for part in parts {
-        let system = compose::build_system(prompt, ctx, &[], memory_facts, Some(&part.context), unattended, gk_fallback);
+        let system = compose::build_system(prompt, ctx, &[], memory_facts, Some(&part.context), unattended, gk_fallback, None);
         let user = format!(
             "Full request (for context only — do not answer the other parts): {prompt}\n\nAnswer ONLY this part: {}",
             part.title
@@ -3095,7 +3209,7 @@ async fn synthesize_per_part(
         {
             cont += 1;
             tracing::warn!(part = %part.title, cont, "per-part answer truncated; auto-continuing");
-            let system = compose::build_system(prompt, ctx, &[], memory_facts, Some(&part.context), unattended, gk_fallback);
+            let system = compose::build_system(prompt, ctx, &[], memory_facts, Some(&part.context), unattended, gk_fallback, None);
             let user = format!(
                 "Full request (for context only — do not answer the other parts): {prompt}\n\nAnswer ONLY this part: {}",
                 part.title
@@ -3367,12 +3481,30 @@ fn audit_event(state: &AppState, ctx: &AuthContext, action: &str, chat_id: Uuid,
     audit::enqueue(&state.audit_tx, event);
 }
 
-fn audit_tool(state: &AppState, ctx: &AuthContext, chat_id: Uuid, name: &str, action: &str) {
+fn audit_tool(
+    state: &AppState,
+    ctx: &AuthContext,
+    chat_id: Uuid,
+    name: &str,
+    action: &str,
+    // The machine and the folder, when the call was work done on somebody's own
+    // computer. Answering afterwards for what was done to their files means
+    // knowing which machine and which folder, not only which tool.
+    desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
+) {
     let mut event = AuditEvent::action(format!("tool.{action}"), ctx.role.as_str());
     event.actor_user_id = ctx.user_id;
     event.resource_type = Some("tool".into());
     event.resource_id = Some(chat_id);
-    event.payload = Some(json!({ "tool": name }));
+    event.payload = Some(match desktop_ctx.filter(|_| crate::tools::desktop::is_desktop_tool(name)) {
+        Some(d) => json!({
+            "tool": name,
+            "device_id": d.workspace.device_id,
+            "workspace_id": d.workspace.id,
+            "workspace_path": d.workspace.path,
+        }),
+        None => json!({ "tool": name }),
+    });
     audit::enqueue(&state.audit_tx, event);
 }
 

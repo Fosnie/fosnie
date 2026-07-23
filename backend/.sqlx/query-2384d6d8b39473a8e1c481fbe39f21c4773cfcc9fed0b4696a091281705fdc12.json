@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT w.id, w.device_id, w.path, w.label, w.tier FROM chat_workspace cw JOIN device_workspaces w ON w.id = cw.workspace_id JOIN devices d ON d.id = w.device_id WHERE cw.chat_id = $1 AND w.device_id = $2 AND w.revoked_at IS NULL AND d.revoked_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "device_workspaces",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "device_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "device_workspaces",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_workspaces",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_workspaces",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "tier",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_workspaces",
+            "name": "tier"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2384d6d8b39473a8e1c481fbe39f21c4773cfcc9fed0b4696a091281705fdc12"
+}

@@ -56,6 +56,13 @@ pub enum ClientFrame {
         /// stored provider, else the deployment default.
         #[serde(default)]
         llm_provider_id: Option<Uuid>,
+        /// The connected folder this chat should work in, chosen in the composer.
+        /// Sent so a brand-new chat's first message can already work in it: the
+        /// chat is created by this turn, and a folder cannot be bound to a chat
+        /// that does not exist yet, so the binding rides the message that makes
+        /// it. Ignored unless it is a folder the sender connected.
+        #[serde(default)]
+        workspace_id: Option<Uuid>,
     },
     #[serde(rename = "chat.cancel")]
     ChatCancel { turn_id: Uuid },
@@ -135,6 +142,25 @@ pub enum ClientFrame {
     /// Streaming dictation: close the session.
     #[serde(rename = "voice.dictate.stop")]
     VoiceDictateStop,
+    /// The outcome of one [`ServerFrame::DesktopToolCall`]: the client did the
+    /// work on its own machine and is handing back what came of it.
+    ///
+    /// `result` is shaped by the tool that was asked for (a listing, a file's
+    /// text, a command's output, or — when `ok` is false — a sentence saying why
+    /// not). The instance never sees the folder itself, only what it asked for
+    /// and what came back, which is the whole arrangement: the bytes are the
+    /// user's machine's, the record of what was done to them is the instance's.
+    #[serde(rename = "desktop.tool.result")]
+    DesktopToolResult {
+        call_id: Uuid,
+        ok: bool,
+        result: serde_json::Value,
+    },
+    /// Output from a call that is still running, so a command that takes a minute
+    /// is visible while it takes it rather than arriving all at once at the end.
+    /// Advisory: a dropped chunk costs a line on a screen, never a result.
+    #[serde(rename = "desktop.tool.progress")]
+    DesktopToolProgress { call_id: Uuid, chunk: String },
     /// Optional first frame: who is on the other end.
     ///
     /// Clients are not all upgraded together — the web application ships with
@@ -310,6 +336,32 @@ pub enum ServerFrame {
         turn_id: Uuid,
         tool: String,
         summary: String,
+        args: serde_json::Value,
+        /// What the user is being asked to agree to, in a shape a client can
+        /// render properly: the difference a write would make, the command a run
+        /// would execute, the file a deletion would remove. Tagged by `kind`.
+        ///
+        /// Optional, and the `summary` above always says the same thing in a
+        /// sentence, so a client that predates this field asks the question it
+        /// always asked. Reviewing a change is the difference between agreeing to
+        /// something and waving something through, which is why the structured
+        /// form exists at all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<serde_json::Value>,
+    },
+    /// Ask the client to do something on the machine it is running on, inside the
+    /// folder the user connected: list it, read a file, write one, delete one,
+    /// run a command in it.
+    ///
+    /// Carried on the socket of the turn that asked for it, so the request only
+    /// ever reaches the client the user is sitting at, and only while they are
+    /// sitting at it. `args` is the tool's own schema; the client answers with a
+    /// [`ClientFrame::DesktopToolResult`] bearing the same `call_id`.
+    #[serde(rename = "desktop.tool.call")]
+    DesktopToolCall {
+        call_id: Uuid,
+        turn_id: Uuid,
+        tool: String,
         args: serde_json::Value,
     },
     /// A live step checklist the model registered via the `track_steps` tool.

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT k.id, k.user_id, k.device_id FROM api_keys k LEFT JOIN devices d ON d.id = k.device_id WHERE k.token_hash = $1 AND k.kind = $2 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > now()) AND (k.device_id IS NULL OR d.revoked_at IS NULL)",
+  "query": "SELECT id, path, device_id FROM device_workspaces WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL",
   "describe": {
     "columns": [
       {
@@ -9,19 +9,19 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "api_keys",
+            "table": "device_workspaces",
             "name": "id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "user_id",
-        "type_info": "Uuid",
+        "name": "path",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "api_keys",
-            "name": "user_id"
+            "table": "device_workspaces",
+            "name": "path"
           }
         }
       },
@@ -31,7 +31,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "api_keys",
+            "table": "device_workspaces",
             "name": "device_id"
           }
         }
@@ -39,15 +39,15 @@
     ],
     "parameters": {
       "Left": [
-        "Bytea",
-        "Text"
+        "Uuid",
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
-      true
+      false
     ]
   },
-  "hash": "0a4df5b77359c003fadeaa60900861546501b7f29806dafc68f494b1d1db0491"
+  "hash": "bcc97939ce23330a511244a62e1c385ac70110fab046c9a6de8005b27e78b4e7"
 }

@@ -136,6 +136,80 @@ pub async fn pair(
     }
 }
 
+#[derive(Deserialize)]
+struct WorkspaceOut {
+    id: String,
+    path: String,
+    tier: String,
+}
+
+/// Tell the instance about a folder the person has just connected on this
+/// machine, and get back the id that requests will name it by.
+///
+/// The instance is told the path and the level of trust so it can show the owner
+/// what they granted and record what was done in it. What is *in* the folder
+/// never leaves this machine.
+pub async fn connect_folder(
+    http: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    path: &str,
+    tier: &str,
+) -> Result<(String, String, String)> {
+    let res = http
+        .post(format!("{base_url}/api/me/workspaces"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "path": path, "label": "", "tier": tier }))
+        .send()
+        .await
+        .map_err(|e| anyhow!("Could not reach {base_url}: {e}"))?;
+    match res.status().as_u16() {
+        200 | 201 => {
+            let out: WorkspaceOut =
+                res.json().await.context("the instance sent an unusable reply")?;
+            Ok((out.id, out.path, out.tier))
+        }
+        400 => {
+            let body = res.text().await.unwrap_or_default();
+            bail!("{}", body.chars().take(200).collect::<String>())
+        }
+        403 => bail!(
+            "This instance did not accept the folder. Sign this computer out and pair it again."
+        ),
+        status => {
+            let body = res.text().await.unwrap_or_default();
+            bail!("The folder could not be connected ({status}). {}", body.chars().take(200).collect::<String>())
+        }
+    }
+}
+
+/// The folders the instance still holds for this account, so a folder withdrawn
+/// from the web stops being one this machine will work in. `None` when the
+/// instance could not be asked, which says nothing either way and changes
+/// nothing locally.
+pub async fn live_workspaces(
+    http: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+) -> Option<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Row {
+        id: String,
+        revoked_at: Option<serde_json::Value>,
+    }
+    let res = http
+        .get(format!("{base_url}/api/me/workspaces"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    let rows: Vec<Row> = res.json().await.ok()?;
+    Some(rows.into_iter().filter(|r| r.revoked_at.is_none()).map(|r| r.id).collect())
+}
+
 /// Outcome of the periodic check that this device is still trusted.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Trust {

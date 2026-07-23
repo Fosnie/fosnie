@@ -52,21 +52,30 @@ const CODE_TTL_MINUTES: i64 = 10;
 /// The platforms a device may declare.
 const PLATFORMS: [&str; 3] = ["windows", "macos", "linux"];
 
+// Times cross to the browser as RFC 3339 strings, not the component array a bare
+// `OffsetDateTime` serialises to (the `time` crate ships that without the
+// well-known-format serde feature). The application parses them with `new Date`,
+// which reads a string and chokes on the array — the difference between a real
+// date and "Invalid Date" in the device list.
+fn stamp(t: OffsetDateTime) -> String {
+    t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
+}
+
 #[derive(Debug, Serialize)]
 pub struct DeviceOut {
     pub id: Uuid,
     pub name: String,
     pub platform: String,
-    pub created_at: OffsetDateTime,
-    pub last_seen_at: Option<OffsetDateTime>,
-    pub revoked_at: Option<OffsetDateTime>,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PairingCodeOut {
     /// The plaintext code. Shown here and nowhere else; only its hash is stored.
     pub code: String,
-    pub expires_at: OffsetDateTime,
+    pub expires_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,11 +179,11 @@ pub async fn create_pairing_code(
     event.resource_type = Some("device_pairing_code".into());
     // Neither the code nor its hash is logged: the audit trail records that a
     // code was issued and when it lapses, never the secret itself.
-    event.payload = Some(json!({ "expires_at": expires_at }));
+    event.payload = Some(json!({ "expires_at": stamp(expires_at) }));
     audit::append_with(&mut tx, &event).await?;
     tx.commit().await?;
 
-    Ok(Json(PairingCodeOut { code, expires_at }))
+    Ok(Json(PairingCodeOut { code, expires_at: stamp(expires_at) }))
 }
 
 /// `POST /api/device/pair` — redeem a code for a device token. Public: the
@@ -317,9 +326,9 @@ async fn load_devices(state: &AppState, user_id: Uuid) -> Result<Vec<DeviceOut>>
             id: r.id,
             name: r.name,
             platform: r.platform,
-            created_at: r.created_at,
-            last_seen_at: r.last_seen_at,
-            revoked_at: r.revoked_at,
+            created_at: stamp(r.created_at),
+            last_seen_at: r.last_seen_at.map(stamp),
+            revoked_at: r.revoked_at.map(stamp),
         })
         .collect())
 }
