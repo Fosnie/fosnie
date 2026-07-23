@@ -21,6 +21,8 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
 import type { MsgActivity } from "@/api/client";
+import { FolderApprovalCard, asFolderDetail } from "@/components/FolderApproval";
+import { isShell } from "@/shell/detect";
 
 const TOOL_LABELS: Record<string, string> = {
   read_document: "Read a document",
@@ -68,6 +70,10 @@ export function AgentActivity({
   approval,
   onApprove,
   onReject,
+  onAllowPrefix,
+  terminalOut,
+  onKillTerminal,
+  restore,
 }: {
   activity?: MsgActivity | null;
   live?: boolean;
@@ -75,9 +81,17 @@ export function AgentActivity({
   runningTool?: string | null;
   /** Live progress detail from a streaming tool (e.g. "round 2: reading example.com"). */
   runningDetail?: string | null;
-  approval?: { tool: string; summary: string } | null;
+  approval?: { tool: string; summary: string; detail?: Record<string, unknown> | null } | null;
   onApprove?: () => void;
   onReject?: () => void;
+  /** Agree a command prefix for this folder, so the same run is not asked about again. */
+  onAllowPrefix?: (prefix: string) => Promise<void>;
+  /** Output of a command running in a connected folder, as it arrives. */
+  terminalOut?: string | null;
+  /** Stop the command running in the folder. */
+  onKillTerminal?: () => void;
+  /** The end-of-turn "what changed, and undo it" block (desktop only). */
+  restore?: React.ReactNode;
 }) {
   const steps = activity?.steps ?? [];
   const tools = activity?.tools ?? [];
@@ -102,8 +116,11 @@ export function AgentActivity({
   // own running marker conveys progress otherwise).
   const showRunning = !!live && !!runningTool && steps.length === 0;
 
-  // Nothing to show: no plan, no tools, and not actively working / awaiting approval.
-  if (count === 0 && !live && !approval) return null;
+  // A command running in a connected folder, with its output and a way to stop it.
+  const runningInFolder = !!live && runningTool === "desktop.terminal_run";
+
+  // Nothing to show: no plan, no tools, not working, no approval, no undo block.
+  if (count === 0 && !live && !approval && !restore) return null;
 
   return (
     <div className="agent-activity fade-up">
@@ -177,18 +194,64 @@ export function AgentActivity({
             <div className="aa-tools mono">Tools: {tools.map(prettyTool).join(", ")}</div>
           )}
 
-          {approval && (
-            <div className="approval-card aa-approval">
-              <div className="approval-head"><Icon.Shield size={13} /> Approval needed</div>
-              <div className="approval-summary">{approval.summary}</div>
-              <div className="approval-actions">
-                <button className="btn btn-gold sm" onClick={onApprove}><Icon.Check size={14} /> Approve</button>
-                <button className="btn btn-line sm" onClick={onReject}><Icon.Close size={14} /> Reject</button>
-              </div>
+          {approval ? (
+            // A folder action is shown as the change itself; anything else keeps
+            // the sentence — an older instance sends no detail, and a client that
+            // meets one must still be able to ask the question.
+            (() => {
+              const folder = asFolderDetail(approval.detail);
+              if (folder) {
+                return (
+                  <FolderApprovalCard
+                    detail={folder}
+                    terminalOut={terminalOut ?? undefined}
+                    onApprove={() => onApprove?.()}
+                    onReject={() => onReject?.()}
+                    onAllowPrefix={async (p) => { await onAllowPrefix?.(p); }}
+                  />
+                );
+              }
+              return (
+                <div className="approval-card aa-approval">
+                  <div className="approval-head"><Icon.Shield size={13} /> Approval needed</div>
+                  <div className="approval-summary">{approval.summary}</div>
+                  <div className="approval-actions">
+                    <button className="btn btn-gold sm" onClick={onApprove}><Icon.Check size={14} /> Approve</button>
+                    <button className="btn btn-line sm" onClick={onReject}><Icon.Close size={14} /> Reject</button>
+                  </div>
+                </div>
+              );
+            })()
+          ) : null}
+
+          {/* A command's output as it runs, and — on the desktop — a way to stop
+              it. In a browser the button is disabled: the command is on somebody's
+              own computer, and stopping it is done there. */}
+          {runningInFolder && (terminalOut || onKillTerminal) ? (
+            <div className="aa-terminal">
+              {terminalOut ? (
+                <pre className="mono" style={{ margin: "6px 0 0", maxHeight: 200, overflow: "auto", fontSize: "0.72rem", background: "var(--bg-1)", border: "1px solid var(--line-2)", borderRadius: 6, padding: "8px 10px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {terminalOut}
+                </pre>
+              ) : null}
+              <button
+                className="btn btn-line sm"
+                style={{ marginTop: 6 }}
+                disabled={!isShell()}
+                title={isShell() ? "Stop this command" : "The command is running on your desktop; stop it there"}
+                onClick={() => onKillTerminal?.()}
+              >
+                <Icon.Stop size={13} /> Stop command
+              </button>
             </div>
-          )}
+          ) : null}
         </div>
       )}
+
+      {/* The undo block sits outside the collapsible body: a turn's activity
+          folds away when it finishes, but the offer to put its changes back has
+          to stay reachable. */}
+      {restore ?? null}
     </div>
   );
 }

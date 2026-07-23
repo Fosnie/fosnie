@@ -1,18 +1,38 @@
 # Fosnie desktop client
 
 An installable client for a Fosnie instance. It renders the platform's own web
-application (built from `../frontend`, not a fork of it) and adds the two things
-a browser tab cannot do well: hold the connection reliably, and tell you when
-something has finished while you are looking elsewhere.
+application (built from `../frontend`, not a fork of it) and adds the things a
+browser tab cannot: hold the connection reliably, tell you when something has
+finished while you are looking elsewhere, and work in a folder on the machine it
+is running on.
 
 ## What it can and cannot do
 
-It is a governed window onto an instance. It has **no local capabilities**: no
-filesystem access, no command execution, no local tools. The plugins that would
-provide any of that are not dependencies of the crate, so this is a property of
-what is compiled in rather than of configuration. `src-tauri/capabilities/main.json`
-grants the window exactly one permission, listening for the client's own events;
-everything else goes through the handful of commands in `src-tauri/src/commands.rs`.
+It is a governed window onto an instance, and the one thing it does that a
+browser cannot — touch the machine's files — is fenced deliberately, so the fence
+is worth stating plainly.
+
+- **The window has no reach of its own.** It cannot read a file, run a program,
+  or open a picker. `src-tauri/capabilities/main.json` grants it exactly one
+  permission, listening for the client's own events; everything else goes through
+  the named commands in `src-tauri/src/commands.rs`, and not one of those reads a
+  file or runs a program.
+- **Folder work comes from the instance, not the window.** A request to list,
+  read, write, delete or run a command arrives on the socket, for a conversation
+  the owner bound to a folder. The folder was chosen at this keyboard through the
+  system picker and agreed a level of trust for (`src-tauri/src/folders.rs`);
+  nothing in it is read before that agreement.
+- **Every path is checked against the real filesystem.** The instance checks the
+  path as written; the client resolves it, follows any links, and refuses
+  anything that lands outside the folder — the check that can see where a link
+  actually leads (`folders::within`, `src-tauri/src/executor.rs`).
+- **Every change is shown first and can be undone.** A write is put in front of
+  you as its difference, a command as the command, a deletion as what would go;
+  each write and deletion is copied aside so it can be restored per file or per
+  turn (`src-tauri/src/backup.rs`). What undo does not cover — files a command
+  changed — is said the first time you use it.
+- **A command inherits none of the client's credentials.** `FOSNIE_*`, `PAI__*`
+  and the instance token are stripped from a spawned command's environment.
 
 Two other decisions worth knowing before reading the code:
 

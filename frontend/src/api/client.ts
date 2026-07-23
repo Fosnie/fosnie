@@ -195,6 +195,54 @@ export function usePendingApprovals() {
   });
 }
 
+// ── Connected folders (a folder on a paired computer this chat may work in) ──
+// The instance holds only the registration: which machine, which path, how much
+// trust, and what has been done in it. What is inside the folder never leaves the
+// machine it is on, so nothing here returns a file or its contents.
+export interface Workspace {
+  id: string;
+  device_id: string;
+  device_name: string;
+  path: string;
+  label: string;
+  /** "ro" | "rw" | "rw_nd" */
+  tier: string;
+  revoked_at: string | null;
+}
+export function useWorkspaces() {
+  return useQuery({
+    queryKey: ["workspaces"],
+    queryFn: () => apiFetch<Workspace[]>("/api/me/workspaces"),
+  });
+}
+export function revokeWorkspace(id: string): Promise<void> {
+  return apiFetch(`/api/me/workspaces/${id}`, { method: "DELETE" });
+}
+/** The folder this chat is working in, or null. */
+export function useChatWorkspace(chatId: string | undefined) {
+  return useQuery({
+    queryKey: ["chat-workspace", chatId],
+    queryFn: () => apiFetch<Workspace | null>(`/api/chats/${chatId}/workspace`),
+    enabled: !!chatId,
+  });
+}
+export function bindChatWorkspace(chatId: string, workspaceId: string): Promise<void> {
+  return apiFetch(`/api/chats/${chatId}/workspace`, {
+    method: "PUT",
+    body: JSON.stringify({ workspace_id: workspaceId }),
+  });
+}
+export function unbindChatWorkspace(chatId: string): Promise<void> {
+  return apiFetch(`/api/chats/${chatId}/workspace`, { method: "DELETE" });
+}
+/** Agree to a command by how it starts, so the same run is not asked about twice. */
+export function allowCommandPrefix(workspaceId: string, prefix: string): Promise<{ id: string; prefix: string }> {
+  return apiFetch(`/api/workspaces/${workspaceId}/command-prefixes`, {
+    method: "POST",
+    body: JSON.stringify({ prefix }),
+  });
+}
+
 // Matter-owner approval of group-membership adds (the confidentiality gate). Routed
 // to project owners whose matters the membership would expose.
 export interface PendingMemberRequest {

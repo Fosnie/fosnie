@@ -124,6 +124,31 @@ fn server_cases() -> Vec<(&'static str, ServerFrame)> {
                 tool: "web_search".into(),
                 summary: "search the web for rainfall data".into(),
                 args: serde_json::json!({ "query": "rainfall", "depth": "deep" }),
+                detail: None,
+            },
+        ),
+        (
+            "agent_approval_detail",
+            ServerFrame::AgentApproval {
+                run_id: id(7),
+                turn_id: id(3),
+                tool: "desktop.fs_write".into(),
+                summary: "Write notes.md in the connected folder?".into(),
+                args: serde_json::json!({ "path": "notes.md" }),
+                detail: Some(serde_json::json!({
+                    "kind": "diff",
+                    "path": "notes.md",
+                    "diff": "@@ -1 +1 @@\n-old\n+new\n",
+                })),
+            },
+        ),
+        (
+            "desktop_tool_call",
+            ServerFrame::DesktopToolCall {
+                call_id: id(10),
+                turn_id: id(3),
+                tool: "desktop.fs_read".into(),
+                args: serde_json::json!({ "path": "notes.md" }),
             },
         ),
         (
@@ -176,9 +201,25 @@ fn client_cases() -> Vec<(&'static str, ClientFrame)> {
                     return_trace: true,
                 }),
                 llm_provider_id: None,
+                workspace_id: None,
             },
         ),
         ("client_chat_cancel", ClientFrame::ChatCancel { turn_id: id(3) }),
+        (
+            "client_desktop_tool_result",
+            ClientFrame::DesktopToolResult {
+                call_id: id(10),
+                ok: true,
+                result: serde_json::json!({ "content": "the file's text" }),
+            },
+        ),
+        (
+            "client_desktop_tool_progress",
+            ClientFrame::DesktopToolProgress {
+                call_id: id(10),
+                chunk: "compiling…\n".into(),
+            },
+        ),
         ("client_ping", ClientFrame::Ping),
     ]
 }
@@ -253,6 +294,51 @@ fn a_known_frame_that_is_wrong_is_an_error_and_not_an_unknown_one() {
     // The same on the way in: a `chat.send` without its content is not a send.
     let no_content = r#"{"version":1,"type":"chat.send"}"#;
     assert!(serde_json::from_str::<ClientFrame>(no_content).is_err());
+
+    // A result nobody can match to a call is not a result. Reading it as an
+    // unknown frame would leave the turn that asked waiting for its whole
+    // timeout on an answer that already arrived broken.
+    let no_call_id = r#"{"version":1,"type":"desktop.tool.result","ok":true,"result":{}}"#;
+    assert!(serde_json::from_str::<ClientFrame>(no_call_id).is_err());
+    let bad_call_id =
+        r#"{"version":1,"type":"desktop.tool.progress","call_id":"not-a-uuid","chunk":"x"}"#;
+    assert!(serde_json::from_str::<ClientFrame>(bad_call_id).is_err());
+    // And a request without the tool it is requesting is not a request.
+    let no_tool = r#"{"version":1,"type":"desktop.tool.call",
+        "call_id":"00000000-0000-0000-0000-000000000000",
+        "turn_id":"00000000-0000-0000-0000-000000000000","args":{}}"#;
+    assert!(serde_json::from_str::<ServerFrame>(no_tool).is_err());
+}
+
+#[test]
+fn an_approval_from_a_newer_release_still_asks_the_old_question() {
+    // The structured detail is additive: a client built before it existed has to
+    // keep seeing exactly the frame it always saw, because the sentence in
+    // `summary` is what it puts in front of the user.
+    let with_detail = ServerFrame::AgentApproval {
+        run_id: id(7),
+        turn_id: id(3),
+        tool: "desktop.terminal_run".into(),
+        summary: "Run `npm test` in the connected folder?".into(),
+        args: serde_json::json!({ "command": "npm test" }),
+        detail: Some(serde_json::json!({ "kind": "command", "command": "npm test" })),
+    }
+    .to_json();
+    let parsed: serde_json::Value = serde_json::from_str(&with_detail).expect("valid JSON");
+    assert_eq!(parsed["summary"], "Run `npm test` in the connected folder?");
+    assert_eq!(parsed["detail"]["kind"], "command");
+
+    // Without it, the bytes carry no trace of the field at all.
+    let without = ServerFrame::AgentApproval {
+        run_id: id(7),
+        turn_id: id(3),
+        tool: "web_search".into(),
+        summary: "search?".into(),
+        args: serde_json::json!({}),
+        detail: None,
+    }
+    .to_json();
+    assert!(!without.contains("detail"), "an absent detail must not appear on the wire");
 }
 
 #[test]

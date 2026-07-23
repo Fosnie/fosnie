@@ -216,6 +216,7 @@ mod tests {
             tool: "web_search".into(),
             summary: "".into(),
             args: serde_json::Value::Null,
+            detail: None,
         }
         .to_json();
         for frame in [completed, approval] {

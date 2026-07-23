@@ -1,0 +1,1 @@
+{"version":1,"type":"agent.approval","run_id":"07070707-0707-0707-0707-070707070707","turn_id":"03030303-0303-0303-0303-030303030303","tool":"desktop.fs_write","summary":"Write notes.md in the connected folder?","args":{"path":"notes.md"},"detail":{"diff":"@@ -1 +1 @@\n-old\n+new\n","kind":"diff","path":"notes.md"}}

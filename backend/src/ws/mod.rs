@@ -311,7 +311,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
             Message::Text(text) => match serde_json::from_str::<ClientFrame>(text.as_str()) {
-                Ok(ClientFrame::ChatSend { chat_id, content, project_id, agent_id, attachment_ids, thinking, reasoning, llm_provider_id }) => {
+                Ok(ClientFrame::ChatSend { chat_id, content, project_id, agent_id, attachment_ids, thinking, reasoning, llm_provider_id, workspace_id }) => {
                     // Coarse per-user abuse guard on the expensive turn path.
                     if !crate::cache::rate_limit_ok(&state.redis, &format!("chat:{user_id}"), 30, 60).await {
                         let _ = tx
@@ -332,7 +332,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         let attachments =
                             crate::http::chat_attachments::take_attachments(&st, &ctxc, &attachment_ids).await;
                         crate::chat::run_turn(
-                            &st, crate::chat::origin::TurnContext::new(&ctxc, origin), turn_id, chat_id, project_id, agent_id, content, attachments,
+                            &st, crate::chat::origin::TurnContext::new(&ctxc, origin).with_device(device_id).with_workspace(workspace_id), turn_id, chat_id, project_id, agent_id, content, attachments,
                             Vec::new(), false, None, reasoning, llm_provider_id, None, &txc, cancel,
                         )
                         .await;
@@ -360,7 +360,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         match crate::chat::regenerate_prepare(&st, &ctxc, chat_id, from_message_id, content).await {
                             Ok((anchor_id, anchor_content)) => {
                                 crate::chat::run_turn(
-                                    &st, crate::chat::origin::TurnContext::new(&ctxc, origin), turn_id, Some(chat_id), None, None, anchor_content,
+                                    &st, crate::chat::origin::TurnContext::new(&ctxc, origin).with_device(device_id), turn_id, Some(chat_id), None, None, anchor_content,
                                     Vec::new(), Vec::new(), false, Some(anchor_id), None, None, None, &txc, cancel,
                                 )
                                 .await;
@@ -376,6 +376,46 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                 }
                 Ok(ClientFrame::ChatCancel { turn_id }) => {
                     state.hub.cancel_turn(socket_id, turn_id);
+                }
+                Ok(ClientFrame::DesktopToolResult { call_id, ok, result }) => {
+                    // The answer to something this server asked this machine to do
+                    // in a folder of its own. Only a machine is ever asked, and only
+                    // the machine the call was sent to is listened to: a browser tab
+                    // has no device to answer as, and a different device's socket is
+                    // refused by `resolve`, which accepts a reply only from the
+                    // device the call is bound to.
+                    let Some(from_device) = device_id else {
+                        tracing::warn!(%socket_id, "ignoring a folder-tool result from a connection that is not a device");
+                        continue;
+                    };
+                    let reply = crate::tools::DesktopReply { ok, result };
+                    if !state.desktop_calls.resolve(call_id, from_device, reply) {
+                        // Nothing was waiting, the reply is a duplicate, or it came
+                        // from a device the call was not sent to. In every case there
+                        // is nowhere to put it.
+                        tracing::debug!(%call_id, "a folder-tool result arrived with nothing to match it");
+                    }
+                }
+                Ok(ClientFrame::DesktopToolProgress { call_id, chunk }) => {
+                    // Output from work still going on. Shown beside the turn that
+                    // asked for it, so a command that takes a minute is visible
+                    // while it takes it — but only from the device the call was sent
+                    // to, so nobody else can type into somebody's turn.
+                    let Some(from_device) = device_id else {
+                        continue;
+                    };
+                    if let Some(turn_id) = state.desktop_calls.turn_of(call_id, from_device) {
+                        let detail: String = chunk.chars().rev().take(400).collect::<Vec<_>>()
+                            .into_iter().rev().collect();
+                        let _ = tx
+                            .send(ServerFrame::ChatTool {
+                                turn_id,
+                                name: "desktop.terminal_run".into(),
+                                phase: "progress".into(),
+                                detail: Some(detail),
+                            })
+                            .await;
+                    }
                 }
                 Ok(ClientFrame::Auth { token: _ }) => {
                     // In-band session refresh: extend presence + resume window

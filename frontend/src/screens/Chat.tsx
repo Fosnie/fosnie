@@ -25,6 +25,11 @@ import { ArtefactPanelHost } from "@/components/artefacts/ArtefactPanel";
 import { useArtefactActions } from "@/components/artefacts/useArtefactActions";
 import { useArtefactPanel } from "@/components/artefacts/useArtefactPanel";
 import { AgentActivity } from "@/components/agentActivity";
+import { FolderMenu } from "@/components/FolderMenu";
+import { RestoreBlock } from "@/components/RestoreBlock";
+import { rememberPrefix } from "@/components/FolderApproval";
+import { cancelLocalCall } from "@/shell/folders";
+import { useChatWorkspace } from "@/api/client";
 import { Groundedness } from "@/components/groundedness";
 import { useFeedback } from "@/components/feedback";
 import { useActiveProject } from "@/app/ProjectContext";
@@ -83,6 +88,9 @@ interface Msg {
   reasoningTokens?: number;
   /** Files the user attached to this message — rendered under the bubble + in the rail. */
   attachments?: ChatAttachmentMeta[];
+  /** The turn that produced this message, so a folder change made during it can
+   * be listed and undone from its inline summary (desktop only). */
+  turnId?: string;
 }
 
 // An image attachment under a user message. The bytes route is credential-gated,
@@ -161,7 +169,17 @@ export function Chat() {
   // report posts (chat.message_posted).
   const [deepRoadmap, setDeepRoadmap] = useState<{ sections: string[]; done: number; phase: string; detail?: string; sourcesRead?: number } | null>(null);
   // An agent run paused on a gated action, awaiting the user's approve/reject.
-  const [approval, setApproval] = useState<{ runId: string; tool: string; summary: string } | null>(null);
+  // `detail` (present for a folder action) carries what a client can render as a
+  // change to agree to rather than a sentence to wave through.
+  const [approval, setApproval] = useState<{ runId: string; tool: string; summary: string; detail?: Record<string, unknown> | null } | null>(null);
+  // Live output of a command running in a connected folder, keyed by the turn,
+  // so it can be shown as it arrives and the run stopped mid-way.
+  const [terminalOut, setTerminalOut] = useState<string>("");
+  // The folder this chat is bound to, for the restore block's "show in folder".
+  const boundWorkspace = useChatWorkspace(chatId ?? undefined);
+  // A folder chosen in the composer on a brand-new chat, before it has an id to
+  // bind to. It rides the first `chat.send`; from then the binding lives server-side.
+  const [pendingWorkspace, setPendingWorkspace] = useState<string | null>(null);
 
   const [showNewAgent, setShowNewAgent] = useState(false);
   const [citation, setCitation] = useState<Citation | null>(null);
@@ -463,7 +481,7 @@ export function Chat() {
           flushTokens.current(); // drain any buffered tokens onto the old id first
           const prev = pendingId.current;
           pendingId.current = s.message_id;
-          setMessages((p) => p.map((m) => (m.id === prev ? { ...m, id: s.message_id } : m)));
+          setMessages((p) => p.map((m) => (m.id === prev ? { ...m, id: s.message_id, turnId: s.turn_id } : m)));
           break;
         }
         case "chat.token": {
@@ -509,6 +527,11 @@ export function Chat() {
           } else if (t.phase === "progress") {
             // Live detail from a streaming tool (e.g. "round 2: reading example.com").
             setRunningToolDetail(t.detail ?? null);
+            // A command running in a folder streams its output here; keep it so
+            // the panel shows it building up rather than only the last line.
+            if (t.name === "desktop.terminal_run" && t.detail) {
+              setTerminalOut((prev) => (prev + t.detail).slice(-8000));
+            }
           } else {
             setRunningTool(null);
             setRunningToolDetail(null);
@@ -559,8 +582,9 @@ export function Chat() {
           break;
         }
         case "agent.approval": {
-          const a = f as { run_id: string; tool: string; summary: string };
-          setApproval({ runId: a.run_id, tool: a.tool, summary: a.summary });
+          const a = f as { run_id: string; tool: string; summary: string; detail?: Record<string, unknown> | null };
+          setApproval({ runId: a.run_id, tool: a.tool, summary: a.summary, detail: a.detail ?? null });
+          if (a.tool === "desktop.terminal_run") setTerminalOut("");
           break;
         }
         case "chat.completed": {
@@ -721,6 +745,15 @@ export function Chat() {
     }
   }
 
+  // "Always allow this command here": agree the prefix for the folder this
+  // approval is about, before approving the run, so the next identical command
+  // does not stop to ask. The folder id rides on the approval detail.
+  async function allowPrefixForApproval(prefix: string) {
+    const wsId = approval?.detail?.workspace_id as string | undefined;
+    if (!wsId) throw new Error("this action is not tied to a folder");
+    await rememberPrefix(wsId, prefix);
+  }
+
   // Core send: build the optimistic bubbles + emit the chat.send frame with the
   // composer's per-turn extras (attachments + reasoning). Called by <Composer>.
   function sendWith(content: string, extras: { attachments: ChatAttachmentMeta[]; reasoning: ReasoningSpec | null; llmProviderId?: string | null }) {
@@ -759,7 +792,17 @@ export function Chat() {
       // sticks (and a regenerate reuses it). Absent on composer-less sends → the chat's
       // stored provider / deployment default.
       llm_provider_id: extras.llmProviderId ?? null,
+      // The folder chosen in the composer, carried so a new chat's first message
+      // already works in it — the chat is created by this send, and could not be
+      // bound to a folder before it existed. Only sent when nothing is bound yet;
+      // an existing chat's binding lives server-side.
+      workspace_id: chatRef.current ? null : (pendingWorkspace ?? null),
     });
+    if (!chatRef.current && pendingWorkspace) {
+      // It rode this send; the chat now exists and will carry it. Clear the
+      // one-shot so a later turn does not re-bind it over a switch.
+      setPendingWorkspace(null);
+    }
     scrollToBottom();
   }
   // Sends that bypass the composer (EmptyChat suggestion, Regenerate): no per-turn
@@ -1073,9 +1116,13 @@ export function Chat() {
                         startedAt={m.startedAt}
                         runningTool={m.pending ? runningTool : null}
                         runningDetail={m.pending ? runningToolDetail : null}
-                        approval={m.pending && approval ? { tool: approval.tool, summary: approval.summary } : null}
+                        approval={m.pending && approval ? { tool: approval.tool, summary: approval.summary, detail: approval.detail } : null}
                         onApprove={() => decideApproval(true)}
                         onReject={() => decideApproval(false)}
+                        onAllowPrefix={allowPrefixForApproval}
+                        terminalOut={m.pending && runningTool === "desktop.terminal_run" ? terminalOut : null}
+                        onKillTerminal={() => { if (turnId.current) void cancelLocalCall(turnId.current).catch(() => {}); }}
+                        restore={!m.pending && m.turnId ? <RestoreBlock turnId={m.turnId} workspaceId={boundWorkspace.data?.id} /> : null}
                       />
                     ) : null}
 
@@ -1317,6 +1364,7 @@ export function Chat() {
                 })}
               </>
             )}
+            <FolderMenu chatId={chatId ?? null} pending={pendingWorkspace} setPending={setPendingWorkspace} close={close} />
           </>
         )}
       />

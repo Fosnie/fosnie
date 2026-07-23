@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT k.id AS \"id!\", k.user_id AS \"user_id!\", k.device_id\n           FROM api_keys k\n           LEFT JOIN devices d ON d.id = k.device_id\n           WHERE k.token_hash = $1 AND k.kind = $2 AND k.revoked_at IS NULL\n             AND (k.expires_at IS NULL OR k.expires_at > now())\n             AND (k.device_id IS NULL OR d.revoked_at IS NULL)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "api_keys",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "api_keys",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "device_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "api_keys",
+            "name": "device_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "43e1ca14db4af0122a22480026b72b38e8c5b247f85dd30fe25da5fa76926008"
+}

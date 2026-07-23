@@ -51,7 +51,7 @@ export interface ReasoningSpec {
 }
 
 export type ClientFrame =
-  | { type: "chat.send"; chat_id?: string | null; content: string; agent_id?: string | null; project_id?: string | null; attachment_ids?: string[]; thinking?: string | null; reasoning?: ReasoningSpec | null; llm_provider_id?: string | null }
+  | { type: "chat.send"; chat_id?: string | null; content: string; agent_id?: string | null; project_id?: string | null; attachment_ids?: string[]; thinking?: string | null; reasoning?: ReasoningSpec | null; llm_provider_id?: string | null; workspace_id?: string | null }
   | { type: "chat.cancel"; turn_id: string }
   // Regenerate an answer in place (also drives edit + restart-from-here). The
   // anchoring user message is reused; every message at/after the deletion point

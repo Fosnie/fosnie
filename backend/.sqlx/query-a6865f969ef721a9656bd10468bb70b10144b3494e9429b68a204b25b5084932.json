@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chat_workspace (chat_id, workspace_id) VALUES ($1, $2) ON CONFLICT (chat_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, set_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a6865f969ef721a9656bd10468bb70b10144b3494e9429b68a204b25b5084932"
+}

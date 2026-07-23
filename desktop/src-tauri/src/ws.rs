@@ -179,6 +179,16 @@ async fn run(
                 attempts.store(0, Ordering::Relaxed);
                 emit_status(&app, "open");
                 resume = pump(&app, &http, &pairing, stream, &mut outbound).await;
+                // Whatever was running in a folder was asked for by a
+                // conversation on the connection that has just gone. Nobody is
+                // waiting for it, nobody can stop it, and its output has nowhere
+                // to go: it stops with the socket.
+                if let Some(shell) = app.try_state::<crate::state::Shell>() {
+                    for pid in shell.executor.all() {
+                        crate::executor::stop(pid);
+                    }
+                    shell.executor.clear();
+                }
                 emit_status(&app, "closed");
             }
             Ok(None) => {
@@ -279,6 +289,19 @@ async fn pump(
                     Some(Ok(Message::Text(text))) => {
                         if let Some(token) = resume_token(&text) {
                             resume = Some(token);
+                        }
+                        // A request to do something in a connected folder is the
+                        // one frame this process acts on rather than passing
+                        // through. It is handled beside the socket, not in it:
+                        // a command can take a minute, and the socket has to
+                        // keep draining while it does. The window still receives
+                        // the frame — it renders what is being done — but it is
+                        // not what does it.
+                        if let Some((call_id, turn_id, tool, args)) = crate::executor::request(&text) {
+                            let doing = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                crate::executor::handle(doing, call_id, turn_id, tool, args).await;
+                            });
                         }
                         // Deciding whether a frame is worth a notification can
                         // involve asking the instance for a chat's name, and

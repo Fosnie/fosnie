@@ -59,16 +59,39 @@ impl ChatOrigin {
 pub struct TurnContext<'a> {
     pub auth: &'a AuthContext,
     pub origin: ChatOrigin,
+    /// Which paired machine this turn came in from, when it came in from one.
+    ///
+    /// Still provenance and still not authority — a device carries exactly its
+    /// owner's rights. What it decides is where a request can be *sent*: work in
+    /// a folder happens on one particular computer, and the only computer this
+    /// turn can reach is the one holding the socket it arrived on.
+    pub device_id: Option<Uuid>,
+    /// A folder the composer chose for this chat, carried on the send so a
+    /// brand-new chat's first message already works in it: the chat is created by
+    /// this very turn, and there is no chat to bind a folder to until then.
+    pub workspace_id: Option<Uuid>,
 }
 
 impl<'a> TurnContext<'a> {
     /// The ordinary case: a turn from the web, or from any caller for which
     /// provenance is not tracked (scheduler, workflows, voice).
     pub fn web(auth: &'a AuthContext) -> Self {
-        Self { auth, origin: ChatOrigin::Web }
+        Self { auth, origin: ChatOrigin::Web, device_id: None, workspace_id: None }
     }
 
     pub fn new(auth: &'a AuthContext, origin: ChatOrigin) -> Self {
-        Self { auth, origin }
+        Self { auth, origin, device_id: None, workspace_id: None }
+    }
+
+    /// The same turn, knowing which machine it arrived from.
+    pub fn with_device(mut self, device_id: Option<Uuid>) -> Self {
+        self.device_id = device_id;
+        self
+    }
+
+    /// The same turn, carrying the folder the composer chose for this chat.
+    pub fn with_workspace(mut self, workspace_id: Option<Uuid>) -> Self {
+        self.workspace_id = workspace_id;
+        self
     }
 }

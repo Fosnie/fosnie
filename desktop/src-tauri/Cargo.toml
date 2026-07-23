@@ -45,14 +45,24 @@ keyring = { version = "3", features = ["windows-native", "apple-native", "sync-s
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Showing a proposed change as a difference, computed here because this is where
+# the file is. Pure Rust, no system libraries, and it grants no access of its own.
+similar = "2"
+# Checking that a file has not moved under a write the model based on an earlier
+# read: the instance passes the digest it expects, this compares it.
+sha2 = "0.10"
 tauri = { version = "2", features = ["tray-icon"] }
 # Notifications go through the plugin everywhere except Windows, where the
 # toast is built directly (below) so that clicking it can lead somewhere.
 tauri-plugin-deep-link = "2"
+# The system's folder picker, and nothing else from it: this is how somebody
+# chooses a folder to connect. It is reached from this process's own command, so
+# it grants the window nothing.
+tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -62,6 +72,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Updating in place is the one capability that can replace this binary, so the
 # plugin is pinned exactly rather than floated: an unreviewed minor bump here is
 # an unreviewed change to how a signature is checked.
+[dev-dependencies]
+# Folders and files to exercise the boundary and the undo against something real:
+# a link that leads out of a folder is only answerable on a filesystem.
+tempfile = "3"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "=2.10.1"
 

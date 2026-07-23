@@ -131,12 +131,15 @@ pub async fn resolve(
     }
     let hash = hash_token(token);
     let row = sqlx::query!(
-        "SELECT k.id, k.user_id, k.device_id \
-         FROM api_keys k \
-         LEFT JOIN devices d ON d.id = k.device_id \
-         WHERE k.token_hash = $1 AND k.kind = $2 AND k.revoked_at IS NULL \
-           AND (k.expires_at IS NULL OR k.expires_at > now()) \
-           AND (k.device_id IS NULL OR d.revoked_at IS NULL)",
+        // The outer join makes Postgres describe every column as possibly null,
+        // including the key's own. Two of them cannot be: the row is an
+        // `api_keys` row or there is no row at all.
+        r#"SELECT k.id AS "id!", k.user_id AS "user_id!", k.device_id
+           FROM api_keys k
+           LEFT JOIN devices d ON d.id = k.device_id
+           WHERE k.token_hash = $1 AND k.kind = $2 AND k.revoked_at IS NULL
+             AND (k.expires_at IS NULL OR k.expires_at > now())
+             AND (k.device_id IS NULL OR d.revoked_at IS NULL)"#,
         &hash,
         expect.as_str(),
     )
