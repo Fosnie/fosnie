@@ -41,6 +41,9 @@ axum-keycloak-auth = "=0.8.3"
 deadpool-redis = "0.23.0"
 ed25519-dalek = "2.2.0"
 figment = { version = "0.10.19", features = ["toml", "env"] }
+# The socket's frame types, shared with the clients that are built and released
+# on their own schedule. A change here is a change to both ends at once.
+fosnie-protocol = { path = "../crates/fosnie-protocol" }
 futures-util = "0.3.32"
 hex = "0.4.3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "form", "rustls"] }
