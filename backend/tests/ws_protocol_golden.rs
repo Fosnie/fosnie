@@ -97,6 +97,19 @@ fn the_server_writes_exactly_the_snapshotted_bytes() {
             .to_json(),
         ),
         (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/agent_approval_resolved.json"),
+            ServerFrame::AgentApprovalResolved { run_id: id(7), approved: true }.to_json(),
+        ),
+        (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/chat_error.json"),
+            ServerFrame::ChatError {
+                turn_id: Some(id(3)),
+                message: "the task failed".into(),
+                chat_id: Some(id(4)),
+            }
+            .to_json(),
+        ),
+        (
             include_str!("../../crates/fosnie-protocol/tests/fixtures/voice_audio.json"),
             ServerFrame::VoiceAudio { audio_base64: "AAAA".into(), mime: "audio/wav".into() }
                 .to_json(),

@@ -58,6 +58,46 @@ def test_reasoning_request_reads_overrides_and_none_when_absent():
         rag_ctx.set_overrides({})
 
 
+def test_tool_step_forces_none_for_gpt5_when_tools_present():
+    OA = "https://api.openai.com/v1"
+    # gpt-5.x + tools → forced to none (else the tools are 400'd away and dropped),
+    # regardless of the level the request asked for.
+    assert llm._tool_effort("high", OA, "gpt-5.4-mini", True) == "none"
+    assert llm._tool_effort("low", OA, "gpt-5", True) == "none"
+    # No tools → the caller's effort is preserved (the final answer still reasons).
+    assert llm._tool_effort("high", OA, "gpt-5.4-mini", False) == "high"
+    # Non-gpt-5 OpenAI model (o-series) is unaffected — it never sends tools+level anyway.
+    assert llm._tool_effort("low", OA, "o3", True) == "low"
+    # Non-OpenAI base (local/vLLM) is untouched.
+    assert llm._tool_effort("high", "http://localhost:11434/v1", "qwen3", True) == "high"
+
+
+def test_openai_tool_name_sanitisation_and_remap():
+    tools = [
+        {"type": "function", "function": {"name": "desktop.fs_write", "parameters": {}}},
+        {"type": "function", "function": {"name": "track_steps", "parameters": {}}},
+    ]
+    msgs = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "desktop.fs_write", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+    ]
+    safe_tools, safe_msgs, remap = llm._openai_sanitise_names(tools, msgs)
+    # dotted names rewritten for the wire; already-valid names untouched.
+    assert safe_tools[0]["function"]["name"] == "desktop_fs_write"
+    assert safe_tools[1]["function"]["name"] == "track_steps"
+    # history tool_calls rewritten too (else OpenAI 400s on the follow-up).
+    assert safe_msgs[1]["tool_calls"][0]["function"]["name"] == "desktop_fs_write"
+    # the map restores the original on the way back.
+    assert remap["desktop_fs_write"] == "desktop.fs_write"
+    # inputs are not mutated.
+    assert tools[0]["function"]["name"] == "desktop.fs_write"
+    assert msgs[1]["tool_calls"][0]["function"]["name"] == "desktop.fs_write"
+    # nothing dotted → no remap, no churn.
+    _, _, rm = llm._openai_sanitise_names([{"function": {"name": "track_steps"}}], [{"role": "user", "content": "x"}])
+    assert rm == {}
+
+
 def test_normalise_reasoning_tokens_from_completion_details():
     u = llm._normalise_reasoning_tokens({"completion_tokens": 50, "completion_tokens_details": {"reasoning_tokens": 12}})
     assert u["reasoning_tokens"] == 12

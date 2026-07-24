@@ -285,6 +285,13 @@ pub enum ServerFrame {
     ChatError {
         turn_id: Option<Uuid>,
         message: String,
+        /// The chat the failed turn belongs to, when it is known at the point the
+        /// error is raised. Lets a client that was not watching (a minimised
+        /// desktop window) offer to open the chat the failure happened in. Absent
+        /// for errors not tied to a turn (a rate-limit refusal, a voice fault), so
+        /// a client that predates the field sees exactly the frame it always saw.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chat_id: Option<Uuid>,
     },
     /// Coarse status of a background deep web search, broadcast to the user's
     /// sockets (the originating turn finished long ago). The UI shows a subtle
@@ -348,6 +355,17 @@ pub enum ServerFrame {
         /// form exists at all.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<serde_json::Value>,
+    },
+    /// An agent run's approval gate was decided: approved and about to run, or
+    /// closed (rejected, timed out, or auto-declined). Broadcast to every one of
+    /// the user's clients so a decision taken on one device settles the pending
+    /// card on the others, rather than leaving them asking a question that has
+    /// already been answered. `approved` is the only distinction the wire carries:
+    /// a rejection and a timeout both close the same way.
+    #[serde(rename = "agent.approval.resolved")]
+    AgentApprovalResolved {
+        run_id: Uuid,
+        approved: bool,
     },
     /// Ask the client to do something on the machine it is running on, inside the
     /// folder the user connected: list it, read a file, write one, delete one,

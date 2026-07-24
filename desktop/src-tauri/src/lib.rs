@@ -37,6 +37,7 @@
 //!   comes from the socket, for a conversation the owner bound to that folder.
 
 pub mod backup;
+pub mod badge;
 pub mod commands;
 pub mod diff;
 pub mod executor;
@@ -78,6 +79,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(notify::PendingChat::default())
         .manage(update::PendingUpdate::default())
+        .manage(badge::Badge::default())
         .invoke_handler(tauri::generate_handler![
             commands::shell_info,
             commands::pending_update,
@@ -149,7 +151,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
-    TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().expect("the client ships an icon").clone())
         .tooltip("Fosnie")
         .menu(&menu)
@@ -170,6 +172,8 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    // Kept so the approval count can be shown as its tooltip.
+    badge::set_tray(app, tray);
     Ok(())
 }
 

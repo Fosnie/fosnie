@@ -375,7 +375,6 @@ pub fn approval_detail(ctx: &DesktopToolCtx, tool: &str, args: &Value) -> Option
             // client renders the difference against what is on its own disk, which
             // is the only copy there is.
             "new_content": args.get("new_content").and_then(|v| v.as_str()).unwrap_or_default(),
-            "expected_sha256": args.get("old_content_sha256").and_then(|v| v.as_str()),
         })),
         FS_DELETE => Some(json!({
             "kind": "delete",
@@ -454,13 +453,12 @@ pub fn def(name: &str) -> Option<Value> {
             }),
         ),
         FS_WRITE => (
-            "Create or replace a file in the connected folder on the user's own computer. The user is shown the change and has to agree to it before anything is written. Pass the whole intended contents, not a fragment.",
+            "Create or replace a file in the connected folder on the user's own computer. The user is shown the change and has to agree to it before anything is written. Pass the whole intended contents, not a fragment. If you are replacing a file, read it first: a write is refused automatically if the file changed on disk since you read it, so re-read it and try again if that happens.",
             json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "The file, relative to the connected folder." },
-                    "new_content": { "type": "string", "description": "The complete contents the file should have afterwards." },
-                    "old_content_sha256": { "type": "string", "description": "The SHA-256 of the file as you last read it. Pass it when replacing an existing file: the write is refused if the file changed underneath you." }
+                    "new_content": { "type": "string", "description": "The complete contents the file should have afterwards." }
                 },
                 "required": ["path", "new_content"]
             }),

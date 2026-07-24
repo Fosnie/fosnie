@@ -269,6 +269,9 @@ async fn pump(
     if sink.send(Message::Text(hello.to_json())).await.is_err() {
         return None;
     }
+    // A fresh connection starts the approval count from nothing: anything decided
+    // while this client was away is not still waiting here.
+    crate::badge::reset(app);
 
     loop {
         tokio::select! {
@@ -312,6 +315,8 @@ async fn pump(
                             let (app, http, pairing, frame) = considering;
                             crate::notify::consider(&app, &http, &pairing, &frame).await;
                         });
+                        // Keep the taskbar approval count in step with the socket.
+                        crate::badge::consider(app, &text);
                         let _ = app.emit(EVENT_FRAME, text);
                     }
                     Some(Ok(Message::Ping(payload))) => {

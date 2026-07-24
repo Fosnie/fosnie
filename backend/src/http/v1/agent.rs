@@ -336,6 +336,16 @@ async fn auto_decline(state: &AppState, run_id: Uuid, tool: &str) {
             json!({ "reason": "no person is present on an API request" }),
         )
         .await;
+        // No caller context on an unattended request, so find the run's owner and
+        // tell their interactive clients (an open app window) that the gate closed.
+        let owner: Option<Uuid> =
+            sqlx::query_scalar!("SELECT acting_user_id FROM agent_runs WHERE id = $1", run_id)
+                .fetch_optional(&state.pg)
+                .await
+                .ok()
+                .flatten()
+                .flatten();
+        crate::agent::broadcast_resolved(state, owner, run_id, false);
         state.approvals.resolve(run_id, false);
         crate::agent::finish(state, run_id, "rejected").await;
     }

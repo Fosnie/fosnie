@@ -50,6 +50,11 @@ pub struct Shell {
     /// Commands still running in a connected folder, so one can be stopped from
     /// the window and none outlives the socket that asked for it.
     pub executor: crate::executor::Running,
+    /// The SHA-256 of each file at the moment the agent last read it, so a write
+    /// can be refused if the file changed on disk underneath it. Tracked here
+    /// rather than asked of the model, which cannot carry a hash reliably. Keyed by
+    /// the resolved file path.
+    pub read_hashes: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// This run of the client, which is how backups are grouped.
     pub session: String,
     pairing: RwLock<Option<Pairing>>,
@@ -69,6 +74,7 @@ impl Shell {
             http,
             bridge: Bridge::default(),
             executor: crate::executor::Running::default(),
+            read_hashes: std::sync::Mutex::new(std::collections::HashMap::new()),
             session: crate::executor::session_id(),
             pairing: RwLock::new(pairing),
             base_url: std::sync::RwLock::new(base_url),

@@ -51,7 +51,12 @@ export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}
   noteUnauthorised(res.status);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${body.slice(0, 200)}`);
+    // Carry the status on the error so a caller that cares about a specific
+    // outcome (a 409 meaning "already decided elsewhere") can tell it apart from a
+    // generic failure. Existing callers read `.message` and are unaffected.
+    const err = new Error(`${res.status} ${res.statusText}: ${body.slice(0, 200)}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   const ct = res.headers.get("content-type") ?? "";
@@ -2260,6 +2265,12 @@ export interface MsgActivity {
   /** The retrieval Coverage summary, rendered as a completed
    * activity step (survives a reload, unlike the transient progress label). */
   coverage?: string | null;
+  /** Commands the turn ran (a folder command or a code-interpreter run), for the
+   * end-of-turn summary. Persisted, so it survives a reload and shows on the web. */
+  commands?: { command: string; exit_code?: number | null; duration_ms: number; stdout_tail: string }[];
+  /** Files the turn changed in a connected folder (path + "write"/"delete"). The
+   * list shows on any client; putting them back is a desktop-only action. */
+  files?: { path: string; op: string }[];
 }
 
 /** The persisted roadmap of a Deep Research run: the ordered section headings and
