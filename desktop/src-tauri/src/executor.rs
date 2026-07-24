@@ -184,6 +184,14 @@ async fn run(app: &AppHandle, call_id: &str, turn: &str, tool: &str, args: &Valu
                 }));
             }
             let bytes = std::fs::read(&file).context("could not read that file")?;
+            // Remember the file's state at read time, so a later write can tell if
+            // it changed underneath the agent without asking the model to carry a
+            // hash (which it cannot do reliably).
+            app.state::<Shell>()
+                .read_hashes
+                .lock()
+                .unwrap()
+                .insert(file.to_string_lossy().into_owned(), sha256_hex(&bytes));
             match String::from_utf8(bytes) {
                 Ok(content) => Ok(json!({ "content": content, "bytes": meta.len() })),
                 // Not text: describe it rather than hand back mangled characters
@@ -198,9 +206,14 @@ async fn run(app: &AppHandle, call_id: &str, turn: &str, tool: &str, args: &Valu
 
         "desktop.fs_write" => {
             let file = folders::within(root, rel, false)?;
-            if let Some(expected) = args.get("old_content_sha256").and_then(|v| v.as_str()) {
+            let key = file.to_string_lossy().into_owned();
+            // Refuse only if the agent read this file and it has since changed on
+            // disk — the same "changed since read" guard, but tracked by us rather
+            // than a hash the model has to carry. A file the agent never read (a new
+            // one it is creating) has no recorded hash and writes freely.
+            if let Some(seen) = app.state::<Shell>().read_hashes.lock().unwrap().get(&key).cloned() {
                 let actual = std::fs::read(&file).ok().map(|b| sha256_hex(&b));
-                if actual.as_deref() != Some(expected) {
+                if actual.as_deref() != Some(seen.as_str()) {
                     bail!(
                         "{rel} has changed since it was read, so it was not overwritten. Read it \
                          again and decide what the contents should be."
@@ -219,6 +232,13 @@ async fn run(app: &AppHandle, call_id: &str, turn: &str, tool: &str, args: &Valu
                 std::fs::create_dir_all(parent).context("could not create the folder for it")?;
             }
             std::fs::write(&file, content).context("could not write that file")?;
+            // Record what we just wrote, so a second write this session compares
+            // against the new contents rather than the pre-write read.
+            app.state::<Shell>()
+                .read_hashes
+                .lock()
+                .unwrap()
+                .insert(key, sha256_hex(content.as_bytes()));
             Ok(json!({
                 "written": folders::display(&file),
                 "bytes": content.len(),

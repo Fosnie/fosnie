@@ -143,6 +143,18 @@ fn server_cases() -> Vec<(&'static str, ServerFrame)> {
             },
         ),
         (
+            "agent_approval_resolved",
+            ServerFrame::AgentApprovalResolved { run_id: id(7), approved: true },
+        ),
+        (
+            "chat_error",
+            ServerFrame::ChatError {
+                turn_id: Some(id(3)),
+                message: "the task failed".into(),
+                chat_id: Some(id(4)),
+            },
+        ),
+        (
             "desktop_tool_call",
             ServerFrame::DesktopToolCall {
                 call_id: id(10),
@@ -339,6 +351,29 @@ fn an_approval_from_a_newer_release_still_asks_the_old_question() {
     }
     .to_json();
     assert!(!without.contains("detail"), "an absent detail must not appear on the wire");
+}
+
+#[test]
+fn an_error_without_a_chat_carries_no_trace_of_the_field() {
+    // The chat id on an error is additive: an error not tied to a turn (a
+    // rate-limit refusal) has none, and its bytes must not mention the field, so
+    // a client built before it existed reads exactly the frame it always read.
+    let untied = ServerFrame::ChatError {
+        turn_id: None,
+        message: "slow down".into(),
+        chat_id: None,
+    }
+    .to_json();
+    assert!(!untied.contains("chat_id"), "an absent chat_id must not appear on the wire");
+
+    let tied = ServerFrame::ChatError {
+        turn_id: Some(id(3)),
+        message: "the task failed".into(),
+        chat_id: Some(id(4)),
+    }
+    .to_json();
+    let parsed: serde_json::Value = serde_json::from_str(&tied).expect("valid JSON");
+    assert_eq!(parsed["chat_id"], "04040404-0404-0404-0404-040404040404");
 }
 
 #[test]

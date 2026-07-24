@@ -773,6 +773,37 @@
 .approval-head { display: flex; align-items: center; gap: 7px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--gold); }
 .approval-summary { font-size: 14px; color: var(--ink); line-height: 1.5; }
 .approval-actions { display: flex; gap: 8px; }
+/* A gate that was decided (here or on another device): the buttons give way to
+   a settled label, so a card never sits asking an answered question. */
+.approval-resolved { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-3); }
+
+/* Pinned plan above the stream: where the current turn's work has reached. */
+/* Aligns to the centred message column (mirrors .thread-virtual) so the pinned
+   plan sits above the conversation rather than spanning the whole window. */
+.plan-pin { position: sticky; top: 0; z-index: 5; max-width: 812px; margin: 0 auto 6px; box-sizing: border-box; border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--bg-1); backdrop-filter: blur(6px); }
+.plan-pin-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 12px; background: none; border: 0; cursor: pointer; color: var(--ink-2); text-align: left; }
+.plan-pin-line { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-pin-current { color: var(--ink-3); }
+.plan-pin-chev { margin-left: auto; flex-shrink: 0; color: var(--ink-3); }
+.plan-pin-body { padding: 2px 12px 10px; }
+
+/* End-of-turn "what I did": the files changed and commands run. */
+.turn-summary { margin-top: 8px; border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 10px 12px; max-width: 70ch; display: flex; flex-direction: column; gap: 8px; }
+.turn-summary-head { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.turn-summary-meta { color: var(--ink-3); text-transform: none; letter-spacing: 0; }
+.turn-summary-section { display: flex; flex-direction: column; gap: 3px; }
+.turn-summary-file { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.turn-summary-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.turn-summary-file .btn { margin-left: auto; }
+.turn-summary-cmd { display: flex; flex-direction: column; }
+.turn-summary-cmd-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 0; background: none; border: 0; color: var(--ink-2); text-align: left; }
+.turn-summary-cmd-line { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.turn-summary-exit { font-size: 11px; padding: 1px 6px; border-radius: var(--r-sm); }
+.turn-summary-exit.ok { color: var(--green, #3fae7a); background: rgba(63,174,122,0.12); }
+.turn-summary-exit.bad { color: var(--red); background: rgba(220,80,80,0.12); }
+.turn-summary-dur { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--ink-3); flex-shrink: 0; }
+.turn-summary-chev { color: var(--ink-3); flex-shrink: 0; }
+.turn-summary-out { margin: 2px 0 6px; max-height: 200px; overflow: auto; font-size: 11.5px; background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
 
 /* Sidebar approvals inbox (durable pending-approval notifications) */
 .approvals-wrap { position: relative; }

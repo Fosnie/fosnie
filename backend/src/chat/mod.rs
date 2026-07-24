@@ -202,7 +202,7 @@ pub async fn run_turn(
         run_turn_inner(state, turn, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel).await
     {
         let _ = tx
-            .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string() })
+            .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string(), chat_id })
             .await;
     }
 }
@@ -1320,6 +1320,7 @@ async fn run_turn_inner(
                             // approve won and its durable resume will generate it.
                             _ => {
                                 if crate::agent::decide(state, rid, false).await.unwrap_or(false) {
+                                    crate::agent::broadcast_resolved(state, ctx.user_id, rid, false);
                                     crate::agent::finish(state, rid, "rejected").await;
                                 }
                             }
@@ -1363,7 +1364,7 @@ async fn run_turn_inner(
     }
 
     if let Some(message) = errored {
-        let _ = tx.send(ServerFrame::ChatError { turn_id: Some(turn_id), message }).await;
+        let _ = tx.send(ServerFrame::ChatError { turn_id: Some(turn_id), message, chat_id: Some(chat_id) }).await;
     } else if interrupted {
         // Post-stream → durable synchronous append: off the TTFT
         // path, and a terminal turn event must not be droppable.
@@ -1557,6 +1558,184 @@ struct Activity {
     /// the retrieval Coverage summary, rendered as a completed
     /// activity step (set after the tool loop so `observe` can't clobber it).
     coverage: Option<String>,
+    /// Commands the turn actually ran (a folder command or a code-interpreter
+    /// run), with enough to show a "what I did" summary later without re-running
+    /// anything: the command, how it exited, how long it took, and the tail of its
+    /// output. Only successful dispatches are recorded (a declined or timed-out
+    /// gate is not a run).
+    commands: Vec<CommandRun>,
+    /// Files the turn actually changed in a connected folder, so a summary can
+    /// list them and (on the desktop) offer to put them back. A path written more
+    /// than once in a turn is one entry, carrying its final operation.
+    files: Vec<FileChange>,
+}
+
+/// One command a turn ran, kept for the end-of-turn summary.
+#[derive(Default, serde::Serialize)]
+struct CommandRun {
+    command: String,
+    /// The process exit code, when it could be read from the output; absent rather
+    /// than a made-up zero when the shape was not what was expected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i64>,
+    duration_ms: u64,
+    /// The last of the command's output, capped so a long build log does not bloat
+    /// the message row.
+    stdout_tail: String,
+}
+
+/// One file a turn changed in a connected folder.
+#[derive(serde::Serialize)]
+struct FileChange {
+    path: String,
+    /// "write" | "delete".
+    op: String,
+}
+
+/// The longest tail of a command's output kept on the message.
+const COMMAND_TAIL_CHARS: usize = 2000;
+
+/// Build the record of a command run from a finished tool call, or `None` when the
+/// call was not a command or did not actually run. The output is read back from
+/// the same rendered string the model was given, so the summary and the model see
+/// the same result.
+fn command_run(name: &str, args: &Value, result: &str, duration_ms: u64) -> Option<CommandRun> {
+    if result.starts_with("error:") {
+        return None; // blocked, denied, declined or timed out — not a run
+    }
+    let (command, exit_code) = match name {
+        crate::tools::desktop::TERMINAL_RUN => {
+            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let code = result
+                .strip_prefix("exit code ")
+                .and_then(|r| r.split(['\n', ' ']).next())
+                .and_then(|n| n.trim().parse::<i64>().ok());
+            (cmd, code)
+        }
+        "code_interpreter" => {
+            let code = result
+                .strip_prefix("exit_code: ")
+                .and_then(|r| r.lines().next())
+                .and_then(|n| n.trim().parse::<i64>().ok());
+            ("code".to_string(), code)
+        }
+        _ => return None,
+    };
+    let stdout_tail = {
+        let n = result.chars().count();
+        if n <= COMMAND_TAIL_CHARS {
+            result.to_string()
+        } else {
+            result.chars().skip(n - COMMAND_TAIL_CHARS).collect()
+        }
+    };
+    Some(CommandRun { command, exit_code, duration_ms, stdout_tail })
+}
+
+/// Build the record of a file change from a finished tool call, or `None` when the
+/// call did not change a file or did not succeed.
+fn file_change(name: &str, args: &Value, result: &str) -> Option<FileChange> {
+    if result.starts_with("error:") {
+        return None;
+    }
+    let op = match name {
+        crate::tools::desktop::FS_WRITE => "write",
+        crate::tools::desktop::FS_DELETE => "delete",
+        _ => return None,
+    };
+    let path = args.get("path").and_then(|v| v.as_str())?.to_string();
+    Some(FileChange { path, op: op.to_string() })
+}
+
+/// A side effect worth recording on the message for the end-of-turn summary.
+enum ActivityEffect {
+    Command(CommandRun),
+    File(FileChange),
+}
+
+/// The one side effect a finished tool call left, if any.
+fn tool_effect(name: &str, args: &Value, result: &str, duration_ms: u64) -> Option<ActivityEffect> {
+    if let Some(c) = command_run(name, args, result, duration_ms) {
+        return Some(ActivityEffect::Command(c));
+    }
+    file_change(name, args, result).map(ActivityEffect::File)
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use crate::tools::desktop::{FS_DELETE, FS_WRITE, TERMINAL_RUN};
+
+    #[test]
+    fn a_command_is_read_back_from_its_rendered_output() {
+        let args = json!({ "command": "npm test" });
+        let result = "exit code 0\nran 12 tests, all passed\n";
+        let effect = tool_effect(TERMINAL_RUN, &args, result, 1830).expect("a command effect");
+        let ActivityEffect::Command(c) = effect else { panic!("expected a command") };
+        assert_eq!(c.command, "npm test");
+        assert_eq!(c.exit_code, Some(0));
+        assert_eq!(c.duration_ms, 1830);
+        assert!(c.stdout_tail.contains("all passed"));
+    }
+
+    #[test]
+    fn a_non_zero_exit_is_kept() {
+        let args = json!({ "command": "cargo build" });
+        let effect = tool_effect(TERMINAL_RUN, &args, "exit code 101\nerror\n", 40).unwrap();
+        let ActivityEffect::Command(c) = effect else { panic!() };
+        assert_eq!(c.exit_code, Some(101));
+    }
+
+    #[test]
+    fn a_failed_dispatch_is_not_a_run() {
+        // A declined or timed-out gate renders an "error:" string, not a result.
+        let args = json!({ "command": "rm -rf /" });
+        assert!(tool_effect(TERMINAL_RUN, &args, "error: the user declined this tool call", 5).is_none());
+    }
+
+    #[test]
+    fn writes_and_deletes_become_file_changes() {
+        let w = tool_effect(FS_WRITE, &json!({ "path": "notes.md" }), "{\"ok\":true}", 3).unwrap();
+        let ActivityEffect::File(f) = w else { panic!() };
+        assert_eq!((f.path.as_str(), f.op.as_str()), ("notes.md", "write"));
+        let d = tool_effect(FS_DELETE, &json!({ "path": "old.txt" }), "{\"ok\":true}", 2).unwrap();
+        let ActivityEffect::File(f) = d else { panic!() };
+        assert_eq!(f.op, "delete");
+    }
+
+    #[test]
+    fn a_read_only_tool_leaves_no_effect() {
+        assert!(tool_effect("desktop.fs_read", &json!({ "path": "a" }), "the file's text", 1).is_none());
+        assert!(tool_effect("web_search", &json!({}), "results", 1).is_none());
+    }
+
+    #[test]
+    fn the_same_file_written_twice_stays_one_entry() {
+        let mut a = Activity::default();
+        a.record(ActivityEffect::File(FileChange { path: "a.rs".into(), op: "write".into() }));
+        a.record(ActivityEffect::File(FileChange { path: "a.rs".into(), op: "write".into() }));
+        a.record(ActivityEffect::File(FileChange { path: "b.rs".into(), op: "write".into() }));
+        assert_eq!(a.files.len(), 2);
+    }
+
+    #[test]
+    fn nothing_worth_recording_serialises_to_none() {
+        assert!(Activity::default().to_json().is_none());
+    }
+
+    #[test]
+    fn a_command_survives_into_the_stored_json() {
+        let mut a = Activity::default();
+        a.record(ActivityEffect::Command(CommandRun {
+            command: "ls".into(),
+            exit_code: Some(0),
+            duration_ms: 12,
+            stdout_tail: "a\nb\n".into(),
+        }));
+        let json = a.to_json().expect("non-empty");
+        assert_eq!(json["commands"][0]["command"], "ls");
+        assert_eq!(json["commands"][0]["exit_code"], 0);
+    }
 }
 
 impl Activity {
@@ -1587,12 +1766,35 @@ impl Activity {
         }
     }
 
+    /// Record one side effect (a command that ran, a file that changed). A file
+    /// touched twice in a turn stays one entry, carrying its latest operation.
+    fn record(&mut self, effect: ActivityEffect) {
+        match effect {
+            ActivityEffect::Command(c) => self.commands.push(c),
+            ActivityEffect::File(f) => match self.files.iter_mut().find(|x| x.path == f.path) {
+                Some(existing) => existing.op = f.op,
+                None => self.files.push(f),
+            },
+        }
+    }
+
     /// JSON to store on the message, or `None` when nothing happened.
     fn to_json(&self) -> Option<Value> {
-        if self.steps.is_empty() && self.tools.is_empty() && self.coverage.is_none() {
+        if self.steps.is_empty()
+            && self.tools.is_empty()
+            && self.coverage.is_none()
+            && self.commands.is_empty()
+            && self.files.is_empty()
+        {
             None
         } else {
-            Some(json!({ "steps": self.steps, "tools": self.tools, "coverage": self.coverage }))
+            Some(json!({
+                "steps": self.steps,
+                "tools": self.tools,
+                "coverage": self.coverage,
+                "commands": self.commands,
+                "files": self.files,
+            }))
         }
     }
 }
@@ -2108,15 +2310,21 @@ async fn run_tool_loop(
             }
         }))
         .await;
-        for (id, r) in auto_results {
+        for (id, r, effect) in auto_results {
             by_id.insert(id, r);
+            if let Some(e) = effect {
+                activity.record(e);
+            }
         }
         for tc in gated {
-            let (id, r) = gated_call(
+            let (id, r, effect) = gated_call(
                 state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, desktop_ctx, tc,
             )
             .await;
             by_id.insert(id, r);
+            if let Some(e) = effect {
+                activity.record(e);
+            }
         }
 
         // Append results in the model's original call order.
@@ -2153,7 +2361,7 @@ async fn run_one_call(
     rag_ctx: Option<&crate::tools::RagToolCtx>,
     desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     tc: &ml::ToolCall,
-) -> (String, String) {
+) -> (String, String, Option<ActivityEffect>) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
     let _ = tx
         .send(ServerFrame::ChatTool { turn_id, name: tc.name.clone(), phase: "started".into(), detail: None })
@@ -2234,7 +2442,8 @@ async fn run_one_call(
     metrics::histogram!("tool_call_duration_seconds", "tool" => tc.name.clone(), "kind" => kind)
         .record(ms as f64 / 1000.0);
     tracing::debug!(tool = %tc.name, ms, "tool dispatched");
-    (id, result)
+    let effect = tool_effect(&tc.name, &tc.arguments, &result, ms.max(0) as u64);
+    (id, result, effect)
 }
 
 /// A side-effecting gated call (MCP or custom): pause for explicit human approval
@@ -2256,14 +2465,14 @@ async fn gated_call(
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     tc: &ml::ToolCall,
-) -> (String, String) {
+) -> (String, String, Option<ActivityEffect>) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
     if let Err(e) = crate::agent::request_approval(
         state, run_id, ctx.user_id, ctx.role.as_str(), &tc.name, &tc.arguments, 0,
     )
     .await
     {
-        return (id, format!("error: {e}"));
+        return (id, format!("error: {e}"), None);
     }
     // What the user is being asked. A folder action says what it would do to
     // which file, in a shape a client can render as the change itself; everything
@@ -2303,16 +2512,17 @@ async fn gated_call(
         Ok(Ok(true)) => {
             // Gated tools are MCP/custom side-effecting calls, never code_interpreter or
             // search_library → no CI files, no RAG-tool context.
-            let (_id, r) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, desktop_ctx, tc).await;
+            let (_id, r, effect) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, desktop_ctx, tc).await;
             crate::agent::mark_running(state, run_id).await;
-            (id, r)
+            (id, r, effect)
         }
-        Ok(Ok(false)) => (id, "error: the user declined this tool call".into()),
+        Ok(Ok(false)) => (id, "error: the user declined this tool call".into(), None),
         _ => {
             if crate::agent::decide(state, run_id, false).await.unwrap_or(false) {
+                crate::agent::broadcast_resolved(state, ctx.user_id, run_id, false);
                 crate::agent::finish(state, run_id, "rejected").await;
             }
-            (id, "error: tool approval timed out".into())
+            (id, "error: tool approval timed out".into(), None)
         }
     }
 }

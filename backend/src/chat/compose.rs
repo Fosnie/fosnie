@@ -170,8 +170,10 @@ pub fn build_system(
              nothing outside it can be reached. Change files with the write tool and \
              never by a shell command: a write is shown to the user as a difference \
              they agree to, so a change made any other way is one they never saw. \
-             Before work that takes several steps, register the steps with \
-             track_steps, and keep it up to date as you go."
+             Work of several steps starts with a plan: call track_steps first with \
+             three to eight steps, and keep exactly one of them in progress at a \
+             time. Mark each step done as you finish it, not all together at the \
+             end, so the user can see where the work has reached."
         ));
     }
 

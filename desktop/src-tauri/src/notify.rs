@@ -45,7 +45,11 @@ pub const EVENT_OPEN_CHAT: &str = "shell:open-chat";
 /// and all but the last of them are tokens; paying for a full deserialisation of
 /// each one to discard it is work the socket does not need to do. Anything that
 /// gets past this is still parsed properly below — this only rejects.
-const NOTIFIABLE: [&str; 2] = ["\"type\":\"chat.completed\"", "\"type\":\"agent.approval\""];
+const NOTIFIABLE: [&str; 3] = [
+    "\"type\":\"chat.completed\"",
+    "\"type\":\"agent.approval\"",
+    "\"type\":\"chat.error\"",
+];
 
 /// Raise a notification for this frame if it deserves one and nobody is watching.
 pub async fn consider(
@@ -65,6 +69,13 @@ pub async fn consider(
     };
     let (chat_id, body) = match frame {
         ServerFrame::ChatCompleted { chat_id, .. } => (chat_id.to_string(), "Your answer is ready."),
+        ServerFrame::ChatError { chat_id: Some(chat_id), .. } => (chat_id.to_string(), "The task failed."),
+        ServerFrame::ChatError { chat_id: None, .. } => {
+            // A failure with no chat to point at (a rate-limit refusal, say):
+            // bring the window forward, where the error is shown in place.
+            show(app, "Fosnie", "The task failed.", None);
+            return;
+        }
         ServerFrame::AgentApproval { .. } => {
             // An approval names a run, not a chat, so there is nothing to open;
             // the notification brings the window forward and the request is
@@ -202,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn the_two_frames_worth_interrupting_for_get_through() {
+    fn the_frames_worth_interrupting_for_get_through() {
         let completed = ServerFrame::ChatCompleted {
             turn_id: Uuid::nil(),
             chat_id: Uuid::nil(),
@@ -219,8 +230,23 @@ mod tests {
             detail: None,
         }
         .to_json();
-        for frame in [completed, approval] {
+        let failed = ServerFrame::ChatError {
+            turn_id: Some(Uuid::nil()),
+            message: "the task failed".into(),
+            chat_id: Some(Uuid::nil()),
+        }
+        .to_json();
+        for frame in [completed, approval, failed] {
             assert!(NOTIFIABLE.iter().any(|m| frame.contains(m)), "rejected {frame}");
         }
+    }
+
+    #[test]
+    fn a_resolution_is_not_a_notification() {
+        // `agent.approval.resolved` contains the `agent.approval` needle used by
+        // the badge, but must NOT reach the notification marker (which is fully
+        // quoted) — settling a card is not worth interrupting anyone.
+        let resolved = ServerFrame::AgentApprovalResolved { run_id: Uuid::nil(), approved: true }.to_json();
+        assert!(!NOTIFIABLE.iter().any(|m| resolved.contains(m)), "resolution notified: {resolved}");
     }
 }

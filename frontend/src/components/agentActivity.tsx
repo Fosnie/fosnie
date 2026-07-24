@@ -81,7 +81,7 @@ export function AgentActivity({
   runningTool?: string | null;
   /** Live progress detail from a streaming tool (e.g. "round 2: reading example.com"). */
   runningDetail?: string | null;
-  approval?: { tool: string; summary: string; detail?: Record<string, unknown> | null } | null;
+  approval?: { tool: string; summary: string; detail?: Record<string, unknown> | null; state?: "pending" | "approved" | "closed" } | null;
   onApprove?: () => void;
   onReject?: () => void;
   /** Agree a command prefix for this folder, so the same run is not asked about again. */
@@ -199,12 +199,14 @@ export function AgentActivity({
             // the sentence — an older instance sends no detail, and a client that
             // meets one must still be able to ask the question.
             (() => {
+              const resolved = approval.state && approval.state !== "pending";
               const folder = asFolderDetail(approval.detail);
               if (folder) {
                 return (
                   <FolderApprovalCard
                     detail={folder}
                     terminalOut={terminalOut ?? undefined}
+                    resolved={approval.state}
                     onApprove={() => onApprove?.()}
                     onReject={() => onReject?.()}
                     onAllowPrefix={async (p) => { await onAllowPrefix?.(p); }}
@@ -215,10 +217,18 @@ export function AgentActivity({
                 <div className="approval-card aa-approval">
                   <div className="approval-head"><Icon.Shield size={13} /> Approval needed</div>
                   <div className="approval-summary">{approval.summary}</div>
-                  <div className="approval-actions">
-                    <button className="btn btn-gold sm" onClick={onApprove}><Icon.Check size={14} /> Approve</button>
-                    <button className="btn btn-line sm" onClick={onReject}><Icon.Close size={14} /> Reject</button>
-                  </div>
+                  {resolved ? (
+                    <div className="approval-resolved mono">
+                      {approval.state === "approved"
+                        ? <><Icon.Check size={13} /> Approved</>
+                        : "This was resolved on another device"}
+                    </div>
+                  ) : (
+                    <div className="approval-actions">
+                      <button className="btn btn-gold sm" onClick={onApprove}><Icon.Check size={14} /> Approve</button>
+                      <button className="btn btn-line sm" onClick={onReject}><Icon.Close size={14} /> Reject</button>
+                    </div>
+                  )}
                 </div>
               );
             })()
@@ -256,7 +266,7 @@ export function AgentActivity({
   );
 }
 
-function StepRow({ title, status }: { title: string; status: string }) {
+export function StepRow({ title, status }: { title: string; status: string }) {
   const done = status === "done";
   const running = status === "running";
   const skipped = status === "skipped";

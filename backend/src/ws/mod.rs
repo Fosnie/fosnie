@@ -315,7 +315,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                     // Coarse per-user abuse guard on the expensive turn path.
                     if !crate::cache::rate_limit_ok(&state.redis, &format!("chat:{user_id}"), 30, 60).await {
                         let _ = tx
-                            .send(ServerFrame::ChatError { turn_id: None, message: "You're sending messages too quickly — please slow down.".into() })
+                            .send(ServerFrame::ChatError { turn_id: None, message: "You're sending messages too quickly — please slow down.".into(), chat_id: None })
                             .await;
                         continue;
                     }
@@ -345,7 +345,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                     // answer + anything after — no prompt duplication.
                     if !crate::cache::rate_limit_ok(&state.redis, &format!("chat:{user_id}"), 30, 60).await {
                         let _ = tx
-                            .send(ServerFrame::ChatError { turn_id: None, message: "You're sending messages too quickly — please slow down.".into() })
+                            .send(ServerFrame::ChatError { turn_id: None, message: "You're sending messages too quickly — please slow down.".into(), chat_id: None })
                             .await;
                         continue;
                     }
@@ -367,7 +367,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                             }
                             Err(e) => {
                                 let _ = txc
-                                    .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string() })
+                                    .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string(), chat_id: Some(chat_id) })
                                     .await;
                             }
                         }
@@ -463,7 +463,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         crate::http::messaging::send_via_ws(&state, &ctx, chat_id, &content, mentions).await
                     {
                         let _ = tx
-                            .send(ServerFrame::ChatError { turn_id: None, message: e.to_string() })
+                            .send(ServerFrame::ChatError { turn_id: None, message: e.to_string(), chat_id: None })
                             .await;
                     }
                 }
@@ -474,13 +474,13 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                     let txc = tx.clone();
                     tokio::spawn(async move {
                         let frame = if !st.features.enabled_for_user(&st, Some(user_id), "voice").await {
-                            ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into() }
+                            ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into(), chat_id: None }
                         } else {
                             match base64::engine::general_purpose::STANDARD.decode(audio_base64.as_bytes()) {
-                                Err(e) => ServerFrame::ChatError { turn_id: None, message: format!("bad audio: {e}") },
+                                Err(e) => ServerFrame::ChatError { turn_id: None, message: format!("bad audio: {e}"), chat_id: None },
                                 Ok(bytes) => match crate::ml::transcribe(&st.http, &st.boot.ml.base_url, &bytes, &mime, crate::ml::provider_overrides(&st, Some(user_id)).await).await {
                                     Ok(text) => ServerFrame::VoiceTranscript { text },
-                                    Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string() },
+                                    Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string(), chat_id: None },
                                 },
                             }
                         };
@@ -492,14 +492,14 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                     let txc = tx.clone();
                     tokio::spawn(async move {
                         let frame = if !st.features.enabled_for_user(&st, Some(user_id), "voice").await {
-                            ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into() }
+                            ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into(), chat_id: None }
                         } else {
                             match crate::ml::synthesize(&st.http, &st.boot.ml.base_url, &text, voice.as_deref(), crate::ml::provider_overrides(&st, Some(user_id)).await).await {
                                 Ok((bytes, mime)) => ServerFrame::VoiceAudio {
                                     audio_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
                                     mime,
                                 },
-                                Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string() },
+                                Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string(), chat_id: None },
                             }
                         };
                         let _ = txc.send(frame).await;

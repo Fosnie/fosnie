@@ -152,6 +152,21 @@ pub async fn decide(state: &AppState, run_id: Uuid, approve: bool) -> Result<boo
     Ok(n == 1)
 }
 
+/// Tell every one of the user's connected clients that a run's approval gate is
+/// settled — approved and about to run, or closed (rejected, timed out,
+/// auto-declined, cancelled). A pending approval card is shown on every device
+/// the user has open, but only one of them takes the decision; without this, the
+/// others sit asking a question that has already been answered. Best-effort and
+/// process-local (the socket registry is; Postgres remains the authority), so a
+/// `None` user or an absent socket simply means nobody to tell here.
+pub fn broadcast_resolved(state: &AppState, user_id: Option<Uuid>, run_id: Uuid, approved: bool) {
+    if let Some(uid) = user_id {
+        state
+            .hub
+            .send_to_user(uid, crate::ws::protocol::ServerFrame::AgentApprovalResolved { run_id, approved });
+    }
+}
+
 /// Final state; releases the kill-token (does NOT force-cancel — that is `kill`).
 pub async fn finish(state: &AppState, run_id: Uuid, status: &str) {
     let _ = sqlx::query!(
