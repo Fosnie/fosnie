@@ -48,6 +48,9 @@ function renderApp() {
 // application renders. In a browser this branch is not taken and the boot path
 // below is exactly what it always was.
 if (isShell()) {
+  // The frame first, and separately: it has to be there for the pairing screen
+  // as much as for the application, and neither waits on the other.
+  void import("@/shell/chrome").then(({ mountFrame }) => mountFrame());
   void import("@/shell/boot").then(({ bootShell }) => bootShell(root, renderApp));
 }
 // `#/connect` is a development affordance for driving a remote instance from a

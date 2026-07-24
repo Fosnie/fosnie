@@ -84,6 +84,47 @@ key rotation are in [docs/updater-keys.md](docs/updater-keys.md) — read it bef
 publishing anything, and note in particular that the Windows upgrade code in
 `src-tauri/tauri.conf.json` is fixed permanently and must never be regenerated.
 
+## The icon
+
+`app-icon.png` is the source: the brand mark on the brand's near-black, composed
+once at 1024 so every size below it is a reduction of the same picture. The set
+in `src-tauri/icons/` is generated from it:
+
+```sh
+npx tauri icon app-icon.png
+```
+
+Two things are then done by hand, and both matter. The generator produces mobile
+icon sets this client has no use for (`src-tauri/icons/android`, `.../ios`);
+delete them. And at 16 to 32 pixels — the taskbar, the tray, Alt-Tab — the mark
+reduced from a padded square turns to mush, so those entries are rendered from a
+tighter crop of the same source (about 92% of the square rather than 76%) and
+put into `icon.ico` alongside the larger ones, with the tight 32 also written
+over `32x32.png`, which is what the tray and Linux window use:
+
+```sh
+magick app-icon.png -resize 48x48 large48.png     # and 64, 256, from this source
+magick <brand>/logo-simple.png -trim +repage -resize 940x940 \
+  -background "#0c0a11" -alpha remove -gravity center -extent 1024x1024 tight.png
+magick tight.png -resize 16x16 small16.png        # and 24, 32, from the tight one
+magick small16.png small24.png small32.png large48.png large64.png large256.png \
+  src-tauri/icons/icon.ico
+```
+
+## The window frame
+
+On Windows the client asks for no system decorations and the application draws
+the title bar itself, which is why `src-tauri/tauri.windows.conf.json` exists.
+Tauri merges a platform configuration into the main one as a JSON merge patch,
+and a merge patch **replaces an array outright** rather than merging its members
+— so that file repeats the whole window definition, and any change to the window
+in `tauri.conf.json` has to be made in both. macOS and Linux take the main
+configuration unchanged and keep their own decorations.
+
+The trade-off of an application-drawn frame on Windows 11 is that hovering the
+maximise control no longer offers the Snap Layouts flyout. Keyboard snapping
+(`Win` + arrows) is unaffected.
+
 ## Versioning
 
 The client has its own version, independent of the platform's. It is installed

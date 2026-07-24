@@ -16,5 +16,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // Before anything opens a window: Windows reads the application identity
+    // when the first one appears, and a later declaration cannot regroup it.
+    fosnie_desktop::identity::announce();
     fosnie_desktop::run();
 }

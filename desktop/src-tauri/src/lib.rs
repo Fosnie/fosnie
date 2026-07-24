@@ -42,6 +42,7 @@ pub mod commands;
 pub mod diff;
 pub mod executor;
 pub mod folders;
+pub mod identity;
 pub mod instance;
 pub mod notify;
 pub mod state;
@@ -52,8 +53,15 @@ pub mod ws;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 use crate::state::Shell;
+
+/// What is remembered about the window between runs. Size, position and whether
+/// it was maximised; not whether it was on screen, because closing puts this
+/// client in the tray rather than ending it.
+const WINDOW_STATE: StateFlags =
+    StateFlags::SIZE.union(StateFlags::POSITION).union(StateFlags::MAXIMIZED);
 
 pub fn run() {
     tracing_subscriber::fmt()
@@ -77,6 +85,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Reopen where it was left. Deliberately not remembering visibility:
+        // closing this client hides it to the tray, so a remembered "hidden"
+        // would start the next run with no window and no way to ask for one
+        // except the tray.
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(WINDOW_STATE).build())
         .manage(notify::PendingChat::default())
         .manage(notify::PendingAutomation::default())
         .manage(update::PendingUpdate::default())
@@ -124,8 +137,11 @@ pub fn run() {
                 });
             }
 
+            open_maximised_the_first_time(app.handle());
             build_tray(app.handle())?;
             register_deep_link(app.handle());
+            // So a notification from this client carries its name and icon.
+            identity::describe(app.handle());
             update::spawn_checks(handle);
             // Copies of files changed weeks ago are of no use to anybody and are
             // somebody's disk. Swept once, at startup, off the path of anything
@@ -141,10 +157,39 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                // Written now rather than on exit: a hidden window has no size
+                // worth saving, and quitting from the tray would otherwise
+                // record the geometry of a window nobody can see.
+                let _ = window.app_handle().save_window_state(WINDOW_STATE);
             }
         })
         .run(tauri::generate_context!())
         .expect("the desktop client starts");
+}
+
+/// A first run has nothing to restore, and a window that opens at a default size
+/// on a large screen looks like a dialogue rather than an application; so the
+/// first one opens filling the screen, and every run after that opens where the
+/// last one was left.
+///
+/// Maximised here rather than in the window's own configuration, and it matters
+/// which: a window declared maximised is created at its configured size and
+/// maximised in the same breath, and the web view inside it keeps the size it
+/// was told about at creation — leaving a page laid out wider than the window it
+/// is painted in, with its right-hand edge off the screen. Maximising the window
+/// once it exists resizes it in the ordinary way, and the web view follows.
+fn open_maximised_the_first_time(app: &tauri::AppHandle) {
+    let remembered = app
+        .path()
+        .app_config_dir()
+        .map(|dir| dir.join(app.filename()).exists())
+        .unwrap_or(false);
+    if remembered {
+        return;
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.maximize();
+    }
 }
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -159,7 +204,13 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => notify::focus_window(app),
-            "quit" => app.exit(0),
+            "quit" => {
+                // Quitting from the tray with the window still open is the one
+                // path that ends the client without passing through the close
+                // handler, so the geometry is recorded here too.
+                let _ = app.save_window_state(WINDOW_STATE);
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

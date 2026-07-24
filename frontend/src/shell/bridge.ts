@@ -119,6 +119,44 @@ export async function openExternal(url: string): Promise<void> {
   await (await api()).invoke("open_external", { url });
 }
 
+// The window's own frame. On Windows the client asks the system for no
+// decorations and this application draws them, so it needs to be able to move
+// and size the window it is already in. That is the whole of the reach: each
+// call is about this window and nothing else, and closing is a request the
+// client answers by hiding to the tray, not an ending.
+
+/** The window this application is drawn in. */
+async function frame() {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow();
+}
+
+/** Send the window to the taskbar. */
+export async function minimiseWindow(): Promise<void> {
+  await (await frame()).minimize();
+}
+
+/** Maximise, or restore a maximised window to its previous size. */
+export async function toggleMaximiseWindow(): Promise<void> {
+  await (await frame()).toggleMaximize();
+}
+
+/** Ask to close. The client hides to the tray instead, keeping the socket up. */
+export async function closeWindow(): Promise<void> {
+  await (await frame()).close();
+}
+
+/** Whether the window is maximised, so the control can show the right glyph. */
+export async function isWindowMaximised(): Promise<boolean> {
+  return (await frame()).isMaximized();
+}
+
+/** Called whenever the window is resized, which covers maximise and restore.
+ *  Resolves to an unsubscribe. */
+export async function onWindowResized(handler: () => void): Promise<() => void> {
+  return (await frame()).onResized(() => handler());
+}
+
 /** Subscribe to one of the client's events. Resolves to an unsubscribe. */
 export async function onShellEvent<T>(
   name: string,

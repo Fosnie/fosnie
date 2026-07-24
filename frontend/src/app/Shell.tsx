@@ -39,8 +39,9 @@ export function Shell() {
   const theme = useTheme();
   const hasFavicon = branding.data?.some((b) => b.kind === "favicon");
 
-  // Mobile off-canvas sidebar (≤640px; the drawer chrome is display:none on
-  // desktop). Auto-close on navigation so tapping a nav/project item dismisses it.
+  // Off-canvas sidebar for a narrow window (≤980px; the drawer chrome is
+  // display:none above that). Auto-close on navigation so choosing a nav or
+  // project item dismisses it.
   const [navOpen, setNavOpen] = useState(false);
   const { pathname } = useLocation();
   useEffect(() => setNavOpen(false), [pathname]);

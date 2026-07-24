@@ -209,30 +209,17 @@ mod platform {
     use tauri::AppHandle;
     use tauri_winrt_notification::Toast;
 
-    /// Windows toasts are addressed to an application identity. An installed
-    /// client has one, registered by its installer; a build run straight out of
-    /// `target/` does not, so it borrows the shell's — the same rule the
-    /// notification plugin follows, and the reason a development toast is
-    /// attributed to Windows PowerShell.
-    fn app_id() -> String {
-        let installed = tauri::utils::platform::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.display().to_string()))
-            .map(|dir| !(dir.ends_with("\\target\\debug") || dir.ends_with("\\target\\release")))
-            .unwrap_or(false);
-        if installed {
-            "dev.fosnie.desktop".to_string()
-        } else {
-            Toast::POWERSHELL_APP_ID.to_string()
-        }
-    }
-
     /// Built here rather than through the notification plugin: the plugin's
     /// desktop path drops the handle that a click would be delivered on, so a
     /// notification sent through it can inform but can never lead anywhere.
+    ///
+    /// The toast is addressed to this client's own application identity, which
+    /// the process announces and describes at startup (see [`crate::identity`]);
+    /// that is what puts this client's name and icon on it rather than those of
+    /// whichever program Windows would otherwise attribute it to.
     pub fn show(app: &AppHandle, title: &str, body: &str) -> Result<(), String> {
         let handle = app.clone();
-        Toast::new(&app_id())
+        Toast::new(crate::identity::APP_ID)
             .title(title)
             .text1(body)
             .on_activated(move |_| {

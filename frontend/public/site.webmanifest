@@ -1,6 +1,6 @@
 {
-  "name": "Private AI Platform",
-  "short_name": "Private AI",
+  "name": "Fosnie",
+  "short_name": "Fosnie",
   "icons": [
     {
       "src": "/web-app-manifest-192x192.png",
@@ -15,7 +15,7 @@
       "purpose": "maskable"
     }
   ],
-  "theme_color": "#001159",
-  "background_color": "#001159",
+  "theme_color": "#0c0a11",
+  "background_color": "#0c0a11",
   "display": "standalone"
 }

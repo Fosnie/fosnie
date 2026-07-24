@@ -834,6 +834,25 @@
 .foot-out:hover { color: var(--gold); }
 
 /* ============================================================
+   Window frame (desktop client, Windows only)
+   ============================================================ */
+/* The band the application draws in place of the system's title bar. Present
+   only when the client mounted it, which is why every rule here is behind the
+   attribute rather than the class: in a browser the host element is empty and
+   nothing below should move. Deliberately flat — no glass, no blur — because a
+   window frame that reacts to what is scrolling underneath it reads as a bug. */
+:root[data-frame="app"] { --titlebar-h: 34px; }
+:root[data-frame="app"] #root { height: calc(100% - var(--titlebar-h)); }
+.titlebar { height: var(--titlebar-h, 34px); display: flex; align-items: center; justify-content: space-between; background: var(--bg-0); border-bottom: 1px solid var(--line); user-select: none; -webkit-user-select: none; }
+.titlebar-name { padding-left: 14px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; color: var(--ink-3); }
+.titlebar-controls { display: flex; height: 100%; }
+/* Windows' own metrics: a wide, full-height hit area with no rounding, so the
+   corner button stays clickable when the window is maximised against the edge. */
+.titlebar-btn { width: 46px; height: 100%; display: flex; align-items: center; justify-content: center; background: none; border: 0; border-radius: 0; color: var(--ink-3); cursor: pointer; transition: background var(--dur-fast, 0.12s), color var(--dur-fast, 0.12s); }
+.titlebar-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--ink); }
+.titlebar-btn--close:hover { background: #c42b1c; color: #fff; }
+
+/* ============================================================
    Top bar (general)
    ============================================================ */
 /* Absolute frosted bar over the top of the scrolling thread (sticky glass-over-
@@ -2018,7 +2037,6 @@ details[open] > .cites-summary .cites-chev { transform: rotate(180deg); }
 @media (max-width: 980px) {
   .legal-grid { grid-template-columns: 1fr; }
   .legal-side { display: none; }
-  .app { grid-template-columns: 64px 1fr; }
 }
 @media (max-width: 760px) { .review-cols { grid-template-columns: 1fr; } }
 
@@ -2120,10 +2138,11 @@ details[open] > .cites-summary .cites-chev { transform: rotate(180deg); }
 .agent-default-btn.on { opacity: 1; color: var(--gold); }
 
 /* ============================================================
-   Mobile / responsive — baseline phone usability floor.
+   Narrow / responsive — baseline usability floor for a phone and
+   for any window too narrow to hold the sidebar beside the canvas.
    Layered LAST so it overrides the desktop-first rules above.
-   Desktop (>=641px) is untouched: the drawer chrome is display:none
-   and the .app grid keeps its 272px sidebar track.
+   Wider than the threshold nothing here applies: the drawer chrome
+   is display:none and the .app grid keeps its 272px sidebar track.
    ============================================================ */
 
 /* Drawer chrome — hidden on desktop, revealed in the phone media query. */
@@ -2147,8 +2166,12 @@ details[open] > .cites-summary .cites-chev { transform: rotate(180deg); }
   .btn { min-height: 40px; }
 }
 
-@media (max-width: 640px) {
-  /* Sidebar becomes an off-canvas drawer; the canvas takes the full width. */
+@media (max-width: 980px) {
+  /* Sidebar becomes an off-canvas drawer; the canvas takes the full width.
+     The threshold is where the 272px track stops leaving the canvas a usable
+     width: a window snapped to half a screen lands here, and a sidebar squeezed
+     into a stub column with its labels sheared off is worse than one that steps
+     out of the way and comes back on request. */
   .app { grid-template-columns: 1fr; }
   .sidebar {
     position: fixed; inset: 0 auto 0 0; width: min(86vw, 300px);

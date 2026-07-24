@@ -80,6 +80,9 @@ tempfile = "3"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "=2.10.1"
+# Where the window was left: size, position and whether it was maximised, kept
+# between runs so the client opens where the person put it.
+tauri-plugin-window-state = "2"
 
 # The Windows toast API, used directly for one reason: the notification plugin's
 # desktop path discards the handle an activation is delivered on, so a
@@ -88,6 +91,11 @@ tauri-plugin-updater = "=2.10.1"
 # dependency, only access to the callback.
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7.3"
+# Declaring the application identity: one call to say who this process is, and
+# the current user's registry to describe it. Both are already in the tree
+# beneath the toast crate; naming them adds access, not weight.
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell"] }
+winreg = "0.55"
 
 [profile.dev]
 debug = "line-tables-only"
