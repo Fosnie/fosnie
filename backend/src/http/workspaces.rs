@@ -78,12 +78,17 @@ pub struct BindBody {
 pub struct PrefixOut {
     pub id: Uuid,
     pub prefix: String,
+    pub with_network: bool,
     pub created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PrefixBody {
     pub prefix: String,
+    /// Whether the agreement also lets the command reach the network. Absent means
+    /// no: the narrower grant is the default.
+    #[serde(default)]
+    pub with_network: bool,
 }
 
 fn owner(ctx: &AuthContext) -> Result<Uuid> {
@@ -349,7 +354,7 @@ pub async fn list_prefixes(
     let uid = owner(&ctx)?;
     own_workspace(&state, workspace_id, uid).await?;
     let rows = sqlx::query!(
-        "SELECT id, prefix, created_at FROM workspace_command_prefixes \
+        "SELECT id, prefix, with_network, created_at FROM workspace_command_prefixes \
          WHERE workspace_id = $1 ORDER BY created_at",
         workspace_id,
     )
@@ -357,7 +362,12 @@ pub async fn list_prefixes(
     .await?;
     Ok(Json(
         rows.into_iter()
-            .map(|r| PrefixOut { id: r.id, prefix: r.prefix, created_at: stamp(r.created_at) })
+            .map(|r| PrefixOut {
+                id: r.id,
+                prefix: r.prefix,
+                with_network: r.with_network,
+                created_at: stamp(r.created_at),
+            })
             .collect(),
     ))
 }
@@ -384,14 +394,19 @@ pub async fn add_prefix(
     let prefix = desktop::normalise_prefix(&body.prefix)?;
 
     let mut tx = state.pg.begin().await?;
+    // Agreeing again only ever widens the reach: agreeing with the network upgrades
+    // an earlier plain agreement, and a plain re-agreement never quietly takes the
+    // network away from one already granted it.
     let row = sqlx::query!(
-        "INSERT INTO workspace_command_prefixes (id, workspace_id, prefix, added_by) \
-         VALUES ($1, $2, $3, $4) \
-         ON CONFLICT (workspace_id, prefix) DO UPDATE SET prefix = EXCLUDED.prefix \
-         RETURNING id, created_at",
+        "INSERT INTO workspace_command_prefixes (id, workspace_id, prefix, with_network, added_by) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (workspace_id, prefix) DO UPDATE \
+             SET with_network = workspace_command_prefixes.with_network OR EXCLUDED.with_network \
+         RETURNING id, with_network, created_at",
         Uuid::now_v7(),
         workspace_id,
         prefix,
+        body.with_network,
         uid,
     )
     .fetch_one(&mut *tx)
@@ -401,12 +416,24 @@ pub async fn add_prefix(
     event.actor_user_id = Some(uid);
     event.resource_type = Some("device_workspace".into());
     event.resource_id = Some(workspace_id);
-    event.payload =
-        Some(json!({ "device_id": ws.device_id, "path": ws.path, "prefix": prefix }));
+    event.payload = Some(json!({
+        "device_id": ws.device_id,
+        "path": ws.path,
+        "prefix": prefix,
+        "with_network": row.with_network,
+    }));
     audit::append_with(&mut tx, &event).await?;
     tx.commit().await?;
 
-    Ok((StatusCode::CREATED, Json(PrefixOut { id: row.id, prefix, created_at: stamp(row.created_at) })))
+    Ok((
+        StatusCode::CREATED,
+        Json(PrefixOut {
+            id: row.id,
+            prefix,
+            with_network: row.with_network,
+            created_at: stamp(row.created_at),
+        }),
+    ))
 }
 
 /// `DELETE /api/workspaces/{id}/command-prefixes/{prefix_id}` — take an

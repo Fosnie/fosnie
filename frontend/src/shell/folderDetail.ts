@@ -27,6 +27,9 @@ export interface FolderDetail {
   command?: string;
   cwd?: string;
   prefix?: string | null;
+  /** Whether a command asked to reach the network. Absent (an older instance, or
+   *  a command that did not ask) reads as no. */
+  net?: boolean;
 }
 
 /**

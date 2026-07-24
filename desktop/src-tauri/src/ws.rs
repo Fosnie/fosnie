@@ -259,12 +259,14 @@ async fn pump(
     let (mut sink, mut source) = stream.split();
     let mut resume: Option<String> = None;
 
-    // Say who is calling. Advisory — the server records it — and it is what makes
-    // a chat started here show as having come from a desktop.
+    // Say who is calling, and how strong a boundary this machine will keep for a
+    // command it runs. The instance uses the boundary this reports to decide how
+    // much it can safely stop asking the person about; a machine reports only a
+    // boundary its operating system will actually hold.
     let hello = ClientFrame::ClientHello {
         client_kind: Some("desktop".into()),
         client_version: Some(env!("CARGO_PKG_VERSION").into()),
-        capabilities: vec![],
+        capabilities: vec![fosnie_sandbox::enforcement_tier().as_capability().into()],
     };
     if sink.send(Message::Text(hello.to_json())).await.is_err() {
         return None;

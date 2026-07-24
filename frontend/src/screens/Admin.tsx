@@ -1306,6 +1306,7 @@ const KNOWN_SETTINGS: { key: string; label: string; desc: string; valueType: str
   { key: "automation.max_per_user", label: "Max automations per user", desc: "The most scheduled automations a single user may own.", valueType: "int", default: "50" },
   { key: "automation.min_interval_secs", label: "Minimum automation interval (seconds)", desc: "Shortest gap allowed between one automation's runs.", valueType: "int", default: "300" },
   { key: "audit.retention_months", label: "Audit retention (months)", desc: "How long audit-log partitions are kept before the retention job drops the oldest.", valueType: "int", default: "24" },
+  { key: "desktop.always_prompt_commands", label: "Always ask before running commands", desc: "Confirm every command the desktop agent runs, even on a computer whose boundary would otherwise let a contained, offline command run without asking. On restores a prompt for every command. Off by default.", valueType: "bool", default: "false" },
   // Web search (the connector on/off flag itself lives in the Integrations tab).
   { key: "web_search.allowlist", label: "Web search: domain allowlist", desc: "Comma-separated domain suffixes. Non-empty restricts fetching to these domains and their subdomains.", valueType: "string", default: "(off)" },
   { key: "web_search.blocklist", label: "Web search: domain blocklist", desc: "Comma-separated domain suffixes that are never searched or fetched. Wins over the allowlist.", valueType: "string", default: "(off)" },

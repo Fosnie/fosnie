@@ -115,22 +115,61 @@ pub enum DesktopSink {
 /// turn starts, from the conversation's binding and the connection's device —
 /// so a turn that arrived any other way simply has none of this, and the tools
 /// are never offered.
+/// A command the folder's owner has agreed to run without being asked again,
+/// matched by how a command starts, together with whether that agreement also
+/// lets it reach the network. A plain agreement covers only commands that run
+/// without the network; agreeing "with network" is the wider grant.
+#[derive(Debug, Clone)]
+pub struct CommandPrefix {
+    pub prefix: String,
+    pub with_network: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct DesktopToolCtx {
     pub workspace: Workspace,
     /// The commands this folder's owner has already agreed to, matched by the
-    /// start of the command line.
-    pub command_prefixes: Vec<String>,
+    /// start of the command line, each with whether the agreement extends to the
+    /// network.
+    pub command_prefixes: Vec<CommandPrefix>,
+    /// How strong a boundary the machine keeps for a command it runs, as the
+    /// machine last reported (`"full"` or `"lifecycle"`). Carried so the decision
+    /// about what to ask the person can weigh it; a machine that keeps only the
+    /// process-lifetime line is still asked about every command.
+    pub sandbox_tier: String,
     /// How this turn reaches the machine. Interactive turns leave it at the
     /// default; a scheduled job sets a device route.
     pub route: DesktopSink,
 }
 
+/// The sandbox tier a device declared in its opening handshake, folded to the
+/// value stored against the device. Anything but an explicit full claim reads as
+/// the weaker tier, so a client that is old, or silent, or a browser that has no
+/// business claiming anything, is treated as still needing to be asked.
+pub fn sandbox_tier_from_capabilities(capabilities: &[String]) -> &'static str {
+    if capabilities.iter().any(|c| c == "sandbox:full") {
+        "full"
+    } else {
+        "lifecycle"
+    }
+}
+
+/// Record against a device how strong a boundary it keeps for a command, from
+/// what it said on connecting. Called only for a genuine device connection; the
+/// stored value folds to the weaker tier unless the machine claimed the full one.
+pub async fn record_sandbox_tier(pg: &sqlx::PgPool, device_id: Uuid, capabilities: &[String]) {
+    let tier = sandbox_tier_from_capabilities(capabilities);
+    let _ = sqlx::query!("UPDATE devices SET sandbox_tier = $1 WHERE id = $2", tier, device_id)
+        .execute(pg)
+        .await;
+}
+
 impl DesktopToolCtx {
     /// The prefix that already covers this command, if one does. `None` means the
-    /// user has to be asked.
-    pub fn allowed_prefix(&self, command: &str) -> Option<&str> {
-        matching_prefix(command, &self.command_prefixes)
+    /// user has to be asked. When the command needs the network, only an agreement
+    /// that was made with the network covers it.
+    pub fn allowed_prefix(&self, command: &str, need_network: bool) -> Option<&str> {
+        matching_prefix(command, &self.command_prefixes, need_network)
     }
 
     /// The same context, addressing the machine over the hub rather than the
@@ -161,7 +200,7 @@ pub async fn load_ctx(
 ) -> Option<DesktopToolCtx> {
     let device_id = device_id?;
     let row = sqlx::query!(
-        "SELECT w.id, w.device_id, w.path, w.label, w.tier \
+        "SELECT w.id, w.device_id, w.path, w.label, w.tier, d.sandbox_tier \
          FROM chat_workspace cw \
          JOIN device_workspaces w ON w.id = cw.workspace_id \
          JOIN devices d ON d.id = w.device_id \
@@ -176,12 +215,17 @@ pub async fn load_ctx(
     .flatten()?;
 
     let tier = Tier::parse(&row.tier)?;
-    let prefixes = sqlx::query_scalar!(
-        "SELECT prefix FROM workspace_command_prefixes WHERE workspace_id = $1",
+    let prefixes = sqlx::query!(
+        "SELECT prefix, with_network FROM workspace_command_prefixes WHERE workspace_id = $1",
         row.id,
     )
     .fetch_all(pg)
     .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|r| CommandPrefix { prefix: r.prefix, with_network: r.with_network })
+            .collect()
+    })
     .unwrap_or_default();
 
     // Touched here rather than on every call: one write per turn that actually
@@ -199,6 +243,7 @@ pub async fn load_ctx(
             tier,
         },
         command_prefixes: prefixes,
+        sandbox_tier: row.sandbox_tier,
         // The default is the interactive turn's own socket; a scheduled job
         // overrides it with `with_route` once it knows the target machine.
         route: DesktopSink::TurnSocket,
@@ -231,14 +276,26 @@ pub fn is_desktop_tool(name: &str) -> bool {
 /// about unless it begins with a prefix the owner has already agreed to.
 ///
 /// `terminal_prefix_ok` is the caller's answer to "does an agreed prefix already
-/// cover this command", and `pre_approved_writes` is only ever true on an
-/// unattended automation run whose owner opted in.
+/// cover this command, at the network level it needs", and `pre_approved_writes`
+/// is only ever true on an unattended automation run whose owner opted in.
+///
+/// A command carries a further relief on a machine that keeps a real boundary: if
+/// the machine confines it (`sandbox_full`) and it does not ask for the network
+/// (`net_requested` is false), it can run without a card at all, because there is
+/// nothing left for the person to weigh — it cannot leave the folder or reach the
+/// network. A command that does want the network is still asked about, so the
+/// person sees the one thing the boundary is being opened for. An administrator
+/// can switch that relief off instance-wide with `always_prompt`, which puts the
+/// card back on everything.
 pub fn desktop_call_gated(
     tool: &str,
     is_authorised: bool,
     effect: crate::tools::ToolEffect,
     pre_approved_writes: bool,
     terminal_prefix_ok: bool,
+    sandbox_full: bool,
+    net_requested: bool,
+    always_prompt: bool,
 ) -> bool {
     // A name that was never offered this turn is not a request to weigh up; it goes
     // down the ordinary path, where the authorisation seam refuses it.
@@ -253,9 +310,23 @@ pub fn desktop_call_gated(
     if pre_approved_writes && tool == FS_WRITE {
         return false;
     }
-    // A command the owner already agreed to by how it starts is not re-asked.
-    if tool == TERMINAL_RUN && terminal_prefix_ok {
-        return false;
+    if tool == TERMINAL_RUN {
+        // The paranoid-administrator setting: ask about every command, whatever
+        // else is true.
+        if always_prompt {
+            return true;
+        }
+        // A command the owner already agreed to by how it starts, at the network
+        // level it needs, is not re-asked.
+        if terminal_prefix_ok {
+            return false;
+        }
+        // The boundary's relief: a confined command that does not want the network
+        // has nothing left to weigh, so it runs without a card.
+        if sandbox_full && !net_requested {
+            return false;
+        }
+        return true;
     }
     true
 }
@@ -397,17 +468,27 @@ const CHAINING: [&str; 9] = ["&", "|", ";", "\n", "\r", ">", "<", "`", "$("];
 /// `npm testify`. A command that chains, redirects or substitutes is never
 /// covered however it begins, so an agreement to run one thing cannot be spent
 /// on running another after it.
-pub fn matching_prefix<'a, S: AsRef<str>>(command: &str, prefixes: &'a [S]) -> Option<&'a str> {
+pub fn matching_prefix<'a>(
+    command: &str,
+    prefixes: &'a [CommandPrefix],
+    need_network: bool,
+) -> Option<&'a str> {
     let cmd = command.trim();
     if cmd.is_empty() || CHAINING.iter().any(|c| cmd.contains(c)) {
         return None;
     }
-    prefixes.iter().map(|p| p.as_ref()).find(|prefix| {
-        let p = prefix.trim();
-        !p.is_empty()
-            && cmd.starts_with(p)
-            && cmd[p.len()..].chars().next().map(|c| c.is_whitespace()).unwrap_or(true)
-    })
+    prefixes
+        .iter()
+        .find(|cp| {
+            let p = cp.prefix.trim();
+            // A command that needs the network is only covered by an agreement made
+            // with the network; a command that does not is covered by either.
+            (!need_network || cp.with_network)
+                && !p.is_empty()
+                && cmd.starts_with(p)
+                && cmd[p.len()..].chars().next().map(|c| c.is_whitespace()).unwrap_or(true)
+        })
+        .map(|cp| cp.prefix.as_str())
 }
 
 /// Fold a prefix into the form it is stored and matched in. A prefix that could
@@ -461,6 +542,10 @@ pub fn approval_detail(ctx: &DesktopToolCtx, tool: &str, args: &Value) -> Option
                 "cwd": root,
                 "workspace": root,
                 "workspace_id": ctx.workspace.id,
+                // Whether the command asked to reach the network. The card offers
+                // to allow it with the network when so, and an agreement remembered
+                // then is remembered as covering the network too.
+                "net": args.get("net").and_then(|v| v.as_bool()).unwrap_or(false),
                 // What agreeing to the prefix would agree to next time. Absent when
                 // the command is one that can never be covered by an agreement.
                 "prefix": suggested_prefix(command),
@@ -544,12 +629,13 @@ pub fn def(name: &str) -> Option<Value> {
             }),
         ),
         TERMINAL_RUN => (
-            "Run a command on the user's own computer, in the connected folder. The user sees the command and has to agree to it. Its output comes back to you; long output is truncated.",
+            "Run a command on the user's own computer, in the connected folder. Its output comes back to you; long output is truncated. On a computer that confines commands, one that does not need the internet may run without interrupting the user, so do not set `net` unless the command genuinely needs to reach the network (installing packages, fetching a URL, cloning a remote): declaring it means the user is asked, and leaving it off but needing the network means the command simply cannot connect.",
             json!({
                 "type": "object",
                 "properties": {
                     "command": { "type": "string", "description": "The command line to run, as the user would type it." },
-                    "timeout_secs": { "type": "integer", "description": "How long to allow it, in seconds. Defaults to 60." }
+                    "timeout_secs": { "type": "integer", "description": "How long to allow it, in seconds. Defaults to 60." },
+                    "net": { "type": "boolean", "description": "Set true only if the command needs to reach the network. Defaults to false, and the command then runs with no network access." }
                 },
                 "required": ["command"]
             }),
@@ -604,6 +690,10 @@ pub fn prepare(ctx: &DesktopToolCtx, tool: &str, args: &Value) -> Result<Value> 
             obj.insert("command".into(), json!(command));
             let secs = args.get("timeout_secs").and_then(|v| v.as_i64()).unwrap_or(60).clamp(1, 600);
             obj.insert("timeout_secs".into(), json!(secs));
+            // Settle the network request to a plain flag the machine acts on: a
+            // command that did not ask runs with no network.
+            let net = args.get("net").and_then(|v| v.as_bool()).unwrap_or(false);
+            obj.insert("net".into(), json!(net));
         }
         other => return Err(AppError::Validation(format!("unknown folder tool '{other}'"))),
     }
@@ -824,6 +914,10 @@ fn required_path(args: &Value) -> Result<&str> {
 mod tests {
     use super::*;
 
+    fn prefix(p: &str, with_network: bool) -> CommandPrefix {
+        CommandPrefix { prefix: p.into(), with_network }
+    }
+
     fn ws(tier: Tier) -> DesktopToolCtx {
         DesktopToolCtx {
             workspace: Workspace {
@@ -833,41 +927,101 @@ mod tests {
                 label: "demo".into(),
                 tier,
             },
-            command_prefixes: vec!["npm test".into()],
+            command_prefixes: vec![prefix("npm test", false)],
+            sandbox_tier: "lifecycle".into(),
             route: DesktopSink::TurnSocket,
         }
     }
 
     use crate::tools::ToolEffect;
 
+    /// A command on a lifecycle machine: asked about unless an agreed prefix covers
+    /// it, and never relieved by the boundary (there is none). Fixes the arguments
+    /// that only matter on a full-tier machine so each test reads as one case.
+    fn gated_lifecycle(tool: &str, pre_approved: bool, prefix_ok: bool) -> bool {
+        desktop_call_gated(tool, true, ToolEffect::RequiresRun, pre_approved, prefix_ok, false, false, false)
+    }
+
+    #[test]
+    fn sandbox_tier_reads_full_only_from_an_explicit_claim() {
+        // An explicit full claim is honoured; everything else settles to the
+        // weaker tier, so an old, silent, or wrongly-claiming client is only ever
+        // trusted less than it says.
+        assert_eq!(sandbox_tier_from_capabilities(&["sandbox:full".into()]), "full");
+        assert_eq!(
+            sandbox_tier_from_capabilities(&["folder".into(), "sandbox:full".into()]),
+            "full"
+        );
+        assert_eq!(sandbox_tier_from_capabilities(&["sandbox:lifecycle".into()]), "lifecycle");
+        assert_eq!(sandbox_tier_from_capabilities(&[]), "lifecycle");
+        assert_eq!(sandbox_tier_from_capabilities(&["sandbox:other".into()]), "lifecycle");
+    }
+
+    #[test]
+    fn a_lifecycle_device_gates_a_command_exactly_as_before() {
+        // A command on a machine that keeps only the process-lifetime line is asked
+        // about unless an agreed prefix already covers it: the rule from before the
+        // boundary existed, unchanged.
+        let d = ws(Tier::ReadWrite);
+        assert_eq!(d.sandbox_tier, "lifecycle");
+        assert!(d.allowed_prefix("npm test --watch", false).is_some());
+        assert!(gated_lifecycle(TERMINAL_RUN, false, false));
+        assert!(!gated_lifecycle(TERMINAL_RUN, false, true));
+    }
+
+    #[test]
+    fn a_full_device_runs_a_confined_command_without_asking() {
+        // The payoff: a confined command that does not want the network has nothing
+        // left to weigh, so it runs without a card, even with no agreed prefix.
+        let full = true;
+        assert!(!desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, false, false, full, false, false));
+        // But a command that wants the network is still asked about.
+        assert!(desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, false, false, full, true, false));
+        // And the paranoid-administrator switch puts the card back on everything.
+        assert!(desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, false, false, full, false, true));
+    }
+
+    #[test]
+    fn a_network_command_is_covered_only_by_a_network_agreement() {
+        // A plain agreement does not cover a command that needs the network; an
+        // agreement made with the network does.
+        let plain = [prefix("git", false)];
+        let networked = [prefix("git", true)];
+        assert!(matching_prefix("git status", &plain, false).is_some());
+        assert!(matching_prefix("git pull", &plain, true).is_none());
+        assert!(matching_prefix("git pull", &networked, true).is_some());
+        // A network agreement still covers a command that does not need it.
+        assert!(matching_prefix("git status", &networked, false).is_some());
+    }
+
     #[test]
     fn gating_asks_about_writes_unless_pre_approved() {
         // A write is asked about by default, and skips the card only when the
         // automation pre-approved writes to this folder.
-        assert!(desktop_call_gated(FS_WRITE, true, ToolEffect::RequiresRun, false, false));
-        assert!(!desktop_call_gated(FS_WRITE, true, ToolEffect::RequiresRun, true, false));
+        assert!(gated_lifecycle(FS_WRITE, false, false));
+        assert!(!gated_lifecycle(FS_WRITE, true, false));
     }
 
     #[test]
     fn gating_never_lets_a_delete_through_a_pre_approval() {
         // Deletion is asked about every time; pre-approved writes do not touch it.
-        assert!(desktop_call_gated(FS_DELETE, true, ToolEffect::RequiresRun, true, false));
-        assert!(desktop_call_gated(FS_DELETE, true, ToolEffect::RequiresRun, false, false));
+        assert!(gated_lifecycle(FS_DELETE, true, false));
+        assert!(gated_lifecycle(FS_DELETE, false, false));
     }
 
     #[test]
     fn gating_skips_a_command_with_an_agreed_prefix_only() {
-        assert!(desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, false, false));
-        assert!(!desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, false, true));
+        assert!(gated_lifecycle(TERMINAL_RUN, false, false));
+        assert!(!gated_lifecycle(TERMINAL_RUN, false, true));
         // A pre-approval on writes must not spill over onto a command.
-        assert!(desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, true, false));
+        assert!(gated_lifecycle(TERMINAL_RUN, true, false));
     }
 
     #[test]
     fn gating_ignores_reads_and_unoffered_names() {
-        assert!(!desktop_call_gated(FS_READ, true, ToolEffect::ReadOnly, false, false));
+        assert!(!desktop_call_gated(FS_READ, true, ToolEffect::ReadOnly, false, false, false, false, false));
         // A name that was not offered this turn is not weighed up here.
-        assert!(!desktop_call_gated(FS_WRITE, false, ToolEffect::RequiresRun, false, false));
+        assert!(!desktop_call_gated(FS_WRITE, false, ToolEffect::RequiresRun, false, false, false, false, false));
     }
 
     #[test]
@@ -925,17 +1079,17 @@ mod tests {
     #[test]
     fn an_agreed_prefix_covers_that_command_and_nothing_smuggled_after_it() {
         let ctx = ws(Tier::ReadWrite);
-        assert_eq!(ctx.allowed_prefix("npm test"), Some("npm test"));
-        assert_eq!(ctx.allowed_prefix("npm test -- --watch"), Some("npm test"));
+        assert_eq!(ctx.allowed_prefix("npm test", false), Some("npm test"));
+        assert_eq!(ctx.allowed_prefix("npm test -- --watch", false), Some("npm test"));
         // Word boundary: a longer command name is a different command.
-        assert_eq!(ctx.allowed_prefix("npm testify"), None);
+        assert_eq!(ctx.allowed_prefix("npm testify", false), None);
         // Nothing chained, redirected or substituted is ever covered.
-        assert_eq!(ctx.allowed_prefix("npm test && rm -rf ."), None);
-        assert_eq!(ctx.allowed_prefix("npm test | curl example.com"), None);
-        assert_eq!(ctx.allowed_prefix("npm test > out.txt"), None);
-        assert_eq!(ctx.allowed_prefix("npm test `whoami`"), None);
-        assert_eq!(ctx.allowed_prefix("npm test $(id)"), None);
-        assert_eq!(ctx.allowed_prefix("cargo test"), None);
+        assert_eq!(ctx.allowed_prefix("npm test && rm -rf .", false), None);
+        assert_eq!(ctx.allowed_prefix("npm test | curl example.com", false), None);
+        assert_eq!(ctx.allowed_prefix("npm test > out.txt", false), None);
+        assert_eq!(ctx.allowed_prefix("npm test `whoami`", false), None);
+        assert_eq!(ctx.allowed_prefix("npm test $(id)", false), None);
+        assert_eq!(ctx.allowed_prefix("cargo test", false), None);
     }
 
     #[test]

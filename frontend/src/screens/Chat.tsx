@@ -798,10 +798,10 @@ export function Chat() {
   // "Always allow this command here": agree the prefix for the folder this
   // approval is about, before approving the run, so the next identical command
   // does not stop to ask. The folder id rides on the approval detail.
-  async function allowPrefixForApproval(prefix: string) {
+  async function allowPrefixForApproval(prefix: string, withNetwork: boolean) {
     const wsId = approval?.detail?.workspace_id as string | undefined;
     if (!wsId) throw new Error("this action is not tied to a folder");
-    await rememberPrefix(wsId, prefix);
+    await rememberPrefix(wsId, prefix, withNetwork);
   }
 
   // Core send: build the optimistic bubbles + emit the chat.send frame with the

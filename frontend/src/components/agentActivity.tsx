@@ -84,8 +84,9 @@ export function AgentActivity({
   approval?: { tool: string; summary: string; detail?: Record<string, unknown> | null; state?: "pending" | "approved" | "closed" } | null;
   onApprove?: () => void;
   onReject?: () => void;
-  /** Agree a command prefix for this folder, so the same run is not asked about again. */
-  onAllowPrefix?: (prefix: string) => Promise<void>;
+  /** Agree a command prefix for this folder, so the same run is not asked about again.
+   *  `withNetwork` widens the agreement to let such commands reach the network. */
+  onAllowPrefix?: (prefix: string, withNetwork: boolean) => Promise<void>;
   /** Output of a command running in a connected folder, as it arrives. */
   terminalOut?: string | null;
   /** Stop the command running in the folder. */
@@ -209,7 +210,7 @@ export function AgentActivity({
                     resolved={approval.state}
                     onApprove={() => onApprove?.()}
                     onReject={() => onReject?.()}
-                    onAllowPrefix={async (p) => { await onAllowPrefix?.(p); }}
+                    onAllowPrefix={async (p, net) => { await onAllowPrefix?.(p, net); }}
                   />
                 );
               }

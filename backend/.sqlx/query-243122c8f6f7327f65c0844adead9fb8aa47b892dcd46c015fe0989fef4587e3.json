@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT prefix, with_network FROM workspace_command_prefixes WHERE workspace_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "prefix",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "workspace_command_prefixes",
+            "name": "prefix"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "with_network",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "workspace_command_prefixes",
+            "name": "with_network"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "243122c8f6f7327f65c0844adead9fb8aa47b892dcd46c015fe0989fef4587e3"
+}

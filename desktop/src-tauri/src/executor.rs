@@ -271,7 +271,11 @@ async fn run(app: &AppHandle, call_id: &str, turn: &str, tool: &str, args: &Valu
                 .filter(|c| !c.is_empty())
                 .ok_or_else(|| anyhow!("no command to run"))?;
             let secs = args.get("timeout_secs").and_then(|v| v.as_i64()).unwrap_or(60).clamp(1, 600);
-            terminal(app, call_id, turn, root, command, secs as u64).await
+            // Whether this command was allowed to reach the network. Absent means
+            // no, and the boundary keeps it off; the instance only ever sets it
+            // after the command declared the need and the person agreed.
+            let net = args.get("net").and_then(|v| v.as_bool()).unwrap_or(false);
+            terminal(app, call_id, turn, root, command, secs as u64, net).await
         }
 
         other => bail!("this client does not know how to {other}"),
@@ -318,10 +322,24 @@ async fn terminal(
     root: &Path,
     command: &str,
     secs: u64,
+    net: bool,
 ) -> Result<Value> {
     use tokio::io::AsyncReadExt;
 
-    let mut cmd = shell_command(command);
+    // The boundary the command runs inside. Its writable folder is the workspace,
+    // a repo's `.git` within it stays read-only, and the programs it starts get no
+    // network. What of that is actually enforced depends on the platform; where
+    // only the process tree can be managed, the tree is torn down together instead
+    // of one process at a time. The backend builds the command, because a real
+    // boundary rewrites it (running it inside a confinement) rather than merely
+    // configuring it.
+    let spec = fosnie_sandbox::SandboxSpec {
+        workspace_rw: root.to_path_buf(),
+        ro_carve: vec![root.join(".git")],
+        net: if net { fosnie_sandbox::NetPolicy::Full } else { fosnie_sandbox::NetPolicy::Denied },
+    };
+    let fosnie_sandbox::Prepared { command: mut cmd, guard: mut sandbox } =
+        fosnie_sandbox::wrap(command, &spec)?;
     cmd.current_dir(root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -339,6 +357,12 @@ async fn terminal(
     let shell = app.state::<Shell>();
     if let Some(pid) = child.id() {
         shell.executor.note(call_id, pid, turn);
+    }
+    // Bind the running process to its boundary now that it has a handle. On
+    // platforms where this does nothing, the executor's own teardown stands in.
+    #[cfg(windows)]
+    if let Some(handle) = child.raw_handle() {
+        sandbox.adopt(handle as isize);
     }
     let mut stdout = child.stdout.take().expect("piped");
     let mut stderr = child.stderr.take().expect("piped");
@@ -379,6 +403,10 @@ async fn terminal(
     let status = match waited {
         Ok(status) => status.context("that command ended badly")?,
         Err(_) => {
+            // Take down the whole tree, not just the shell: a command that ran
+            // over its time is usually over time because of the program it
+            // started, and killing only the direct child would leave that running.
+            sandbox.terminate();
             let _ = child.kill().await;
             let _ = streamer.await;
             bail!("that command ran past the {secs} seconds it was given and was stopped");
@@ -400,23 +428,6 @@ fn cap(text: &str) -> String {
         return text.to_string();
     }
     text.chars().take(MAX_OUTPUT_CHARS).collect::<String>() + "\n… (output cut here)"
-}
-
-/// A command line as the person would have typed it, run by the system's own
-/// shell so that pipes and redirection behave as they look.
-fn shell_command(command: &str) -> tokio::process::Command {
-    #[cfg(windows)]
-    {
-        let mut c = tokio::process::Command::new("cmd");
-        c.arg("/C").arg(command);
-        c
-    }
-    #[cfg(not(windows))]
-    {
-        let mut c = tokio::process::Command::new("sh");
-        c.arg("-c").arg(command);
-        c
-    }
 }
 
 /// The prefixes and names of environment variables that must not reach a command

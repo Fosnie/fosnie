@@ -240,11 +240,16 @@ export function bindChatWorkspace(chatId: string, workspaceId: string): Promise<
 export function unbindChatWorkspace(chatId: string): Promise<void> {
   return apiFetch(`/api/chats/${chatId}/workspace`, { method: "DELETE" });
 }
-/** Agree to a command by how it starts, so the same run is not asked about twice. */
-export function allowCommandPrefix(workspaceId: string, prefix: string): Promise<{ id: string; prefix: string }> {
+/** Agree to a command by how it starts, so the same run is not asked about twice.
+ *  `withNetwork` widens the agreement to let such commands reach the network. */
+export function allowCommandPrefix(
+  workspaceId: string,
+  prefix: string,
+  withNetwork = false,
+): Promise<{ id: string; prefix: string; with_network: boolean }> {
   return apiFetch(`/api/workspaces/${workspaceId}/command-prefixes`, {
     method: "POST",
-    body: JSON.stringify({ prefix }),
+    body: JSON.stringify({ prefix, with_network: withNetwork }),
   });
 }
 

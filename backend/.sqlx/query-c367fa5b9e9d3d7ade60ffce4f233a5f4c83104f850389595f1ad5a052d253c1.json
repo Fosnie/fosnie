@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT w.id, w.device_id, w.path, w.label, w.tier FROM chat_workspace cw JOIN device_workspaces w ON w.id = cw.workspace_id JOIN devices d ON d.id = w.device_id WHERE cw.chat_id = $1 AND w.device_id = $2 AND w.revoked_at IS NULL AND d.revoked_at IS NULL",
+  "query": "SELECT w.id, w.device_id, w.path, w.label, w.tier, d.sandbox_tier FROM chat_workspace cw JOIN device_workspaces w ON w.id = cw.workspace_id JOIN devices d ON d.id = w.device_id WHERE cw.chat_id = $1 AND w.device_id = $2 AND w.revoked_at IS NULL AND d.revoked_at IS NULL",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "tier"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "sandbox_tier",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "sandbox_tier"
+          }
+        }
       }
     ],
     "parameters": {
@@ -70,8 +81,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "2384d6d8b39473a8e1c481fbe39f21c4773cfcc9fed0b4696a091281705fdc12"
+  "hash": "c367fa5b9e9d3d7ade60ffce4f233a5f4c83104f850389595f1ad5a052d253c1"
 }

@@ -1141,6 +1141,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fosnie-protocol",
+ "fosnie-sandbox",
  "futures-util",
  "keyring",
  "reqwest 0.12.28",
@@ -1173,6 +1174,18 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "fosnie-sandbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "seccompiler",
+ "tokio",
+ "tracing",
+ "win32job",
 ]
 
 [[package]]
@@ -3470,6 +3483,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "security-framework"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5317,6 +5339,16 @@ dependencies = [
  "thiserror 2.0.19",
  "windows",
  "windows-core 0.61.2",
+]
+
+[[package]]
+name = "win32job"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c6a6724ccfbf34154a8691bd868b0fcd2be2ca3f7b47b32614654f1a01b191c"
+dependencies = [
+ "thiserror 1.0.69",
+ "windows",
 ]
 
 [[package]]

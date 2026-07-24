@@ -38,6 +38,7 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1"
 # The socket's frame types, compiled from the same source as the server's.
 fosnie-protocol = { path = "../../crates/fosnie-protocol" }
+fosnie-sandbox = { path = "../../crates/fosnie-sandbox" }
 futures-util = "0.3"
 # The device token lives in the operating system's credential store and nowhere
 # else: no file this process writes, no browser storage, no configuration entry.

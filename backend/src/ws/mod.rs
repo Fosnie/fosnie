@@ -458,6 +458,17 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         &capabilities,
                     )
                     .await;
+                    // How strong a boundary this machine keeps for a command it
+                    // runs is worth acting on, not just recording: it decides how
+                    // much the instance can stop asking the person about. It is
+                    // written only for a genuine device connection, never from
+                    // this self-declared field on a browser socket — the same
+                    // reason the connection's kind comes from how it authenticated.
+                    // Absent or unrecognised, it settles to the weaker tier, so a
+                    // machine is only ever trusted less than it claims, never more.
+                    if let Some(did) = device_id {
+                        crate::tools::desktop::record_sandbox_tier(&state.pg, did, &capabilities).await;
+                    }
                     tracing::debug!(%socket_id, client_kind = %kind, "client identified itself");
                 }
                 Ok(ClientFrame::Unknown) => {

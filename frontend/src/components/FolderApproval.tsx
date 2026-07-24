@@ -116,10 +116,13 @@ export function FolderApprovalCard({
   resolved?: "pending" | "approved" | "closed";
   onApprove: () => void;
   onReject: () => void;
-  onAllowPrefix: (prefix: string) => Promise<void>;
+  onAllowPrefix: (prefix: string, withNetwork: boolean) => Promise<void>;
 }) {
   const [allowing, setAllowing] = useState(false);
   const isResolved = !!resolved && resolved !== "pending";
+  // A command that asked for the network is granted it by approving; the wording
+  // says so, so the person is agreeing to the one thing the boundary opens.
+  const wantsNet = detail.kind === "command" && !!detail.net;
 
   const head = detail.kind === "diff" ? "Write a file"
     : detail.kind === "delete" ? "Delete a file"
@@ -154,16 +157,18 @@ export function FolderApprovalCard({
         </div>
       ) : (
         <div className="approval-actions" style={{ flexWrap: "wrap" }}>
-          <button className="btn btn-gold sm" onClick={onApprove}><Icon.Check size={14} /> {detail.kind === "command" ? "Run once" : "Apply"}</button>
+          <button className="btn btn-gold sm" onClick={onApprove}><Icon.Check size={14} /> {detail.kind === "command" ? (wantsNet ? "Allow with network" : "Run once") : "Apply"}</button>
           {detail.kind === "command" && detail.prefix ? (
             <button
               className="btn btn-line sm"
               disabled={allowing}
-              title={`Do not ask again for commands starting "${detail.prefix}" in this folder`}
+              title={wantsNet
+                ? `Do not ask again for commands starting "${detail.prefix}" in this folder, and let them use the network`
+                : `Do not ask again for commands starting "${detail.prefix}" in this folder`}
               onClick={async () => {
                 setAllowing(true);
                 try {
-                  await onAllowPrefix(detail.prefix!);
+                  await onAllowPrefix(detail.prefix!, wantsNet);
                   onApprove();
                 } catch (e) {
                   toast(`Could not remember that: ${(e as Error).message}`);
@@ -171,7 +176,7 @@ export function FolderApprovalCard({
                 }
               }}
             >
-              Always allow “{detail.prefix}”
+              {wantsNet ? `Always allow “${detail.prefix}” with network` : `Always allow “${detail.prefix}”`}
             </button>
           ) : null}
           <button className="btn btn-line sm" onClick={onReject}><Icon.Close size={14} /> Deny</button>
@@ -189,6 +194,6 @@ export function FolderApprovalCard({
 
 /** Everyone posts prefixes and reads previews the same way; a thin helper so the
  *  card does not import the api and the shell both. */
-export async function rememberPrefix(workspaceId: string, prefix: string): Promise<void> {
-  await allowCommandPrefix(workspaceId, prefix);
+export async function rememberPrefix(workspaceId: string, prefix: string, withNetwork: boolean): Promise<void> {
+  await allowCommandPrefix(workspaceId, prefix, withNetwork);
 }

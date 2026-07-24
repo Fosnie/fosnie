@@ -2287,6 +2287,19 @@ async fn run_tool_loop(
         let mut auto: Vec<&ml::ToolCall> = Vec::new();
         let mut gated: Vec<&ml::ToolCall> = Vec::new();
         let mut by_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        // An administrator can insist on a card for every command, even where the
+        // machine's boundary would otherwise let a contained one run unasked. Read
+        // only when there is a folder in play, so an ordinary turn pays nothing.
+        let always_prompt_commands = if desktop_ctx.is_some() {
+            crate::config::runtime::get(&state.pg, "desktop.always_prompt_commands")
+                .await
+                .ok()
+                .flatten()
+                .map(|e| e.value == "true")
+                .unwrap_or(false)
+        } else {
+            false
+        };
         for tc in &step.tool_calls {
             // Loop guard: refuse an EXACT repeat of a call already made this turn
             // (the model loops on a tool that failed/timed out). Hand back a firm
@@ -2312,16 +2325,25 @@ async fn run_tool_loop(
             // it in front of the user as a card would both mislead them and teach
             // them to click through. It goes down the ordinary path, where the
             // authorisation seam refuses it and records why.
-            // Does an agreed prefix already cover this command? Computed here
-            // because it needs the folder's prefix list; the rule itself lives in
-            // one place, `desktop::desktop_call_gated`, shared with its test.
+            // How strong a boundary the machine keeps, and whether this command
+            // asked for the network: the two things that decide, on top of any
+            // agreed prefix, whether a command need be asked about at all.
+            let sandbox_full = desktop_ctx.map(|d| d.sandbox_tier == "full").unwrap_or(false);
+            let net_requested =
+                tc.arguments.get("net").and_then(|v| v.as_bool()).unwrap_or(false);
+            // Does an agreed prefix already cover this command, at the network level
+            // it needs? Computed here because it needs the folder's prefix list; the
+            // rule itself lives in one place, `desktop::desktop_call_gated`, shared
+            // with its test. A command wanting the network is only covered by an
+            // agreement made with the network, and only where the boundary can hold
+            // that distinction.
             let terminal_prefix_ok = tc.name == crate::tools::desktop::TERMINAL_RUN
                 && desktop_ctx
                     .and_then(|d| {
                         tc.arguments
                             .get("command")
                             .and_then(|v| v.as_str())
-                            .and_then(|c| d.allowed_prefix(c))
+                            .and_then(|c| d.allowed_prefix(c, sandbox_full && net_requested))
                     })
                     .is_some();
             let desktop_gated = crate::tools::desktop::desktop_call_gated(
@@ -2330,6 +2352,9 @@ async fn run_tool_loop(
                 crate::tools::effect(&tc.name),
                 pre_approved_writes,
                 terminal_prefix_ok,
+                sandbox_full,
+                net_requested,
+                always_prompt_commands,
             );
             // Record a pre-approved write that is about to run without a card, so
             // the standing agreement leaves as clear a trail as a per-call one.
@@ -3798,6 +3823,10 @@ fn audit_tool(
             "device_id": d.workspace.device_id,
             "workspace_id": d.workspace.id,
             "workspace_path": d.workspace.path,
+            // Whether a command ran inside the machine's operating-system boundary.
+            // Only a command has one, and only on a machine that keeps the full tier;
+            // the record says which commands did, so a relaxed prompt is accountable.
+            "sandboxed": name == crate::tools::desktop::TERMINAL_RUN && d.sandbox_tier == "full",
         }),
         None => json!({ "tool": name }),
     });

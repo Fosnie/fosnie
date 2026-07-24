@@ -192,6 +192,84 @@ async fn target_resolves_server_device_and_withdrawn() {
     );
 }
 
+// A machine's declared boundary is recorded against the device on connecting,
+// defaults to the weaker tier, only rises to the full tier on an explicit claim,
+// and reads back into the folder context a turn works from.
+#[tokio::test]
+async fn sandbox_tier_is_recorded_and_reads_back_into_the_folder_context() {
+    let Some(st) = state().await else { return };
+    let user = seed_user(&st.pg).await;
+    let (device, ws) = seed_workspace(&st.pg, user).await;
+
+    async fn stored(pg: &sqlx::PgPool, device: Uuid) -> String {
+        sqlx::query_scalar::<_, String>("SELECT sandbox_tier FROM devices WHERE id = $1")
+            .bind(device)
+            .fetch_one(pg)
+            .await
+            .unwrap()
+    }
+
+    // A freshly paired device has said nothing yet, so it keeps the weaker tier.
+    assert_eq!(stored(&st.pg, device).await, "lifecycle");
+
+    // An explicit full claim is recorded; the presence of other capabilities does
+    // not change that.
+    desktop::record_sandbox_tier(&st.pg, device, &["folder".into(), "sandbox:full".into()]).await;
+    assert_eq!(stored(&st.pg, device).await, "full");
+
+    // A later connection that no longer claims it drops the device back down: a
+    // machine is only ever trusted as much as it currently says.
+    desktop::record_sandbox_tier(&st.pg, device, &["sandbox:lifecycle".into()]).await;
+    assert_eq!(stored(&st.pg, device).await, "lifecycle");
+
+    // The stored tier is what a turn's folder context carries.
+    desktop::record_sandbox_tier(&st.pg, device, &["sandbox:full".into()]).await;
+    let chat = seed_chat(&st.pg, user).await;
+    bind_chat(&st.pg, chat, ws).await;
+    let ctx = desktop::load_ctx(&st.pg, chat, Some(device)).await.expect("folder context");
+    assert_eq!(ctx.sandbox_tier, "full");
+}
+
+// An agreement made with the network covers a command that needs it; a plain one
+// does not, and the distinction survives the round trip through the database.
+#[tokio::test]
+async fn a_network_agreement_covers_a_network_command_but_a_plain_one_does_not() {
+    let Some(st) = state().await else { return };
+    let user = seed_user(&st.pg).await;
+    let (device, ws) = seed_workspace(&st.pg, user).await;
+    sqlx::query!(
+        "INSERT INTO workspace_command_prefixes (id, workspace_id, prefix, with_network, added_by) \
+         VALUES ($1, $2, 'git', true, $3)",
+        Uuid::now_v7(),
+        ws,
+        user,
+    )
+    .execute(&st.pg)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "INSERT INTO workspace_command_prefixes (id, workspace_id, prefix, with_network, added_by) \
+         VALUES ($1, $2, 'ls', false, $3)",
+        Uuid::now_v7(),
+        ws,
+        user,
+    )
+    .execute(&st.pg)
+    .await
+    .unwrap();
+
+    let chat = seed_chat(&st.pg, user).await;
+    bind_chat(&st.pg, chat, ws).await;
+    let ctx = desktop::load_ctx(&st.pg, chat, Some(device)).await.expect("folder context");
+
+    // Needing the network, only the network agreement covers the command.
+    assert!(ctx.allowed_prefix("git pull", true).is_some(), "network agreement covers a network command");
+    assert!(ctx.allowed_prefix("ls -la", true).is_none(), "a plain agreement does not");
+    // Not needing it, either agreement covers.
+    assert!(ctx.allowed_prefix("git status", false).is_some());
+    assert!(ctx.allowed_prefix("ls -la", false).is_some());
+}
+
 // A server automation's turn carries the job it came from but no machine and no
 // folder, so it takes the identical path a device-less run always did.
 #[test]
@@ -318,6 +396,7 @@ async fn a_device_route_reaches_the_machine_over_the_hub_not_the_turn_channel() 
             tier: Tier::ReadWrite,
         },
         command_prefixes: vec![],
+        sandbox_tier: "lifecycle".into(),
         route: DesktopSink::DeviceRoute { user_id: user, device_id: device },
     };
     let auth = ctx(user);

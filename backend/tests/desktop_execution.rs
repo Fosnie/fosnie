@@ -51,7 +51,11 @@ fn folder(tier: Tier, prefixes: &[&str]) -> DesktopToolCtx {
             label: "demo".into(),
             tier,
         },
-        command_prefixes: prefixes.iter().map(|p| p.to_string()).collect(),
+        command_prefixes: prefixes
+            .iter()
+            .map(|p| desktop::CommandPrefix { prefix: p.to_string(), with_network: false })
+            .collect(),
+        sandbox_tier: "lifecycle".into(),
         route: desktop::DesktopSink::TurnSocket,
     }
 }
@@ -299,9 +303,9 @@ async fn deleting_is_never_covered_by_an_agreed_command() {
     // The allowlist is consulted for commands and nothing else — there is no
     // argument shape that turns a deletion into one.
     let d = folder(Tier::ReadWrite, &["rm", "npm test"]);
-    assert_eq!(d.allowed_prefix("npm test"), Some("npm test"));
-    assert_eq!(d.allowed_prefix("npm test --watch"), Some("npm test"));
-    assert_eq!(d.allowed_prefix("npm test && rm -rf ."), None);
+    assert_eq!(d.allowed_prefix("npm test", false), Some("npm test"));
+    assert_eq!(d.allowed_prefix("npm test --watch", false), Some("npm test"));
+    assert_eq!(d.allowed_prefix("npm test && rm -rf .", false), None);
     // Even a prefix that names a deleting command only ever covers a command:
     // `desktop.fs_delete` does not go through this path at all.
     assert!(matches!(
