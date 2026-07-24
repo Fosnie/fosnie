@@ -51,6 +51,8 @@ export const SHELL_EVENTS = {
   unpaired: "shell:unpaired",
   /** A notification was clicked: open this chat. */
   openChat: "shell:open-chat",
+  /** A run notification was clicked: open this automation's detail. */
+  openAutomation: "shell:open-automation",
   /** A newer release has been downloaded and verified, and is waiting for a yes. */
   updateReady: "shell:update-ready",
 } as const;

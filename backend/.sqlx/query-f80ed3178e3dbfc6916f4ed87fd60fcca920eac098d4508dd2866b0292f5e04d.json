@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pre_approved_writes FROM automations WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pre_approved_writes",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "pre_approved_writes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f80ed3178e3dbfc6916f4ed87fd60fcca920eac098d4508dd2866b0292f5e04d"
+}

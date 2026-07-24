@@ -91,6 +91,18 @@ pub struct CreateAutomation {
     /// Internal group chat to post a result notice into on success (zero egress).
     #[serde(default)]
     pub deliver_group_chat_id: Option<Uuid>,
+    /// A connected folder on one of the owner's machines to run against. None runs
+    /// the automation on the server, as before. The machine is whichever one owns
+    /// the folder, so it is not named separately.
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+    /// Let the run write files in its folder without asking each time. Only with a
+    /// folder, and never covers deletion.
+    #[serde(default)]
+    pub pre_approved_writes: bool,
+    /// Make up an occurrence the machine was offline for, once it reconnects.
+    #[serde(default)]
+    pub run_when_back: bool,
 }
 
 /// Validate optional targets before persisting — friendly errors; retrieval and
@@ -112,6 +124,40 @@ async fn validate_targets(
     }
     for kb_id in kb_ids {
         crate::kb::require_read(&state.pg, ctx, *kb_id).await?;
+    }
+    Ok(())
+}
+
+/// Validate a device target: the folder must be one the owner actually holds and
+/// has not withdrawn, and the two device-only options mean nothing without one.
+/// Running in a folder that is not yours, or promising to write to a folder that
+/// is not there, are refused at the door rather than discovered at firing time.
+async fn validate_device_target(
+    state: &AppState,
+    owner: Uuid,
+    workspace_id: Option<Uuid>,
+    effective_workspace: Option<Uuid>,
+    pre_approved_writes: bool,
+    run_when_back: bool,
+) -> Result<()> {
+    if let Some(ws) = workspace_id {
+        let ok = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM device_workspaces
+                WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL) AS "e!""#,
+            ws, owner
+        )
+        .fetch_one(&state.pg)
+        .await?;
+        if !ok {
+            return Err(AppError::Validation(
+                "that folder is not one of your connected folders".into(),
+            ));
+        }
+    }
+    if (pre_approved_writes || run_when_back) && effective_workspace.is_none() {
+        return Err(AppError::Validation(
+            "pre-approved writes and run-when-back need a folder to run in".into(),
+        ));
     }
     Ok(())
 }
@@ -151,15 +197,21 @@ pub async fn create_automation(
         )));
     }
     validate_targets(&state, owner, &ctx, &body.kb_ids, body.deliver_group_chat_id).await?;
+    validate_device_target(
+        &state, owner, body.workspace_id, body.workspace_id, body.pre_approved_writes, body.run_when_back,
+    )
+    .await?;
     let next = sched::next_after(&body.schedule, OffsetDateTime::now_utc())?;
     let id = db::new_id();
     sqlx::query!(
         "INSERT INTO automations \
             (id, owner_user_id, name, schedule, prompt, agent_id, next_run_at, \
-             project_id, kb_ids, deliver_group_chat_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             project_id, kb_ids, deliver_group_chat_id, \
+             workspace_id, pre_approved_writes, run_when_back) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         id, owner, body.name, body.schedule, body.prompt, body.agent_id, next,
         body.project_id, &body.kb_ids, body.deliver_group_chat_id,
+        body.workspace_id, body.pre_approved_writes, body.run_when_back,
     )
     .execute(&state.pg)
     .await?;
@@ -180,6 +232,14 @@ pub struct AutomationOut {
     pub project_id: Option<Uuid>,
     pub kb_ids: Vec<Uuid>,
     pub deliver_group_chat_id: Option<Uuid>,
+    /// The connected folder this runs against, or null for a server automation.
+    /// The client resolves the machine and its label from the folder.
+    pub workspace_id: Option<Uuid>,
+    pub pre_approved_writes: bool,
+    pub run_when_back: bool,
+    /// Whether a run of this automation is currently waiting for the owner to
+    /// approve a step. Drives the "answer needed" count in the sidebar.
+    pub needs_approval: bool,
 }
 
 pub async fn list_automations(
@@ -189,7 +249,9 @@ pub async fn list_automations(
     let uid = ctx.user_id.ok_or_else(|| AppError::Forbidden("a user is required".into()))?;
     let rows = sqlx::query!(
         r#"SELECT id, name, schedule, prompt, agent_id, status::text AS "status!", next_run_at, last_run_at,
-                  project_id, kb_ids, deliver_group_chat_id
+                  project_id, kb_ids, deliver_group_chat_id,
+                  workspace_id, pre_approved_writes, run_when_back,
+                  EXISTS(SELECT 1 FROM automation_runs r WHERE r.automation_id = automations.id AND r.status = 'needs_approval') AS "needs_approval!"
            FROM automations WHERE owner_user_id = $1 ORDER BY created_at DESC"#,
         uid
     )
@@ -199,6 +261,8 @@ pub async fn list_automations(
         id: r.id, name: r.name, schedule: r.schedule, prompt: r.prompt, agent_id: r.agent_id,
         status: r.status, next_run_at: rfc3339(r.next_run_at), last_run_at: rfc3339(r.last_run_at),
         project_id: r.project_id, kb_ids: r.kb_ids, deliver_group_chat_id: r.deliver_group_chat_id,
+        workspace_id: r.workspace_id, pre_approved_writes: r.pre_approved_writes, run_when_back: r.run_when_back,
+        needs_approval: r.needs_approval,
     }).collect()))
 }
 
@@ -210,7 +274,9 @@ pub async fn get_automation(
     require_owner(&state, &ctx, id).await?;
     let r = sqlx::query!(
         r#"SELECT id, name, schedule, prompt, agent_id, status::text AS "status!", next_run_at, last_run_at,
-                  project_id, kb_ids, deliver_group_chat_id
+                  project_id, kb_ids, deliver_group_chat_id,
+                  workspace_id, pre_approved_writes, run_when_back,
+                  EXISTS(SELECT 1 FROM automation_runs r WHERE r.automation_id = automations.id AND r.status = 'needs_approval') AS "needs_approval!"
            FROM automations WHERE id = $1"#,
         id
     )
@@ -220,6 +286,8 @@ pub async fn get_automation(
         id: r.id, name: r.name, schedule: r.schedule, prompt: r.prompt, agent_id: r.agent_id,
         status: r.status, next_run_at: rfc3339(r.next_run_at), last_run_at: rfc3339(r.last_run_at),
         project_id: r.project_id, kb_ids: r.kb_ids, deliver_group_chat_id: r.deliver_group_chat_id,
+        workspace_id: r.workspace_id, pre_approved_writes: r.pre_approved_writes, run_when_back: r.run_when_back,
+        needs_approval: r.needs_approval,
     }))
 }
 
@@ -242,6 +310,15 @@ pub struct UpdateAutomation {
     pub kb_ids: Option<Vec<Uuid>>,
     #[serde(default, with = "serde_with::rust::double_option")]
     pub deliver_group_chat_id: Option<Option<Uuid>>,
+    /// Folder target, same double-option semantics: absent = unchanged, null =
+    /// back to a server automation (which also clears the two device options),
+    /// value = run against that folder.
+    #[serde(default, with = "serde_with::rust::double_option")]
+    pub workspace_id: Option<Option<Uuid>>,
+    #[serde(default)]
+    pub pre_approved_writes: Option<bool>,
+    #[serde(default)]
+    pub run_when_back: Option<bool>,
 }
 
 pub async fn update_automation(
@@ -262,6 +339,27 @@ pub async fn update_automation(
     if !kb_to_check.is_empty() || deliver_to_check.is_some() {
         validate_targets(&state, owner, &ctx, kb_to_check, deliver_to_check).await?;
     }
+    // The folder after this patch: the one being set, or the one already held if
+    // the patch leaves it alone. The device-only options are validated against it,
+    // and clearing the folder clears them too (below).
+    let set_ws = body.workspace_id.is_some();
+    let ws_val = body.workspace_id.flatten();
+    let effective_ws: Option<Uuid> = if set_ws {
+        ws_val
+    } else {
+        sqlx::query_scalar!("SELECT workspace_id FROM automations WHERE id = $1", id)
+            .fetch_one(&state.pg)
+            .await?
+    };
+    validate_device_target(
+        &state,
+        owner,
+        ws_val.filter(|_| set_ws),
+        effective_ws,
+        body.pre_approved_writes.unwrap_or(false),
+        body.run_when_back.unwrap_or(false),
+    )
+    .await?;
     // Recompute next_run_at when the schedule changes.
     let next = match &body.schedule {
         Some(s) => {
@@ -290,10 +388,14 @@ pub async fn update_automation(
             next_run_at = CASE WHEN $3 IS NULL THEN next_run_at ELSE $6 END, \
             project_id = CASE WHEN $7 THEN $8 ELSE project_id END, \
             kb_ids = COALESCE($9::uuid[], kb_ids), \
-            deliver_group_chat_id = CASE WHEN $10 THEN $11 ELSE deliver_group_chat_id END \
+            deliver_group_chat_id = CASE WHEN $10 THEN $11 ELSE deliver_group_chat_id END, \
+            workspace_id = CASE WHEN $12 THEN $13 ELSE workspace_id END, \
+            pre_approved_writes = CASE WHEN $12 AND $13 IS NULL THEN false ELSE COALESCE($14, pre_approved_writes) END, \
+            run_when_back = CASE WHEN $12 AND $13 IS NULL THEN false ELSE COALESCE($15, run_when_back) END \
          WHERE id = $1",
         id, body.name, body.schedule, body.prompt, body.status, next.flatten(),
         set_project, project_val, body.kb_ids.as_deref(), set_deliver, deliver_val,
+        set_ws, ws_val, body.pre_approved_writes, body.run_when_back,
     )
     .execute(&state.pg)
     .await?;
@@ -331,6 +433,9 @@ pub struct RunOut {
     pub status: String,
     pub output_chat_id: Option<Uuid>,
     pub error: Option<String>,
+    /// Why an occurrence was missed ('offline' | 'overlap' | 'workspace
+    /// withdrawn'); null for runs that were not missed.
+    pub reason: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
 }
@@ -342,14 +447,14 @@ pub async fn list_runs(
 ) -> Result<Json<Vec<RunOut>>> {
     require_owner(&state, &ctx, id).await?;
     let rows = sqlx::query!(
-        r#"SELECT id, status::text AS "status!", output_chat_id, error, started_at, completed_at
+        r#"SELECT id, status::text AS "status!", output_chat_id, error, reason, started_at, completed_at
            FROM automation_runs WHERE automation_id = $1 ORDER BY started_at DESC LIMIT 100"#,
         id
     )
     .fetch_all(&state.pg)
     .await?;
     Ok(Json(rows.into_iter().map(|r| RunOut {
-        id: r.id, status: r.status, output_chat_id: r.output_chat_id, error: r.error,
+        id: r.id, status: r.status, output_chat_id: r.output_chat_id, error: r.error, reason: r.reason,
         started_at: rfc3339(Some(r.started_at)), completed_at: rfc3339(r.completed_at),
     }).collect()))
 }

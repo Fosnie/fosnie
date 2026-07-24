@@ -1751,7 +1751,7 @@ export async function speakText(text: string, voice?: string): Promise<Blob> {
 // ── Automations (scheduled prompts) ──────────────────────────────────────────
 
 export type AutomationStatus = "active" | "paused";
-export type RunStatus = "running" | "succeeded" | "failed";
+export type RunStatus = "running" | "succeeded" | "failed" | "missed" | "needs_approval" | "superseded";
 
 export interface Automation {
   id: string;
@@ -1765,12 +1765,17 @@ export interface Automation {
   project_id: string | null;
   kb_ids: string[];
   deliver_group_chat_id: string | null;
+  workspace_id: string | null;
+  pre_approved_writes: boolean;
+  run_when_back: boolean;
+  needs_approval: boolean;
 }
 export interface AutomationRun {
   id: string;
   status: RunStatus;
   output_chat_id: string | null;
   error: string | null;
+  reason: string | null;
   started_at: string | null;
   completed_at: string | null;
 }
@@ -1787,6 +1792,9 @@ export interface CreateAutomationBody {
   project_id?: string | null;
   kb_ids?: string[];
   deliver_group_chat_id?: string | null;
+  workspace_id?: string | null;
+  pre_approved_writes?: boolean;
+  run_when_back?: boolean;
 }
 export interface UpdateAutomationBody {
   name?: string;
@@ -1796,6 +1804,10 @@ export interface UpdateAutomationBody {
   project_id?: string | null;
   kb_ids?: string[];
   deliver_group_chat_id?: string | null;
+  // null returns the automation to the server (and clears the two options below).
+  workspace_id?: string | null;
+  pre_approved_writes?: boolean;
+  run_when_back?: boolean;
 }
 
 export function useAutomations() {
@@ -2554,6 +2566,8 @@ export interface Device {
   created_at: string;
   last_seen_at: string | null;
   revoked_at: string | null;
+  /** Whether the machine has a live connection right now (socket presence). */
+  online: boolean;
 }
 
 export function useMyDevices(enabled = true) {

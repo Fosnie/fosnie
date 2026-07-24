@@ -16,7 +16,7 @@ import { useMemo, useState } from "react";
 import { flushSync } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { approveAgentRun, createProject, decideMemberRequest, deleteChat, rejectAgentRun, renameChat, useChats, useGroupChats, useBranding, usePendingApprovals, usePendingMemberRequests, useProjects, useResearchChats, useWhoami, type ChatSummary } from "@/api/client";
+import { approveAgentRun, createProject, decideMemberRequest, deleteChat, rejectAgentRun, renameChat, useAutomations, useChats, useGroupChats, useBranding, usePendingApprovals, usePendingMemberRequests, useProjects, useResearchChats, useWhoami, type ChatSummary } from "@/api/client";
 import { confirmDialog, promptDialog, toast } from "@/components/dialogs";
 import { useActiveProject } from "@/app/ProjectContext";
 import { useWorkmode } from "@/app/WorkmodeContext";
@@ -75,6 +75,11 @@ export function Sidebar() {
     : "/logo.svg";
   const pending = usePendingApprovals();
   const pendingCount = pending.data?.length ?? 0;
+  // Automations waiting for the owner to answer an approval — a device or
+  // unattended run parked at a state-changing step. Surfaced as a count on the
+  // top-level Automations item.
+  const automations = useAutomations();
+  const automationsNeedingApproval = (automations.data ?? []).filter((a) => a.needs_approval).length;
   const [inboxOpen, setInboxOpen] = useState(false);
   async function decideApproval(runId: string, ok: boolean) {
     try {
@@ -221,6 +226,11 @@ export function Sidebar() {
             </button>
           );
         })}
+        <button onClick={() => nav("/automations")} className="nav-item">
+          <span className="nav-ic"><Icon.Clock size={15} /></span>
+          <span>Automations</span>
+          {automationsNeedingApproval > 0 && <span className="nav-badge mono" style={{ marginLeft: "auto" }}>{automationsNeedingApproval}</span>}
+        </button>
         {canAdmin && (
           <button onClick={() => nav("/admin")} className="nav-item">
             <span className="nav-ic"><Icon.Admin size={15} /></span>

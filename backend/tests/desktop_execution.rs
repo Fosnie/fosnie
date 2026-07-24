@@ -52,6 +52,7 @@ fn folder(tier: Tier, prefixes: &[&str]) -> DesktopToolCtx {
             tier,
         },
         command_prefixes: prefixes.iter().map(|p| p.to_string()).collect(),
+        route: desktop::DesktopSink::TurnSocket,
     }
 }
 

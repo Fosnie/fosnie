@@ -105,6 +105,7 @@ export type ServerFrame =
   | { type: "context.warning"; chat_id: string; usage_pct: number }
   | { type: "ingest.status"; doc_id: string; kb_id: string; status: string; error?: string }
   | { type: "automation.reminder"; automation_id: string; name: string; due_at: string; in_seconds: number }
+  | { type: "automation.run_finished"; automation_id: string; run_id: string; status: string }
   | { type: "presence"; user_id: string; status: string }
   | { type: "invalidate"; keys: string[][] }
   | { type: "pong" }

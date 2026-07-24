@@ -105,6 +105,13 @@ export async function bootShell(root: Root, renderApp: () => void): Promise<void
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
+  // A failed or missed run's notification was clicked: open that automation.
+  void onShellEvent<string>(SHELL_EVENTS.openAutomation, (automationId) => {
+    if (!automationId) return;
+    window.history.pushState({}, "", `/automations/${automationId}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
   // A new release has been fetched and checked in the background; installing it
   // restarts the application, so it is asked for rather than done. Declining is
   // free: the running version carries on and the offer returns with tomorrow's

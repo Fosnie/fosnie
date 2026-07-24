@@ -184,6 +184,14 @@ fn server_cases() -> Vec<(&'static str, ServerFrame)> {
                 sections: None,
             },
         ),
+        (
+            "automation_run_finished",
+            ServerFrame::AutomationRunFinished {
+                automation_id: id(11),
+                run_id: id(12),
+                status: "missed".into(),
+            },
+        ),
         ("pong", ServerFrame::Pong),
     ]
 }
@@ -320,6 +328,13 @@ fn a_known_frame_that_is_wrong_is_an_error_and_not_an_unknown_one() {
         "call_id":"00000000-0000-0000-0000-000000000000",
         "turn_id":"00000000-0000-0000-0000-000000000000","args":{}}"#;
     assert!(serde_json::from_str::<ServerFrame>(no_tool).is_err());
+
+    // A run-finished notice whose ids are not ids is corruption, not a frame from
+    // the future: it must fail rather than be read as an unknown one.
+    let bad_run_finished = r#"{"version":1,"type":"automation.run_finished",
+        "automation_id":"not-a-uuid","run_id":"00000000-0000-0000-0000-000000000000",
+        "status":"missed"}"#;
+    assert!(serde_json::from_str::<ServerFrame>(bad_run_finished).is_err());
 }
 
 #[test]

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE automation_runs SET status = 'failed', error = 'approval expired', completed_at = now() WHERE automation_id = $1 AND status = 'needs_approval'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d1692460b9502f3fa3a1a2be80a02639f0cadeb4f1c380b00a7782bd3c46bcb1"
+}

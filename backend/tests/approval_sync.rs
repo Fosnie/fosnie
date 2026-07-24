@@ -67,7 +67,7 @@ fn ctx(uid: Uuid) -> AuthContext {
 /// the writer task holds behind a real connection.
 fn socket(st: &AppState, uid: Uuid) -> mpsc::Receiver<ServerFrame> {
     let (tx, rx) = mpsc::channel::<ServerFrame>(8);
-    st.hub.register(Uuid::now_v7(), uid, tx);
+    st.hub.register(Uuid::now_v7(), uid, None, tx);
     rx
 }
 

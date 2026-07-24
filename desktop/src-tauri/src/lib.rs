@@ -78,6 +78,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(notify::PendingChat::default())
+        .manage(notify::PendingAutomation::default())
         .manage(update::PendingUpdate::default())
         .manage(badge::Badge::default())
         .invoke_handler(tauri::generate_handler![

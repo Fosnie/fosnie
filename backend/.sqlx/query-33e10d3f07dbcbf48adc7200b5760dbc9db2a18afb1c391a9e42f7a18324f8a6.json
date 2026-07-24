@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agent_runs SET status = 'failed', finished_at = now(), updated_at = now() WHERE id = $1 AND status = 'awaiting_approval'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "33e10d3f07dbcbf48adc7200b5760dbc9db2a18afb1c391a9e42f7a18324f8a6"
+}

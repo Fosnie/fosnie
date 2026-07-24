@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE automation_runs SET status = 'needs_approval', output_chat_id = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bc50199edc1616f841ea46b19165850fc9761228125ed4f2221c6acac433ed4d"
+}

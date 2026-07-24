@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE automation_runs SET status = 'superseded'\n                WHERE id = (SELECT id FROM automation_runs\n                             WHERE automation_id = $1 AND status = 'missed' AND reason = 'offline'\n                             ORDER BY started_at DESC LIMIT 1)\n                  AND status = 'missed'\n              RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "automation_runs",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "40b96499dd8a165bb74851eb2a5ae08e9f5679596ae5820db9503e5f32148f29"
+}

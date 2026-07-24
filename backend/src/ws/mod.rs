@@ -257,7 +257,17 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<ServerFrame>(256);
 
-    state.hub.register(socket_id, user_id, tx.clone());
+    state.hub.register(socket_id, user_id, device_id, tx.clone());
+    // A machine that has just come back may owe make-up runs for folder
+    // automations it missed while it was away. Off the connection path so a slow
+    // catch-up never delays the socket coming up; it claims its own work and is a
+    // no-op when there is none.
+    if let Some(dev) = device_id {
+        let st = state.clone();
+        tokio::spawn(async move {
+            crate::scheduler::catchup_device(&st, user_id, dev).await;
+        });
+    }
     let _ = session::register_socket(&state.redis, socket_id, user_id).await;
     // The resume token carries the device id too, so a reconnect within the
     // window keeps marking what this socket creates as coming from the desktop.

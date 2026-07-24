@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, status::text AS \"status!\", output_chat_id, error, started_at, completed_at\n           FROM automation_runs WHERE automation_id = $1 ORDER BY started_at DESC LIMIT 100",
+  "query": "SELECT id, status::text AS \"status!\", output_chat_id, error, reason, started_at, completed_at\n           FROM automation_runs WHERE automation_id = $1 ORDER BY started_at DESC LIMIT 100",
   "describe": {
     "columns": [
       {
@@ -44,6 +44,17 @@
       },
       {
         "ordinal": 4,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_runs",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -54,7 +65,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "completed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -75,9 +86,10 @@
       null,
       true,
       true,
+      true,
       false,
       true
     ]
   },
-  "hash": "d2124d08b0ee4d98a063a199df751fc4a94412e331c63691b147ce1dbf53222e"
+  "hash": "de861f7e19526b69f5674279fdbe25cb0d4a5aa47e8487ae58f5259a941fe9a9"
 }

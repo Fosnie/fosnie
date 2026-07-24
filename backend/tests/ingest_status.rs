@@ -14,8 +14,8 @@ async fn ingest_status_routes_to_uploader_only() {
     let other = Uuid::now_v7();
     let (tx_a, mut rx_a) = mpsc::channel::<ServerFrame>(8);
     let (tx_b, mut rx_b) = mpsc::channel::<ServerFrame>(8);
-    hub.register(Uuid::now_v7(), uploader, tx_a);
-    hub.register(Uuid::now_v7(), other, tx_b);
+    hub.register(Uuid::now_v7(), uploader, None, tx_a);
+    hub.register(Uuid::now_v7(), other, None, tx_b);
 
     let doc_id = Uuid::now_v7();
     let kb_id = Uuid::now_v7();

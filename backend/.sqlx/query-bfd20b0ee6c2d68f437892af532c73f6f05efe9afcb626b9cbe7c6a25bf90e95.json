@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, schedule, prompt, agent_id, status::text AS \"status!\", next_run_at, last_run_at,\n                  project_id, kb_ids, deliver_group_chat_id\n           FROM automations WHERE id = $1",
+  "query": "SELECT id, name, schedule, prompt, agent_id, status::text AS \"status!\", next_run_at, last_run_at,\n                  project_id, kb_ids, deliver_group_chat_id,\n                  workspace_id, pre_approved_writes, run_when_back,\n                  EXISTS(SELECT 1 FROM automation_runs r WHERE r.automation_id = automations.id AND r.status = 'needs_approval') AS \"needs_approval!\"\n           FROM automations WHERE owner_user_id = $1 ORDER BY created_at DESC",
   "describe": {
     "columns": [
       {
@@ -118,6 +118,45 @@
             "name": "deliver_group_chat_id"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "workspace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "workspace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "pre_approved_writes",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "pre_approved_writes"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "run_when_back",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "run_when_back"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "needs_approval!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -136,8 +175,12 @@
       true,
       true,
       false,
-      true
+      true,
+      true,
+      false,
+      false,
+      null
     ]
   },
-  "hash": "a72884011aac7330b5be93a899f72642977f322c24f36a6845e52d47cf6d4e01"
+  "hash": "bfd20b0ee6c2d68f437892af532c73f6f05efe9afcb626b9cbe7c6a25bf90e95"
 }

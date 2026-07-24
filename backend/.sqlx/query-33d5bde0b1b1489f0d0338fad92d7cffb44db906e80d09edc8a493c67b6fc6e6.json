@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT workspace_id, pre_approved_writes, run_when_back FROM automations WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "workspace_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "pre_approved_writes",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "pre_approved_writes"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "run_when_back",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "run_when_back"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "33d5bde0b1b1489f0d0338fad92d7cffb44db906e80d09edc8a493c67b6fc6e6"
+}

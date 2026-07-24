@@ -69,6 +69,11 @@ pub struct DeviceOut {
     pub created_at: String,
     pub last_seen_at: Option<String>,
     pub revoked_at: Option<String>,
+    /// Whether the machine has a live connection right now. Read from the socket
+    /// registry, not from `last_seen_at`, so it reflects the present moment rather
+    /// than the last heartbeat — which is what an automation's folder picker needs
+    /// to show whether a machine can be reached.
+    pub online: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -329,6 +334,7 @@ async fn load_devices(state: &AppState, user_id: Uuid) -> Result<Vec<DeviceOut>>
             created_at: stamp(r.created_at),
             last_seen_at: r.last_seen_at.map(stamp),
             revoked_at: r.revoked_at.map(stamp),
+            online: state.hub.is_device_online(user_id, r.id),
         })
         .collect())
 }

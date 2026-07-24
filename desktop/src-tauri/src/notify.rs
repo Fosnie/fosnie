@@ -39,16 +39,21 @@ use crate::store::Pairing;
 /// Asks the application to open a chat, after a notification for it was clicked.
 pub const EVENT_OPEN_CHAT: &str = "shell:open-chat";
 
+/// Asks the application to open an automation's detail, after a notification for
+/// one of its runs (failed or missed) was clicked.
+pub const EVENT_OPEN_AUTOMATION: &str = "shell:open-automation";
+
 /// The two frame types worth a notification, as they appear on the wire.
 ///
 /// Checked as text before anything is parsed. A turn streams hundreds of frames
 /// and all but the last of them are tokens; paying for a full deserialisation of
 /// each one to discard it is work the socket does not need to do. Anything that
 /// gets past this is still parsed properly below — this only rejects.
-const NOTIFIABLE: [&str; 3] = [
+const NOTIFIABLE: [&str; 4] = [
     "\"type\":\"chat.completed\"",
     "\"type\":\"agent.approval\"",
     "\"type\":\"chat.error\"",
+    "\"type\":\"automation.run_finished\"",
 ];
 
 /// Raise a notification for this frame if it deserves one and nobody is watching.
@@ -83,6 +88,18 @@ pub async fn consider(
             show(app, "Approval needed", "An agent is waiting for your decision.", None);
             return;
         }
+        ServerFrame::AutomationRunFinished { status, automation_id, .. } => {
+            // Only a run that failed or was missed is worth breaking in for; a
+            // successful one is not news. Clicking the notice opens that
+            // automation's detail, where its run history explains what happened.
+            let id = automation_id.to_string();
+            match status.as_str() {
+                "failed" => show_automation(app, "Automation failed", "A scheduled automation could not finish.", id),
+                "missed" => show_automation(app, "Automation missed", "A scheduled automation could not run.", id),
+                _ => {}
+            }
+            return;
+        }
         _ => return,
     };
 
@@ -105,16 +122,50 @@ fn window_is_focused(app: &AppHandle) -> bool {
 #[derive(Default)]
 pub struct PendingChat(pub std::sync::Mutex<Option<String>>);
 
+/// The automation a click should open, mirroring [`PendingChat`]. One slot: only
+/// the most recent notification is worth acting on.
+#[derive(Default)]
+pub struct PendingAutomation(pub std::sync::Mutex<Option<String>>);
+
 fn set_pending_chat(app: &AppHandle, chat_id: String) {
     if let Some(slot) = app.try_state::<PendingChat>() {
         if let Ok(mut held) = slot.0.lock() {
             *held = Some(chat_id);
         }
     }
+    // Only the most recent notification, of either kind, leads anywhere.
+    clear_pending_automation(app);
 }
 
 fn take_pending_chat(app: &AppHandle) -> Option<String> {
     let slot = app.try_state::<PendingChat>()?;
+    let mut held = slot.0.lock().ok()?;
+    held.take()
+}
+
+fn set_pending_automation(app: &AppHandle, automation_id: String) {
+    if let Some(slot) = app.try_state::<PendingAutomation>() {
+        if let Ok(mut held) = slot.0.lock() {
+            *held = Some(automation_id);
+        }
+    }
+    if let Some(slot) = app.try_state::<PendingChat>() {
+        if let Ok(mut held) = slot.0.lock() {
+            *held = None;
+        }
+    }
+}
+
+fn clear_pending_automation(app: &AppHandle) {
+    if let Some(slot) = app.try_state::<PendingAutomation>() {
+        if let Ok(mut held) = slot.0.lock() {
+            *held = None;
+        }
+    }
+}
+
+fn take_pending_automation(app: &AppHandle) -> Option<String> {
+    let slot = app.try_state::<PendingAutomation>()?;
     let mut held = slot.0.lock().ok()?;
     held.take()
 }
@@ -129,7 +180,15 @@ fn show(app: &AppHandle, title: &str, body: &str, chat_id: Option<String>) {
     }
 }
 
-/// Bring the window forward, and open the chat the last notification was about.
+/// Show a notification whose click opens an automation's detail rather than a chat.
+fn show_automation(app: &AppHandle, title: &str, body: &str, automation_id: String) {
+    set_pending_automation(app, automation_id);
+    if let Err(e) = platform::show(app, title, body) {
+        tracing::debug!(error = %e, "could not show a notification");
+    }
+}
+
+/// Bring the window forward, and open whatever the last notification was about.
 /// Also the single-instance and tray "Show" path.
 pub fn focus_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -139,6 +198,9 @@ pub fn focus_window(app: &AppHandle) {
     }
     if let Some(chat_id) = take_pending_chat(app) {
         let _ = app.emit(EVENT_OPEN_CHAT, chat_id);
+    }
+    if let Some(automation_id) = take_pending_automation(app) {
+        let _ = app.emit(EVENT_OPEN_AUTOMATION, automation_id);
     }
 }
 

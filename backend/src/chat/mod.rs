@@ -302,7 +302,12 @@ async fn run_turn_inner(
                         ev.actor_user_id = Some(uid);
                         ev.resource_type = Some("device_workspace".into());
                         ev.resource_id = Some(ws_id);
-                        ev.payload = Some(json!({ "chat_id": chat_id, "device_id": w.device_id, "path": w.path, "via": "message" }));
+                        // A schedule that opened this turn bound the folder, not a
+                        // person at the composer; the trail says which, so a folder
+                        // attached by an automation is not mistaken for one a user
+                        // chose by hand.
+                        let via = if turn.automation_id.is_some() { "automation" } else { "message" };
+                        ev.payload = Some(json!({ "chat_id": chat_id, "device_id": w.device_id, "path": w.path, "via": via }));
                         let _ = crate::audit::append(&state.pg, &ev).await;
                     }
                 }
@@ -423,7 +428,7 @@ async fn run_turn_inner(
         Some(
             crate::agent::start_run(
                 state, chat_agent_id, ctx.user_id, ctx.role.as_str(), Some(chat_id), turn_id,
-                chat_project_id, None, agent.controls.wall_clock_secs,
+                chat_project_id, turn.automation_id, agent.controls.wall_clock_secs,
             )
             .await?,
         )
@@ -628,7 +633,36 @@ async fn run_turn_inner(
     // folder since withdrawn — resolves to nothing, the note below is absent and
     // the tools are never advertised. A capability the model cannot see is one it
     // cannot promise the user it has.
-    let desktop_ctx = crate::tools::desktop::load_ctx(&state.pg, chat_id, turn.device_id).await;
+    // How a folder call reaches the machine. An interactive desktop turn arrived
+    // on the machine's own socket, so it uses that (the default). A scheduled job
+    // runs here on the server with a throwaway sender the machine never sees, so
+    // its calls are addressed to the machine's live socket through the hub. Only
+    // the scheduled case is both unattended and device-bound; every interactive or
+    // browser turn keeps today's behaviour untouched.
+    let desktop_ctx = crate::tools::desktop::load_ctx(&state.pg, chat_id, turn.device_id)
+        .await
+        .map(|d| match (unattended, turn.device_id, ctx.user_id) {
+            (true, Some(device_id), Some(user_id)) => {
+                d.with_route(crate::tools::desktop::DesktopSink::DeviceRoute { user_id, device_id })
+            }
+            _ => d,
+        });
+    // Whether this run may write in its folder without a card each time. Only a
+    // device automation whose owner opted in, and only on the unattended path;
+    // every interactive turn stays fully gated. Deletion is never covered (that
+    // exception lives in the classifier, not here).
+    let pre_approved_writes = match (unattended, turn.automation_id) {
+        (true, Some(aid)) => sqlx::query_scalar!(
+            "SELECT pre_approved_writes FROM automations WHERE id = $1",
+            aid
+        )
+        .fetch_optional(&state.pg)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false),
+        _ => false,
+    };
     let workspace_note = desktop_ctx
         .as_ref()
         .map(|d| (d.workspace.path.as_str(), d.workspace.tier.describe()));
@@ -901,7 +935,7 @@ async fn run_turn_inner(
 
     if !tool_defs.is_empty() {
         let outcome = run_tool_loop(
-            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary,
+            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary, unattended, pre_approved_writes,
         )
         .await?;
         interrupted = outcome.interrupted;
@@ -2117,6 +2151,13 @@ async fn run_tool_loop(
     cancel: &Arc<Notify>,
     phases: &mut TurnPhases,
     show_commentary: bool,
+    // No human is watching this turn (a scheduled job): a gated call parks the run
+    // for approval and frees the worker rather than blocking on a live decision.
+    unattended: bool,
+    // The owner's standing agreement that a device automation may write files in
+    // its folder without a card each time. Never covers deletion. Only meaningful
+    // together with `unattended`.
+    pre_approved_writes: bool,
 ) -> Result<ToolLoopOutcome> {
     let sem = Arc::new(Semaphore::new(agent.tool_concurrency.max(1)));
     let mut tokens_used: i64 = 0;
@@ -2271,21 +2312,39 @@ async fn run_tool_loop(
             // it in front of the user as a card would both mislead them and teach
             // them to click through. It goes down the ordinary path, where the
             // authorisation seam refuses it and records why.
-            let desktop_gated = crate::tools::desktop::is_desktop_tool(&tc.name)
+            // Does an agreed prefix already cover this command? Computed here
+            // because it needs the folder's prefix list; the rule itself lives in
+            // one place, `desktop::desktop_call_gated`, shared with its test.
+            let terminal_prefix_ok = tc.name == crate::tools::desktop::TERMINAL_RUN
+                && desktop_ctx
+                    .and_then(|d| {
+                        tc.arguments
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .and_then(|c| d.allowed_prefix(c))
+                    })
+                    .is_some();
+            let desktop_gated = crate::tools::desktop::desktop_call_gated(
+                &tc.name,
+                authorised.contains(&tc.name),
+                crate::tools::effect(&tc.name),
+                pre_approved_writes,
+                terminal_prefix_ok,
+            );
+            // Record a pre-approved write that is about to run without a card, so
+            // the standing agreement leaves as clear a trail as a per-call one.
+            if pre_approved_writes
+                && tc.name == crate::tools::desktop::FS_WRITE
                 && authorised.contains(&tc.name)
-                && !matches!(
-                    crate::tools::effect(&tc.name),
-                    crate::tools::ToolEffect::ReadOnly
-                )
-                && !(tc.name == crate::tools::desktop::TERMINAL_RUN
-                    && desktop_ctx
-                        .and_then(|d| {
-                            tc.arguments
-                                .get("command")
-                                .and_then(|v| v.as_str())
-                                .and_then(|c| d.allowed_prefix(c))
-                        })
-                        .is_some());
+            {
+                let mut ev = crate::audit::AuditEvent::action(
+                    "desktop.pre_approved_write",
+                    ctx.role.as_str(),
+                );
+                ev.actor_user_id = ctx.user_id;
+                ev.payload = Some(json!({ "chat_id": chat_id, "tool": tc.name, "pre_approved": true }));
+                let _ = crate::audit::append(&state.pg, &ev).await;
+            }
             let mcp_gated = crate::mcp::is_namespaced(&tc.name)
                 && match crate::mcp::split(&tc.name) {
                     Some((s, t)) => crate::mcp::is_side_effecting(state, s, t).await,
@@ -2318,7 +2377,7 @@ async fn run_tool_loop(
         }
         for tc in gated {
             let (id, r, effect) = gated_call(
-                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, desktop_ctx, tc,
+                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, desktop_ctx, tc, unattended,
             )
             .await;
             by_id.insert(id, r);
@@ -2465,6 +2524,7 @@ async fn gated_call(
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     tc: &ml::ToolCall,
+    unattended: bool,
 ) -> (String, String, Option<ActivityEffect>) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
     if let Err(e) = crate::agent::request_approval(
@@ -2499,6 +2559,32 @@ async fn gated_call(
     if let Some(uid) = ctx.user_id {
         state.hub.send_to_user(uid, frame);
     }
+
+    // No human is in this turn (a scheduled job). Holding the worker on a live
+    // decision would pin a scheduler slot for the whole approval window and then
+    // auto-reject — a guaranteed failure for any write an automation was set up to
+    // make. Instead the run is already parked at `awaiting_approval` with the exact
+    // call persisted: leave it there, free the worker, and let the owner approve
+    // from any client later. The durable resume then carries the call out. This is
+    // deliberately generic, so an MCP or custom tool in an automation pauses the
+    // same honest way a folder write does.
+    if unattended {
+        crate::agent::audit_run(
+            state,
+            ctx.user_id,
+            ctx.role.as_str(),
+            "agent.approval_deferred",
+            run_id,
+            serde_json::json!({ "tool": tc.name }),
+        )
+        .await;
+        return (
+            id,
+            "paused: awaiting the owner's approval; the run will continue once approved".into(),
+            None,
+        );
+    }
+
     let rx = state.approvals.register(run_id);
     let decided = tokio::time::timeout(
         std::time::Duration::from_secs(agent.controls.approval_timeout_secs),

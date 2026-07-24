@@ -112,6 +112,11 @@ export function Shell() {
         // Lookahead reminder for a soon-to-run automation (Tier-2 #16).
         const mins = Math.max(1, Math.round(Number(f.in_seconds) / 60));
         toast(`Automation "${f.name}" runs in ~${mins} min`, { variant: "info", duration: 8000 });
+      } else if (f.type === "automation.run_finished") {
+        // A run reached a terminal outcome: refresh its history and the list (which
+        // carries last-run and the needs-approval count) without waiting for a poll.
+        qc.invalidateQueries({ queryKey: ["automation-runs", f.automation_id] });
+        qc.invalidateQueries({ queryKey: ["automations"] });
       }
     });
   }, [qc]);

@@ -70,17 +70,22 @@ pub struct TurnContext<'a> {
     /// brand-new chat's first message already works in it: the chat is created by
     /// this very turn, and there is no chat to bind a folder to until then.
     pub workspace_id: Option<Uuid>,
+    /// The scheduled job that produced this turn, when one did. Pure provenance:
+    /// it lets the run this turn opens be tied back to its automation (so a pause
+    /// or a failure can be reflected on the automation's own record) and marks the
+    /// folder binding as made by a schedule rather than by a person.
+    pub automation_id: Option<Uuid>,
 }
 
 impl<'a> TurnContext<'a> {
     /// The ordinary case: a turn from the web, or from any caller for which
     /// provenance is not tracked (scheduler, workflows, voice).
     pub fn web(auth: &'a AuthContext) -> Self {
-        Self { auth, origin: ChatOrigin::Web, device_id: None, workspace_id: None }
+        Self { auth, origin: ChatOrigin::Web, device_id: None, workspace_id: None, automation_id: None }
     }
 
     pub fn new(auth: &'a AuthContext, origin: ChatOrigin) -> Self {
-        Self { auth, origin, device_id: None, workspace_id: None }
+        Self { auth, origin, device_id: None, workspace_id: None, automation_id: None }
     }
 
     /// The same turn, knowing which machine it arrived from.
@@ -92,6 +97,12 @@ impl<'a> TurnContext<'a> {
     /// The same turn, carrying the folder the composer chose for this chat.
     pub fn with_workspace(mut self, workspace_id: Option<Uuid>) -> Self {
         self.workspace_id = workspace_id;
+        self
+    }
+
+    /// The same turn, knowing which scheduled job opened it.
+    pub fn with_automation(mut self, automation_id: Option<Uuid>) -> Self {
+        self.automation_id = automation_id;
         self
     }
 }

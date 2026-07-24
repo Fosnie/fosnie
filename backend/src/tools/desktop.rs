@@ -94,6 +94,23 @@ pub struct Workspace {
     pub tier: Tier,
 }
 
+/// Where the call to the machine goes out, and how its reply is waited on.
+///
+/// For an ordinary interactive turn the machine is at the other end of the very
+/// socket the turn arrived on, so the outgoing frame rides the turn's own sender
+/// and the socket closing is a live signal that nobody will answer. A scheduled
+/// job has no such socket: its turn runs on the server with a throwaway sender
+/// that never closes, so the call is addressed to the machine's live socket
+/// through the hub instead, and its presence is polled rather than watched.
+#[derive(Debug, Clone, Copy)]
+pub enum DesktopSink {
+    /// The turn's own sender is the machine's socket (interactive desktop turn).
+    TurnSocket,
+    /// The turn runs elsewhere (a scheduled job); address the machine's live
+    /// socket by owner and device through the hub.
+    DeviceRoute { user_id: Uuid, device_id: Uuid },
+}
+
 /// What one turn knows about the folder it is working in. Built once, when the
 /// turn starts, from the conversation's binding and the connection's device —
 /// so a turn that arrived any other way simply has none of this, and the tools
@@ -104,6 +121,9 @@ pub struct DesktopToolCtx {
     /// The commands this folder's owner has already agreed to, matched by the
     /// start of the command line.
     pub command_prefixes: Vec<String>,
+    /// How this turn reaches the machine. Interactive turns leave it at the
+    /// default; a scheduled job sets a device route.
+    pub route: DesktopSink,
 }
 
 impl DesktopToolCtx {
@@ -111,6 +131,14 @@ impl DesktopToolCtx {
     /// user has to be asked.
     pub fn allowed_prefix(&self, command: &str) -> Option<&str> {
         matching_prefix(command, &self.command_prefixes)
+    }
+
+    /// The same context, addressing the machine over the hub rather than the
+    /// turn's own socket. Used when the turn is not itself on the machine's
+    /// connection (a scheduled job, or a resumed approval).
+    pub fn with_route(mut self, route: DesktopSink) -> Self {
+        self.route = route;
+        self
     }
 }
 
@@ -171,6 +199,9 @@ pub async fn load_ctx(
             tier,
         },
         command_prefixes: prefixes,
+        // The default is the interactive turn's own socket; a scheduled job
+        // overrides it with `with_route` once it knows the target machine.
+        route: DesktopSink::TurnSocket,
     })
 }
 
@@ -188,6 +219,45 @@ pub const ALL: &[&str] = &[FS_LIST, FS_READ, FS_WRITE, FS_DELETE, TERMINAL_RUN];
 /// Is this one of the local-execution tools?
 pub fn is_desktop_tool(name: &str) -> bool {
     ALL.contains(&name)
+}
+
+/// Whether a folder call must be asked about before it runs. The single place the
+/// rule lives, so the live classifier and its test can never drift apart.
+///
+/// A read-only call is never asked about. A write is asked about every time,
+/// unless the automation running it pre-approved writes to this folder. Deletion
+/// is asked about every time, with no exception at all: no pre-approval covers it,
+/// because running it again more carefully does not undo it. A command is asked
+/// about unless it begins with a prefix the owner has already agreed to.
+///
+/// `terminal_prefix_ok` is the caller's answer to "does an agreed prefix already
+/// cover this command", and `pre_approved_writes` is only ever true on an
+/// unattended automation run whose owner opted in.
+pub fn desktop_call_gated(
+    tool: &str,
+    is_authorised: bool,
+    effect: crate::tools::ToolEffect,
+    pre_approved_writes: bool,
+    terminal_prefix_ok: bool,
+) -> bool {
+    // A name that was never offered this turn is not a request to weigh up; it goes
+    // down the ordinary path, where the authorisation seam refuses it.
+    if !is_desktop_tool(tool) || !is_authorised {
+        return false;
+    }
+    // Reading changes nothing.
+    if matches!(effect, crate::tools::ToolEffect::ReadOnly) {
+        return false;
+    }
+    // A pre-approved write, and only a write, skips the card. Deletion never does.
+    if pre_approved_writes && tool == FS_WRITE {
+        return false;
+    }
+    // A command the owner already agreed to by how it starts is not re-asked.
+    if tool == TERMINAL_RUN && terminal_prefix_ok {
+        return false;
+    }
+    true
 }
 
 /// The longest a registered folder's path may be. Generous for a real path and
@@ -589,26 +659,61 @@ pub async fn execute(
         tool: tool.to_string(),
         args: prepared,
     };
-    if tx.send(frame).await.is_err() {
+    // Interactive turns push on their own socket; a scheduled job addresses the
+    // machine's live socket through the hub. Either way a failure to hand the
+    // frame off means the machine is not there, said plainly.
+    let delivered = match ctx.route {
+        DesktopSink::TurnSocket => tx.send(frame).await.is_ok(),
+        DesktopSink::DeviceRoute { user_id, device_id } => {
+            state.hub.send_to_device(user_id, device_id, frame)
+        }
+    };
+    if !delivered {
         return Err(AppError::Validation(
             "the desktop client is no longer connected, so nothing was done".into(),
         ));
     }
 
     let budget = crate::tools::timeout_for(tool, &state.boot.tool_timeout_secs);
-    let reply = tokio::select! {
-        reply = rx => reply.ok(),
-        // The socket's writer has gone: nobody is going to answer.
-        _ = tx.closed() => {
-            return Err(AppError::Validation(
-                "the desktop client disconnected before this finished".into(),
-            ))
-        }
-        _ = tokio::time::sleep(budget) => {
-            return Err(AppError::Validation(
-                "the desktop client did not answer in time".into(),
-            ))
-        }
+    let reply = match ctx.route {
+        DesktopSink::TurnSocket => tokio::select! {
+            reply = rx => reply.ok(),
+            // The socket's writer has gone: nobody is going to answer.
+            _ = tx.closed() => {
+                return Err(AppError::Validation(
+                    "the desktop client disconnected before this finished".into(),
+                ))
+            }
+            _ = tokio::time::sleep(budget) => {
+                return Err(AppError::Validation(
+                    "the desktop client did not answer in time".into(),
+                ))
+            }
+        },
+        // The throwaway sender of a scheduled turn never closes, so it cannot
+        // signal a gone machine; a presence poll stands in for `tx.closed()`,
+        // stopping the wait as soon as the machine's socket drops.
+        DesktopSink::DeviceRoute { user_id, device_id } => tokio::select! {
+            reply = rx => reply.ok(),
+            _ = tokio::time::sleep(budget) => {
+                return Err(AppError::Validation(
+                    "the device did not answer in time".into(),
+                ))
+            }
+            _ = async {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    tick.tick().await;
+                    if !state.hub.is_device_online(user_id, device_id) {
+                        break;
+                    }
+                }
+            } => {
+                return Err(AppError::Validation(
+                    "the device went offline before this finished".into(),
+                ))
+            }
+        },
     };
     let reply = reply.ok_or_else(|| {
         AppError::Validation("the desktop client did not answer".into())
@@ -729,7 +834,40 @@ mod tests {
                 tier,
             },
             command_prefixes: vec!["npm test".into()],
+            route: DesktopSink::TurnSocket,
         }
+    }
+
+    use crate::tools::ToolEffect;
+
+    #[test]
+    fn gating_asks_about_writes_unless_pre_approved() {
+        // A write is asked about by default, and skips the card only when the
+        // automation pre-approved writes to this folder.
+        assert!(desktop_call_gated(FS_WRITE, true, ToolEffect::RequiresRun, false, false));
+        assert!(!desktop_call_gated(FS_WRITE, true, ToolEffect::RequiresRun, true, false));
+    }
+
+    #[test]
+    fn gating_never_lets_a_delete_through_a_pre_approval() {
+        // Deletion is asked about every time; pre-approved writes do not touch it.
+        assert!(desktop_call_gated(FS_DELETE, true, ToolEffect::RequiresRun, true, false));
+        assert!(desktop_call_gated(FS_DELETE, true, ToolEffect::RequiresRun, false, false));
+    }
+
+    #[test]
+    fn gating_skips_a_command_with_an_agreed_prefix_only() {
+        assert!(desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, false, false));
+        assert!(!desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, false, true));
+        // A pre-approval on writes must not spill over onto a command.
+        assert!(desktop_call_gated(TERMINAL_RUN, true, ToolEffect::RequiresRun, true, false));
+    }
+
+    #[test]
+    fn gating_ignores_reads_and_unoffered_names() {
+        assert!(!desktop_call_gated(FS_READ, true, ToolEffect::ReadOnly, false, false));
+        // A name that was not offered this turn is not weighed up here.
+        assert!(!desktop_call_gated(FS_WRITE, false, ToolEffect::RequiresRun, false, false));
     }
 
     #[test]

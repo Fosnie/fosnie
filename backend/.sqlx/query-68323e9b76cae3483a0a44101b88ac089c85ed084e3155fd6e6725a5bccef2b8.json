@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT name, owner_user_id, agent_id, prompt, project_id, kb_ids, deliver_group_chat_id FROM automations WHERE id = $1",
+  "query": "SELECT name, owner_user_id, agent_id, prompt, project_id, kb_ids, deliver_group_chat_id, workspace_id FROM automations WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -79,6 +79,17 @@
             "name": "deliver_group_chat_id"
           }
         }
+      },
+      {
+        "ordinal": 7,
+        "name": "workspace_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "workspace_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -93,8 +104,9 @@
       false,
       true,
       false,
+      true,
       true
     ]
   },
-  "hash": "808203af517bebdb8b40763487396e596bd8fe3ef7b3eba1774216b572332196"
+  "hash": "68323e9b76cae3483a0a44101b88ac089c85ed084e3155fd6e6725a5bccef2b8"
 }

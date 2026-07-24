@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT a.id AS \"id!\"\n             FROM automations a\n             JOIN device_workspaces w ON w.id = a.workspace_id\n            WHERE w.device_id = $1 AND a.owner_user_id = $2\n              AND a.status = 'active' AND a.run_when_back = true\n              AND w.revoked_at IS NULL\n              AND EXISTS (SELECT 1 FROM automation_runs r\n                           WHERE r.automation_id = a.id AND r.status = 'missed'\n                             AND r.reason = 'offline'\n                             AND r.started_at > now() - ($3::int * interval '1 second'))\n              AND NOT EXISTS (SELECT 1 FROM automation_runs r\n                           WHERE r.automation_id = a.id\n                             AND r.status IN ('running', 'needs_approval'))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "automations",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4774ed83c77582476e4a3203da646ab9f997fa3abb73215e78945baa7282a18d"
+}

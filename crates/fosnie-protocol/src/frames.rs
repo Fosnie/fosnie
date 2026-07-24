@@ -496,6 +496,16 @@ pub enum ServerFrame {
         due_at: String,
         in_seconds: i64,
     },
+    /// An automation run reached a terminal outcome. Pushed to the owner's
+    /// clients so run history and the calendar refresh, and so the desktop shell
+    /// can raise a quiet notice for a run that failed or was missed. A run that
+    /// paused for approval is announced by `agent.approval`, not here.
+    #[serde(rename = "automation.run_finished")]
+    AutomationRunFinished {
+        automation_id: Uuid,
+        run_id: Uuid,
+        status: String, // "succeeded" | "failed" | "missed"
+    },
     /// Live per-document ingestion progress, pushed to the uploader as the
     /// background pipeline advances (uploading → extracting → indexing → ready,
     /// or → error). Postgres stays the source of truth; a dropped frame is fine.
