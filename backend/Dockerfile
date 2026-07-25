@@ -30,6 +30,9 @@ ENV SQLX_OFFLINE=true
 # Cache deps: copy manifests + the committed query cache first, then sources.
 COPY backend/Cargo.toml backend/Cargo.lock ./
 COPY backend/.sqlx ./.sqlx
+# Path dependencies live outside backend/ (backend/Cargo.toml references
+# ../crates/fosnie-protocol); copy the workspace crates so cargo can resolve them.
+COPY crates/ /app/crates/
 COPY backend/ ./
 RUN cargo build --release --bin fosnie-backend
 
