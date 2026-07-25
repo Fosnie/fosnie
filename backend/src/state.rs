@@ -75,6 +75,79 @@ impl Approvals {
     }
 }
 
+/// One request sent to a paired machine, waiting for that machine to answer.
+///
+/// The tool call is running on the other end of the socket the turn came in on,
+/// so the turn holds a `oneshot` and the socket's reader delivers to it. The
+/// `turn_id` rides along because output arriving while the work is still going
+/// has to be routed back into the right conversation, and the frame that carries
+/// it only knows which call it belongs to.
+struct DesktopCall {
+    turn_id: Uuid,
+    /// The machine this call was sent to. Only that machine's answer counts: a
+    /// call is delivered to one device's socket, and a reply naming this call from
+    /// any other device — a second machine the same user owns, or someone else's —
+    /// is forging an answer to a question it was never asked.
+    target_device: Uuid,
+    /// Who to hand the result to. Taken when it arrives.
+    done: oneshot::Sender<crate::tools::DesktopReply>,
+}
+
+/// In-process waiters for calls sent to paired machines. Process-local like the
+/// socket registry beside it, and for the same reason: the socket being waited on
+/// is in this process or it is nowhere.
+#[derive(Clone, Default)]
+pub struct DesktopCalls(Arc<Mutex<HashMap<Uuid, DesktopCall>>>);
+
+impl DesktopCalls {
+    /// Register a waiter for `call_id`, bound to the machine it was sent to; await
+    /// the returned receiver for the answer.
+    pub fn register(
+        &self,
+        call_id: Uuid,
+        turn_id: Uuid,
+        target_device: Uuid,
+    ) -> oneshot::Receiver<crate::tools::DesktopReply> {
+        let (done, rx) = oneshot::channel();
+        self.0.lock().unwrap().insert(call_id, DesktopCall { turn_id, target_device, done });
+        rx
+    }
+
+    /// Deliver an answer from `from_device`. The reply is accepted only from the
+    /// machine the call was sent to; a reply from any other device leaves the
+    /// waiter untouched and returns false, so a foreign socket cannot resolve a
+    /// call it does not hold. False also when nothing was waiting — a late reply to
+    /// a call that already timed out, which is a thing to drop, not to act on.
+    pub fn resolve(&self, call_id: Uuid, from_device: Uuid, reply: crate::tools::DesktopReply) -> bool {
+        let mut guard = self.0.lock().unwrap();
+        match guard.get(&call_id) {
+            Some(call) if call.target_device == from_device => {
+                let call = guard.remove(&call_id).expect("just matched");
+                call.done.send(reply).is_ok()
+            }
+            _ => false,
+        }
+    }
+
+    /// Which turn a still-running call belongs to, so its output can be shown in
+    /// the right place — but only when the output comes from the machine the call
+    /// was sent to, so a foreign device cannot inject stdout into someone's turn.
+    /// Leaves the waiter in place.
+    pub fn turn_of(&self, call_id: Uuid, from_device: Uuid) -> Option<Uuid> {
+        self.0
+            .lock()
+            .unwrap()
+            .get(&call_id)
+            .filter(|c| c.target_device == from_device)
+            .map(|c| c.turn_id)
+    }
+
+    /// Give up on a call (it timed out, or the socket carrying it has gone).
+    pub fn forget(&self, call_id: Uuid) {
+        self.0.lock().unwrap().remove(&call_id);
+    }
+}
+
 /// Process-local registry of live-voice sessions, keyed by socket id. A live
 /// session spans many `voice.audio.chunk` frames, so — unlike the per-frame batch
 /// voice handlers — it must outlive a single frame. The socket's disconnect path
@@ -185,6 +258,8 @@ pub struct AppState {
     pub cancellations: Cancellations,
     /// In-process waiters for interactive agent-run approvals.
     pub approvals: Approvals,
+    /// In-process waiters for work sent to a paired machine.
+    pub desktop_calls: DesktopCalls,
     /// Live-voice sessions, keyed by socket id.
     pub voice: VoiceSessions,
     pub dictation: DictationSessions,
@@ -346,6 +421,7 @@ impl AppStateBuilder {
             export_kinds: Arc::new(export_kinds.unwrap_or_default()),
             cancellations: Cancellations::default(),
             approvals: Approvals::default(),
+            desktop_calls: DesktopCalls::default(),
             voice: VoiceSessions::default(),
             dictation: DictationSessions::default(),
             mcp: crate::mcp::McpManager::new(),

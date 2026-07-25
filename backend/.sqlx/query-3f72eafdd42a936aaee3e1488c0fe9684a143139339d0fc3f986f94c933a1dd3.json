@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO automations (id, owner_user_id, name, schedule, prompt, next_run_at, workspace_id, run_when_back) VALUES ($1, $2, 'A', '0 0 9 * * *', 'do it', now(), $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3f72eafdd42a936aaee3e1488c0fe9684a143139339d0fc3f986f94c933a1dd3"
+}

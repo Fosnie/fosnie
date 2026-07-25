@@ -39,8 +39,9 @@ export function Shell() {
   const theme = useTheme();
   const hasFavicon = branding.data?.some((b) => b.kind === "favicon");
 
-  // Mobile off-canvas sidebar (≤640px; the drawer chrome is display:none on
-  // desktop). Auto-close on navigation so tapping a nav/project item dismisses it.
+  // Off-canvas sidebar for a narrow window (≤980px; the drawer chrome is
+  // display:none above that). Auto-close on navigation so choosing a nav or
+  // project item dismisses it.
   const [navOpen, setNavOpen] = useState(false);
   const { pathname } = useLocation();
   useEffect(() => setNavOpen(false), [pathname]);
@@ -112,6 +113,11 @@ export function Shell() {
         // Lookahead reminder for a soon-to-run automation (Tier-2 #16).
         const mins = Math.max(1, Math.round(Number(f.in_seconds) / 60));
         toast(`Automation "${f.name}" runs in ~${mins} min`, { variant: "info", duration: 8000 });
+      } else if (f.type === "automation.run_finished") {
+        // A run reached a terminal outcome: refresh its history and the list (which
+        // carries last-run and the needs-approval count) without waiting for a poll.
+        qc.invalidateQueries({ queryKey: ["automation-runs", f.automation_id] });
+        qc.invalidateQueries({ queryKey: ["automations"] });
       }
     });
   }, [qc]);

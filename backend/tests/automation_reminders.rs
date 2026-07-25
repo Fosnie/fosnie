@@ -48,7 +48,7 @@ async fn reminds_once_for_soon_due_automation() {
 
     // Register a fake socket for the owner to capture pushed frames.
     let (tx, mut rx) = mpsc::channel::<ServerFrame>(16);
-    st.hub.register(Uuid::now_v7(), owner, tx);
+    st.hub.register(Uuid::now_v7(), owner, None, tx);
 
     let sent = scheduler::scan_reminders(&st).await.unwrap();
     assert!(sent >= 1, "the soon-due automation is reminded");

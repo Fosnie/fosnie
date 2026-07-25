@@ -19,6 +19,9 @@
 //! (`code_interpreter`, `generate_artefact`, `edit_document`, DMS) plug in here.
 
 pub mod custom;
+pub mod desktop;
+
+pub use desktop::{DesktopReply, DesktopToolCtx};
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -49,6 +52,14 @@ pub const ALL: &[&str] = &[
     "search_library",
     "code_interpreter",
     "track_steps",
+    // Work in a folder on the machine the user is sitting at. Offered only on a
+    // turn that came from that machine and names a folder it was connected to;
+    // see `tools::desktop`.
+    desktop::FS_LIST,
+    desktop::FS_READ,
+    desktop::FS_WRITE,
+    desktop::FS_DELETE,
+    desktop::TERMINAL_RUN,
 ];
 
 /// Baseline tools every Agent gets without enabling them (injected in `load_agent`).
@@ -87,6 +98,8 @@ pub enum ToolType {
     Web,
     /// Code interpreter (Firecracker).
     Code,
+    /// Work done by a paired machine in a folder of its own.
+    Desktop,
 }
 
 impl ToolType {
@@ -100,6 +113,7 @@ impl ToolType {
             ToolType::Memory => "memory",
             ToolType::Web => "web",
             ToolType::Code => "code",
+            ToolType::Desktop => "desktop",
         }
     }
 }
@@ -110,6 +124,7 @@ impl ToolType {
 pub fn capability(name: &str) -> Option<&'static str> {
     match name {
         "code_interpreter" => Some("code_interpreter"),
+        n if desktop::is_desktop_tool(n) => Some("desktop_execution"),
         _ => None,
     }
 }
@@ -119,6 +134,7 @@ pub fn capability(name: &str) -> Option<&'static str> {
 pub fn host_enabled(name: &str, features: &FeaturesConfig) -> bool {
     match capability(name) {
         Some("code_interpreter") => features.code_interpreter,
+        Some("desktop_execution") => features.desktop_execution,
         Some(_) => false,
         None => true,
     }
@@ -136,6 +152,7 @@ pub fn tool_type(name: &str) -> ToolType {
         "web_search" => ToolType::Web,
         "search_library" => ToolType::Rag,
         "code_interpreter" => ToolType::Code,
+        n if desktop::is_desktop_tool(n) => ToolType::Desktop,
         // Defensive default for tools not in ALL; ALL is fully covered by the test.
         _ => ToolType::System,
     }
@@ -169,6 +186,10 @@ pub fn effect(name: &str) -> ToolEffect {
         }
         "edit_document" | "remember_fact" => ToolEffect::Proposal,
         "generate_artefact" | "code_interpreter" => ToolEffect::RequiresRun,
+        // Looking at somebody's folder is reading; changing anything in it, or
+        // running anything in it, is not.
+        desktop::FS_LIST | desktop::FS_READ => ToolEffect::ReadOnly,
+        desktop::FS_WRITE | desktop::FS_DELETE | desktop::TERMINAL_RUN => ToolEffect::RequiresRun,
         // Unknown ⇒ safest classification. Unreachable in practice: an unknown
         // name is refused by `authorize_native_call` before it can dispatch, so
         // this is defence-in-depth only. (It deliberately disagrees with
@@ -379,6 +400,12 @@ pub fn timeout_for(name: &str, overrides: &HashMap<String, u64>) -> Duration {
     if let Some(&secs) = overrides.get(ty.as_str()) {
         return Duration::from_secs(secs);
     }
+    // Running a command is the one call whose length the caller chose, up to a
+    // bound of its own. The outer budget has to sit above that bound, or a
+    // command the user agreed to would be cut off by a timer they never saw.
+    if name == desktop::TERMINAL_RUN {
+        return Duration::from_secs(660);
+    }
     let secs = match ty {
         ToolType::System | ToolType::Memory => 10,
         ToolType::DocumentRead => 60,
@@ -386,6 +413,9 @@ pub fn timeout_for(name: &str, overrides: &HashMap<String, u64>) -> Duration {
         // politely (never risk an engine IP ban), so the budget is pacing-sized, not snappy.
         ToolType::Web => 120,
         ToolType::Rag | ToolType::Artefact | ToolType::Code => 120,
+        // A round trip to the machine at the other end of the socket, plus
+        // whatever it has to do on its own disk.
+        ToolType::Desktop => 120,
     };
     Duration::from_secs(secs)
 }
@@ -489,6 +519,11 @@ pub fn catalog() -> Vec<CatalogEntry> {
         ("web_search", "Web search", "external — ships dormant", true),
         ("search_library", "Search the library again", "internal — RAG top-up when the first pass fell short", false),
         ("code_interpreter", "Code interpreter", "run code (host capability)", false),
+        (desktop::FS_LIST, "List a connected folder", "see what is in the folder connected on the desktop", false),
+        (desktop::FS_READ, "Read from a connected folder", "read a file in the connected folder", false),
+        (desktop::FS_WRITE, "Write to a connected folder", "write a file, shown as a change to agree to", false),
+        (desktop::FS_DELETE, "Delete in a connected folder", "delete a file, asked every time", false),
+        (desktop::TERMINAL_RUN, "Run a command", "run a command in the connected folder", false),
     ];
     META.iter()
         .map(|(name, label, hint, dormant)| CatalogEntry {
@@ -708,6 +743,9 @@ fn def(name: &str) -> Option<Value> {
                 }
             }
         }),
+        // The folder tools keep their schemas beside the rules that check what
+        // comes back through them.
+        n if desktop::is_desktop_tool(n) => return desktop::def(n),
         _ => return None,
     };
     Some(v)
@@ -917,6 +955,7 @@ pub async fn dispatch(
     tx: &mpsc::Sender<ServerFrame>,
     web_budget: Option<&WebBudget>,
     rag_ctx: Option<&RagToolCtx>,
+    desktop_ctx: Option<&DesktopToolCtx>,
     ci_files: &[crate::code_interpreter::InputFile],
     custom: &HashMap<String, custom::CustomToolRow>,
     call: &AuthorizedTool,
@@ -1598,6 +1637,19 @@ pub async fn dispatch(
                 .await
         }
 
+        // Work in a folder on the machine the turn came from. The context is built
+        // once when the turn starts and is the whole authority for this family: no
+        // context means no folder was connected to this conversation from this
+        // machine, and the tools were never advertised either.
+        n if desktop::is_desktop_tool(n) => {
+            let dctx = desktop_ctx.ok_or_else(|| {
+                AppError::Validation(
+                    "no folder on the desktop is connected to this conversation".into(),
+                )
+            })?;
+            desktop::execute(state, ctx, chat_id, tx, dctx, turn_id, n, args).await
+        }
+
         // Not a native tool → a custom tool the Agent selected (never an MCP name;
         // those route via `mcp::dispatch` on separate rails). The three name spaces
         // are disjoint by construction (native ∈ ALL, MCP has `__`, custom neither).
@@ -1871,8 +1923,8 @@ mod tests {
 
     #[test]
     fn code_interpreter_is_capability_gated() {
-        let off = FeaturesConfig { code_interpreter: false, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
-        let on = FeaturesConfig { code_interpreter: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
+        let off = FeaturesConfig { code_interpreter: false, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
+        let on = FeaturesConfig { code_interpreter: true, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
         assert!(!host_enabled("code_interpreter", &off));
         assert!(host_enabled("code_interpreter", &on));
         // Ordinary tools are always host-enabled.

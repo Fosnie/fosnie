@@ -209,7 +209,7 @@ async fn speculation_searches_exactly_what_the_turn_would() {
     let cx = ctx(user);
     tokio::spawn(async move {
         chat::run_turn(
-            &st2, &cx, Uuid::now_v7(), Some(chat), None, None, QUESTION.into(), Vec::new(), Vec::new(),
+            &st2, chat::origin::TurnContext::web(&cx), Uuid::now_v7(), Some(chat), None, None, QUESTION.into(), Vec::new(), Vec::new(),
             false, None, None, None, None, &tx, cancel,
         )
         .await;

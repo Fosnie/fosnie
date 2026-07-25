@@ -212,6 +212,10 @@ async fn run(
                 if let Err(e) = scan_reminders(&state).await {
                     tracing::error!(error = %e, "automation reminder scan failed");
                 }
+                // Fail runs whose approval has waited past its window.
+                if let Err(e) = scan_expired_approvals(&state).await {
+                    tracing::error!(error = %e, "approval expiry scan failed");
+                }
                 // Relay any undispatched domain events to matching workflows
                 // (no-op while features.workflows is off / paused).
                 match crate::workflows::dispatch_once(&state).await {
@@ -1138,6 +1142,134 @@ pub async fn scan_reminders(state: &AppState) -> Result<u64, crate::error::AppEr
     Ok(sent)
 }
 
+/// Fail automation runs that have sat waiting for approval past their time. An
+/// unattended run parks itself when it reaches a step that needs the owner's
+/// say-so; if the owner never answers, it cannot wait forever. Past the window it
+/// becomes a plain failure: the run is closed, its kill-token released, any stale
+/// approval cards on the owner's clients are cleared, and the automation's own
+/// record is failed with a reason.
+///
+/// The window is how long an unattended run may wait, taken from the run's agent
+/// (`unattended_approval_ttl_secs`, default 24h, the same setting the run was
+/// created under), measured from when it paused. Only automation runs are swept:
+/// a run with no automation behind it is not this sweep's business, and reaping
+/// such a run would be a separate, deliberate change.
+pub async fn scan_expired_approvals(state: &AppState) -> Result<u64, crate::error::AppError> {
+    // The default matches the agent controls' own default, so a run whose agent
+    // never set the value expires on the same 24h the live path would honour.
+    const DEFAULT_TTL_SECS: i64 = 86_400;
+    let rows = sqlx::query!(
+        r#"SELECT ar.id AS "id!", ar.automation_id, ar.acting_user_id, ar.updated_at AS "updated_at!", a.params AS "params?"
+             FROM agent_runs ar
+             LEFT JOIN agents a ON a.id = ar.agent_id
+            WHERE ar.status = 'awaiting_approval' AND ar.automation_id IS NOT NULL"#
+    )
+    .fetch_all(&state.pg)
+    .await?;
+
+    let now = OffsetDateTime::now_utc();
+    let mut swept = 0u64;
+    for r in &rows {
+        let ttl = r
+            .params
+            .as_ref()
+            .and_then(|p| p.get("unattended_approval_ttl_secs"))
+            .and_then(|v| v.as_i64())
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_TTL_SECS);
+        if (now - r.updated_at).whole_seconds() <= ttl {
+            continue;
+        }
+        // Claim it: only if it is still awaiting does this sweep own the failure,
+        // so a race with a just-arrived approval cannot double-decide it.
+        let claimed = sqlx::query!(
+            "UPDATE agent_runs SET status = 'failed', finished_at = now(), updated_at = now() \
+             WHERE id = $1 AND status = 'awaiting_approval'",
+            r.id
+        )
+        .execute(&state.pg)
+        .await?
+        .rows_affected();
+        if claimed == 0 {
+            continue;
+        }
+        crate::agent::release_token(state, r.id).await;
+        // The card is answered for them, everywhere, so nobody is left staring at
+        // a question that has expired.
+        crate::agent::broadcast_resolved(state, r.acting_user_id, r.id, false);
+        if let Some(aid) = r.automation_id {
+            let _ = sqlx::query!(
+                "UPDATE automation_runs SET status = 'failed', error = 'approval expired', completed_at = now() \
+                 WHERE automation_id = $1 AND status = 'needs_approval'",
+                aid
+            )
+            .execute(&state.pg)
+            .await;
+        }
+        let mut ev = crate::audit::AuditEvent::action("agent.approval_expired", "system");
+        ev.actor_user_id = r.acting_user_id;
+        ev.resource_type = Some("agent_run".into());
+        ev.resource_id = Some(r.id);
+        let _ = crate::audit::append(&state.pg, &ev).await;
+        swept += 1;
+    }
+    Ok(swept)
+}
+
+/// Make up an automation a machine missed while it was away. When a machine
+/// reconnects, any of its folder automations that missed an occurrence for being
+/// offline, recently and with make-up turned on, gets exactly one catch-up run:
+/// the missed record is claimed (so two sockets reconnecting cannot double-fire)
+/// and a fresh run enqueued, which re-checks presence and overlap for itself. A
+/// window of zero turns the whole behaviour off.
+pub async fn catchup_device(state: &AppState, user_id: Uuid, device_id: Uuid) {
+    let window = runtime_i32(state, "automation.catchup_window_secs", 21_600).await;
+    if window == 0 {
+        return;
+    }
+    let due = sqlx::query!(
+        r#"SELECT DISTINCT a.id AS "id!"
+             FROM automations a
+             JOIN device_workspaces w ON w.id = a.workspace_id
+            WHERE w.device_id = $1 AND a.owner_user_id = $2
+              AND a.status = 'active' AND a.run_when_back = true
+              AND w.revoked_at IS NULL
+              AND EXISTS (SELECT 1 FROM automation_runs r
+                           WHERE r.automation_id = a.id AND r.status = 'missed'
+                             AND r.reason = 'offline'
+                             AND r.started_at > now() - ($3::int * interval '1 second'))
+              AND NOT EXISTS (SELECT 1 FROM automation_runs r
+                           WHERE r.automation_id = a.id
+                             AND r.status IN ('running', 'needs_approval'))"#,
+        device_id, user_id, window
+    )
+    .fetch_all(&state.pg)
+    .await
+    .unwrap_or_default();
+
+    for a in due {
+        // Claim exactly one missed occurrence for this automation. The status flip
+        // is the lock: a second reconnect racing this one finds no row still
+        // 'missed' to claim and enqueues nothing.
+        let claimed = sqlx::query_scalar!(
+            r#"UPDATE automation_runs SET status = 'superseded'
+                WHERE id = (SELECT id FROM automation_runs
+                             WHERE automation_id = $1 AND status = 'missed' AND reason = 'offline'
+                             ORDER BY started_at DESC LIMIT 1)
+                  AND status = 'missed'
+              RETURNING id"#,
+            a.id
+        )
+        .fetch_optional(&state.pg)
+        .await
+        .ok()
+        .flatten();
+        if claimed.is_some() {
+            let _ = enqueue(&state.pg, TaskType::AutomationRun, serde_json::json!({ "automation_id": a.id })).await;
+        }
+    }
+}
+
 /// Reminder lookahead window in seconds — a runtime-tunable
 /// `automation.reminder_lookahead_secs` (default 600 = 10 min).
 async fn reminder_lookahead_secs(state: &AppState) -> i32 {
@@ -1150,6 +1282,40 @@ async fn reminder_lookahead_secs(state: &AppState) -> i32 {
         .unwrap_or(600)
 }
 
+/// Where an automation is meant to run, worked out from its folder alone.
+///
+/// This is the whole of the server-versus-device decision, and it is deliberately
+/// free of the machine guards (presence, overlap) so it can be checked on its own:
+/// a null folder is always `Server` and takes the pre-folder path untouched, a
+/// live folder resolves to its machine, and a folder the owner has since withdrawn
+/// resolves to `Withdrawn` rather than silently reverting to the server.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AutomationTarget {
+    Server,
+    Device { device_id: Uuid, workspace_id: Uuid },
+    Withdrawn { workspace_id: Uuid },
+}
+
+/// Resolve an automation's target from its folder id. See [`AutomationTarget`].
+pub async fn resolve_automation_target(
+    pg: &sqlx::PgPool,
+    workspace_id: Option<Uuid>,
+) -> Result<AutomationTarget, crate::error::AppError> {
+    let Some(ws) = workspace_id else {
+        return Ok(AutomationTarget::Server);
+    };
+    let dev: Option<Uuid> = sqlx::query_scalar!(
+        "SELECT device_id FROM device_workspaces WHERE id = $1 AND revoked_at IS NULL",
+        ws
+    )
+    .fetch_optional(pg)
+    .await?;
+    Ok(match dev {
+        Some(device_id) => AutomationTarget::Device { device_id, workspace_id: ws },
+        None => AutomationTarget::Withdrawn { workspace_id: ws },
+    })
+}
+
 /// Run one automation: a headless chat against its Agent with its prompt, the
 /// output persisted as a chat. Reuses `chat::run_turn` (driven through a
 /// throwaway channel that captures the created chat id).
@@ -1158,13 +1324,48 @@ async fn run_automation(state: &AppState, automation_id: Uuid) -> Result<(), cra
     use crate::ws::protocol::ServerFrame;
 
     let a = sqlx::query!(
-        "SELECT name, owner_user_id, agent_id, prompt, project_id, kb_ids, deliver_group_chat_id \
+        "SELECT name, owner_user_id, agent_id, prompt, project_id, kb_ids, deliver_group_chat_id, workspace_id \
          FROM automations WHERE id = $1",
         automation_id
     )
     .fetch_one(&state.pg)
     .await?;
     let ctx = crate::auth::load_context(&state.pg, a.owner_user_id).await?;
+
+    // A folder-bound automation runs on its machine, and only when the machine is
+    // there and not already busy with the same job. Each way it cannot run right
+    // now is written down as a missed occurrence rather than dropped, and the
+    // schedule still moves on (the next-run time was advanced when this was
+    // enqueued, not here). A server automation has no folder and skips all of this.
+    let target: Option<(Uuid, Uuid)> = match resolve_automation_target(&state.pg, a.workspace_id).await? {
+        // A server automation: no folder, none of the machine guards, exactly the
+        // path it took before folders existed.
+        AutomationTarget::Server => None,
+        AutomationTarget::Withdrawn { workspace_id: ws } => {
+            record_missed(state, &ctx, automation_id, a.owner_user_id, "workspace withdrawn", None, Some(ws)).await?;
+            return Ok(());
+        }
+        AutomationTarget::Device { device_id: dev, workspace_id: ws } => {
+            if !state.hub.is_device_online(a.owner_user_id, dev) {
+                record_missed(state, &ctx, automation_id, a.owner_user_id, "offline", Some(dev), Some(ws)).await?;
+                return Ok(());
+            }
+            let active: i64 = sqlx::query_scalar!(
+                r#"SELECT count(*) AS "n!" FROM automation_runs
+                   WHERE automation_id = $1 AND status IN ('running', 'needs_approval')"#,
+                automation_id
+            )
+            .fetch_one(&state.pg)
+            .await?;
+            if active > 0 {
+                record_missed(state, &ctx, automation_id, a.owner_user_id, "overlap", Some(dev), Some(ws)).await?;
+                return Ok(());
+            }
+            Some((dev, ws))
+        }
+    };
+    let dev = target.map(|(d, _)| d);
+    let ws = target.map(|(_, w)| w);
 
     let run_id = Uuid::now_v7();
     sqlx::query!(
@@ -1175,7 +1376,9 @@ async fn run_automation(state: &AppState, automation_id: Uuid) -> Result<(), cra
     .await?;
 
     // Drive run_turn headless: a throwaway channel + a drain that captures the
-    // created chat id and notes any error frame.
+    // created chat id and notes any error frame. A folder automation additionally
+    // carries its machine and folder, so the turn binds the chat to the folder and
+    // addresses folder calls to the machine's live socket.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerFrame>(64);
     let drain = tokio::spawn(async move {
         let mut chat_id: Option<Uuid> = None;
@@ -1193,14 +1396,49 @@ async fn run_automation(state: &AppState, automation_id: Uuid) -> Result<(), cra
 
     let turn_id = Uuid::now_v7();
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+    // Every automation turn is tagged with the job that opened it — the server
+    // branch too, so a run that pauses can always be found by its automation and
+    // the approval-expiry sweep can scope itself to automation runs alone. This is
+    // provenance only: the folder work, the output chat and delivery are untouched.
+    let turn = match target {
+        Some((dev, ws)) => crate::chat::origin::TurnContext::web(&ctx)
+            .with_device(Some(dev))
+            .with_workspace(Some(ws))
+            .with_automation(Some(automation_id)),
+        None => crate::chat::origin::TurnContext::web(&ctx).with_automation(Some(automation_id)),
+    };
     crate::chat::run_turn(
-        state, &ctx, turn_id, None, a.project_id, a.agent_id, a.prompt, Vec::new(), a.kb_ids, true, None, None, None, None, &tx, cancel,
+        state, turn, turn_id, None, a.project_id, a.agent_id, a.prompt, Vec::new(), a.kb_ids, true, None, None, None, None, &tx, cancel,
     )
     .await;
     drop(tx); // close the channel so the drain finishes
     let (chat_id, errored) = drain.await.unwrap_or((None, None));
 
     let now = OffsetDateTime::now_utc();
+
+    // A state-changing step with no one present to approve it parks the run instead
+    // of failing it: the owner has already been asked, on every client they have
+    // open, and the run waits for them. The automation's own record shows it
+    // waiting, told apart from done and from failed, and the owner is notified
+    // through that approval, not through a run-finished notice.
+    let paused: bool = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM agent_runs WHERE turn_id = $1 AND status = 'awaiting_approval') AS "e!""#,
+        turn_id
+    )
+    .fetch_one(&state.pg)
+    .await
+    .unwrap_or(false);
+    if paused {
+        sqlx::query!(
+            "UPDATE automation_runs SET status = 'needs_approval', output_chat_id = $2 WHERE id = $1",
+            run_id, chat_id
+        )
+        .execute(&state.pg)
+        .await?;
+        audit_automation(state, &ctx, "automation.needs_approval", automation_id, Some(serde_json::json!({ "device_id": dev, "workspace_id": ws }))).await;
+        return Ok(());
+    }
+
     if let Some(cid) = chat_id.filter(|_| errored.is_none()) {
         sqlx::query!(
             "UPDATE automation_runs SET status = 'succeeded', output_chat_id = $2, completed_at = $3 WHERE id = $1",
@@ -1219,7 +1457,8 @@ async fn run_automation(state: &AppState, automation_id: Uuid) -> Result<(), cra
                 tracing::warn!(error = %e, automation = %automation_id, "automation delivery failed");
             }
         }
-        audit_automation(state, &ctx, "automation.ran", automation_id, Some(serde_json::json!({ "output_chat_id": cid }))).await;
+        audit_automation(state, &ctx, "automation.ran", automation_id, Some(serde_json::json!({ "output_chat_id": cid, "device_id": dev, "workspace_id": ws }))).await;
+        state.hub.send_to_user(a.owner_user_id, ServerFrame::AutomationRunFinished { automation_id, run_id, status: "succeeded".into() });
         Ok(())
     } else {
         let msg = errored.unwrap_or_else(|| "no chat produced".into());
@@ -1229,9 +1468,59 @@ async fn run_automation(state: &AppState, automation_id: Uuid) -> Result<(), cra
         )
         .execute(&state.pg)
         .await?;
-        audit_automation(state, &ctx, "automation.failed", automation_id, Some(serde_json::json!({ "error": msg }))).await;
+        audit_automation(state, &ctx, "automation.failed", automation_id, Some(serde_json::json!({ "error": msg, "device_id": dev, "workspace_id": ws }))).await;
+        state.hub.send_to_user(a.owner_user_id, ServerFrame::AutomationRunFinished { automation_id, run_id, status: "failed".into() });
         Err(AppError::Other(anyhow::anyhow!("automation run failed: {msg}")))
     }
+}
+
+/// Write down an occurrence that could not run: a terminal `missed` run carrying
+/// why, an audit line, and a best-effort notice so run history and the calendar
+/// refresh on the owner's clients. The schedule is not touched — the next-run time
+/// was already advanced when the occurrence was enqueued.
+async fn record_missed(
+    state: &AppState,
+    ctx: &crate::auth::AuthContext,
+    automation_id: Uuid,
+    owner: Uuid,
+    reason: &str,
+    device_id: Option<Uuid>,
+    workspace_id: Option<Uuid>,
+) -> Result<(), crate::error::AppError> {
+    let run_id = Uuid::now_v7();
+    let now = OffsetDateTime::now_utc();
+    sqlx::query!(
+        "INSERT INTO automation_runs (id, automation_id, status, reason, completed_at) \
+         VALUES ($1, $2, 'missed', $3, $4)",
+        run_id, automation_id, reason, now
+    )
+    .execute(&state.pg)
+    .await?;
+    audit_automation(
+        state,
+        ctx,
+        "automation.missed",
+        automation_id,
+        Some(serde_json::json!({ "reason": reason, "device_id": device_id, "workspace_id": workspace_id })),
+    )
+    .await;
+    state.hub.send_to_user(
+        owner,
+        crate::ws::protocol::ServerFrame::AutomationRunFinished { automation_id, run_id, status: "missed".into() },
+    );
+    Ok(())
+}
+
+/// A non-negative integer runtime knob, or its default. Used for the automation
+/// windows that live as tunable config rather than as columns.
+async fn runtime_i32(state: &AppState, key: &str, default: i32) -> i32 {
+    crate::config::runtime::get(&state.pg, key)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|e| e.value.parse::<i32>().ok())
+        .filter(|n| *n >= 0)
+        .unwrap_or(default)
 }
 
 /// Post a result notice for a finished automation into an internal group chat

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT w.device_id FROM chat_workspace cw JOIN device_workspaces w ON w.id = cw.workspace_id WHERE cw.chat_id = $1 AND w.revoked_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "device_workspaces",
+            "name": "device_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ec0aa68d221d5cd6c066a8513e3c98581805bbfa8981e717446d17a771aa2e38"
+}

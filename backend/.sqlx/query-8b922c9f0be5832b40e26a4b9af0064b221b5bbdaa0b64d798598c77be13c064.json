@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO device_workspaces (id, device_id, user_id, path, label, tier) VALUES ($1, $2, $3, 'C:\\work', 'work', 'rw')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8b922c9f0be5832b40e26a4b9af0064b221b5bbdaa0b64d798598c77be13c064"
+}

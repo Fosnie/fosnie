@@ -53,7 +53,7 @@ async fn dispatch_via_seam(
         .await
     {
         tools::NativeDecision::Allowed(w) => {
-            tools::dispatch(st, ctx, chat_id, turn, tx, None, None, &[], custom, &w, args).await
+            tools::dispatch(st, ctx, chat_id, turn, tx, None, None, None, &[], custom, &w, args).await
         }
         tools::NativeDecision::Recoverable(m) => Ok(m),
         tools::NativeDecision::Denied(e) => Err(e),

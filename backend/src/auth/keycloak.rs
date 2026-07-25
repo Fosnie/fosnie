@@ -220,8 +220,25 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let ctx = state.auth.authenticate(parts, state).await?;
-        Ok(AuthUser(ctx))
+        match state.auth.authenticate(parts, state).await {
+            Ok(ctx) => Ok(AuthUser(ctx)),
+            Err(e) => {
+                // A paired desktop client has no browser session, so the
+                // configured provider cannot authenticate it. It presents a
+                // device token instead, which carries the owner's rights over
+                // this same surface. The session is always tried first and
+                // wins; a request with no platform token of ours takes the
+                // provider's own error untouched, so behaviour without such a
+                // header is unchanged.
+                match crate::auth::device::try_device_auth(parts, state).await {
+                    Some((ctx, device_id)) => {
+                        parts.extensions.insert(crate::auth::device::DeviceAuth(device_id));
+                        Ok(AuthUser(ctx))
+                    }
+                    None => Err(e),
+                }
+            }
+        }
     }
 }
 

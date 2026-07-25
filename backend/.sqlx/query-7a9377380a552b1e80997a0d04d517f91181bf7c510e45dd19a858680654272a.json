@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO agent_runs (id, acting_user_id, chat_id, turn_id, status, pending_tool, pending_args) VALUES ($1, $2, $3, $4, 'approved', 'desktop.fs_write', $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7a9377380a552b1e80997a0d04d517f91181bf7c510e45dd19a858680654272a"
+}

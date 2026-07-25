@@ -19,6 +19,7 @@
 
 pub mod budget;
 pub mod compose;
+pub mod origin;
 pub mod prefetch;
 
 use std::sync::Arc;
@@ -170,7 +171,10 @@ pub async fn regenerate_prepare(
 #[allow(clippy::too_many_arguments)]
 pub async fn run_turn(
     state: &AppState,
-    ctx: &AuthContext,
+    // Who is asking and from which client. Carries the connection's provenance
+    // (see `TurnContext`) so a conversation created by this turn is stamped with
+    // where it began.
+    turn: origin::TurnContext<'_>,
     turn_id: Uuid,
     chat_id: Option<Uuid>,
     project_id: Option<Uuid>,
@@ -195,10 +199,10 @@ pub async fn run_turn(
     cancel: Arc<Notify>,
 ) {
     if let Err(e) =
-        run_turn_inner(state, ctx, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel).await
+        run_turn_inner(state, turn, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel).await
     {
         let _ = tx
-            .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string() })
+            .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string(), chat_id })
             .await;
     }
 }
@@ -206,7 +210,7 @@ pub async fn run_turn(
 #[allow(clippy::too_many_arguments)]
 async fn run_turn_inner(
     state: &AppState,
-    ctx: &AuthContext,
+    turn: origin::TurnContext<'_>,
     turn_id: Uuid,
     chat_id: Option<Uuid>,
     project_id: Option<Uuid>,
@@ -222,11 +226,12 @@ async fn run_turn_inner(
     tx: &mpsc::Sender<ServerFrame>,
     cancel: Arc<Notify>,
 ) -> Result<()> {
+    let ctx = turn.auth;
     // New chats start with a generic placeholder; the real title is named by the
     // LLM in a background task below (keeps TTFT untouched — no naming call before
     // the first token).
     let (chat_id, chat_project_id, chat_agent_id, chat_mode, created) =
-        resolve_chat(state, ctx, chat_id, project_id, agent_id, "New chat").await?;
+        resolve_chat(state, ctx, chat_id, project_id, agent_id, "New chat", turn.origin).await?;
     if created {
         let _ = tx.send(ServerFrame::ChatCreated { chat_id }).await;
         // Title the chat from the prompt off the hot path. On any failure the chat
@@ -249,6 +254,65 @@ async fn run_turn_inner(
                 }
             }
         });
+    }
+
+    // The composer chose a folder for this chat and sent it with the message. Bind
+    // it now — the chat exists as of `resolve_chat` above — so this very turn can
+    // work in it, which is what lets a new chat's first message reach a folder that
+    // could not have been bound before the chat existed. Only a live folder the
+    // sender's own account holds is accepted; anything else is quietly ignored
+    // rather than failing the turn, because a stale composer selection is not a
+    // reason to refuse to talk.
+    if let Some(ws_id) = turn.workspace_id {
+        if let Some(uid) = ctx.user_id {
+            let owned = sqlx::query_scalar!(
+                "SELECT EXISTS(SELECT 1 FROM device_workspaces \
+                 WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL)",
+                ws_id,
+                uid,
+            )
+            .fetch_one(&state.pg)
+            .await
+            .unwrap_or(Some(false))
+            .unwrap_or(false);
+            if owned {
+                let bound = sqlx::query!(
+                    "INSERT INTO chat_workspace (chat_id, workspace_id) VALUES ($1, $2) \
+                     ON CONFLICT (chat_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, set_at = now() \
+                     RETURNING workspace_id",
+                    chat_id,
+                    ws_id,
+                )
+                .fetch_optional(&state.pg)
+                .await
+                .ok()
+                .flatten();
+                // Recorded like the explicit bind, so a folder attached by riding
+                // the first message is as visible in the trail as one attached from
+                // the composer — the audit does not care which door it came through.
+                if bound.is_some() {
+                    if let Ok(w) = sqlx::query!(
+                        "SELECT device_id, path FROM device_workspaces WHERE id = $1",
+                        ws_id
+                    )
+                    .fetch_one(&state.pg)
+                    .await
+                    {
+                        let mut ev = crate::audit::AuditEvent::action("workspace.bound", ctx.role.as_str());
+                        ev.actor_user_id = Some(uid);
+                        ev.resource_type = Some("device_workspace".into());
+                        ev.resource_id = Some(ws_id);
+                        // A schedule that opened this turn bound the folder, not a
+                        // person at the composer; the trail says which, so a folder
+                        // attached by an automation is not mistaken for one a user
+                        // chose by hand.
+                        let via = if turn.automation_id.is_some() { "automation" } else { "message" };
+                        ev.payload = Some(json!({ "chat_id": chat_id, "device_id": w.device_id, "path": w.path, "via": via }));
+                        let _ = crate::audit::append(&state.pg, &ev).await;
+                    }
+                }
+            }
+        }
     }
 
     // Resolve the effective LLM provider ONCE for this turn (multi-LLM): an explicit
@@ -364,7 +428,7 @@ async fn run_turn_inner(
         Some(
             crate::agent::start_run(
                 state, chat_agent_id, ctx.user_id, ctx.role.as_str(), Some(chat_id), turn_id,
-                chat_project_id, None, agent.controls.wall_clock_secs,
+                chat_project_id, turn.automation_id, agent.controls.wall_clock_secs,
             )
             .await?,
         )
@@ -563,9 +627,49 @@ async fn run_turn_inner(
     let prompt = effective_prompt(&agent.system_prompt, &state.boot.default_system_prompt);
     // `skills` and `memory_facts` were loaded in the join above.
 
+    // The folder this turn may work in, if there is one: the conversation was
+    // bound to a folder, and this turn came in from the very machine that folder
+    // is on. Anything else — a browser tab, another of the owner's machines, a
+    // folder since withdrawn — resolves to nothing, the note below is absent and
+    // the tools are never advertised. A capability the model cannot see is one it
+    // cannot promise the user it has.
+    // How a folder call reaches the machine. An interactive desktop turn arrived
+    // on the machine's own socket, so it uses that (the default). A scheduled job
+    // runs here on the server with a throwaway sender the machine never sees, so
+    // its calls are addressed to the machine's live socket through the hub. Only
+    // the scheduled case is both unattended and device-bound; every interactive or
+    // browser turn keeps today's behaviour untouched.
+    let desktop_ctx = crate::tools::desktop::load_ctx(&state.pg, chat_id, turn.device_id)
+        .await
+        .map(|d| match (unattended, turn.device_id, ctx.user_id) {
+            (true, Some(device_id), Some(user_id)) => {
+                d.with_route(crate::tools::desktop::DesktopSink::DeviceRoute { user_id, device_id })
+            }
+            _ => d,
+        });
+    // Whether this run may write in its folder without a card each time. Only a
+    // device automation whose owner opted in, and only on the unattended path;
+    // every interactive turn stays fully gated. Deletion is never covered (that
+    // exception lives in the classifier, not here).
+    let pre_approved_writes = match (unattended, turn.automation_id) {
+        (true, Some(aid)) => sqlx::query_scalar!(
+            "SELECT pre_approved_writes FROM automations WHERE id = $1",
+            aid
+        )
+        .fetch_optional(&state.pg)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false),
+        _ => false,
+    };
+    let workspace_note = desktop_ctx
+        .as_ref()
+        .map(|d| (d.workspace.path.as_str(), d.workspace.tier.describe()));
+
     // [1]–[4] prefix WITHOUT RAG, measured and reserved first (no [5] note here — it
     // measures only the stable cacheable prefix).
-    let prefix = compose::build_system(&prompt, ctx, &skills, &memory_facts, None, unattended, false);
+    let prefix = compose::build_system(&prompt, ctx, &skills, &memory_facts, None, unattended, false, None);
 
     // [5] general-knowledge fallback: when nothing was retrieved and the workspace mode
     // permits it (general/legal, not Deep Research), let the agent answer from general
@@ -581,7 +685,7 @@ async fn run_turn_inner(
     // Trim [5] RAG to its budget (rare guard; chunks are already capped upstream).
     let rag_trimmed = rag_context.as_deref().map(|r| trim_to_tokens(r, alloc.rag_budget));
     let system =
-        compose::build_system(&prompt, ctx, &skills, &memory_facts, rag_trimmed.as_deref(), unattended, gk_fallback);
+        compose::build_system(&prompt, ctx, &skills, &memory_facts, rag_trimmed.as_deref(), unattended, gk_fallback, workspace_note);
 
     // `history` was loaded in the join above; compact it to the budget now.
     // Notify the user as the chat approaches the budget (compaction still runs).
@@ -609,6 +713,17 @@ async fn run_turn_inner(
         .filter(|t| t.as_str() != "generate_artefact")
         .filter(|t| crate::tools::host_enabled(t, &state.boot.features))
         .filter(|t| t.as_str() != "code_interpreter" || ci_ok)
+        // A folder tool is advertised only when there is a folder, and only when
+        // the agreed level of trust admits it. Asking somebody to approve a write
+        // to a folder they marked read only teaches them to approve things that
+        // were never going to happen; the tool simply is not there.
+        .filter(|t| {
+            !crate::tools::desktop::is_desktop_tool(t)
+                || desktop_ctx
+                    .as_ref()
+                    .map(|d| crate::tools::desktop::tier_allows(d.workspace.tier, t).is_ok())
+                    .unwrap_or(false)
+        })
         .filter(|t| tool_overrides.get(t.as_str()).map(|o| o.enabled).unwrap_or(true))
         .cloned()
         .collect();
@@ -820,7 +935,7 @@ async fn run_turn_inner(
 
     if !tool_defs.is_empty() {
         let outcome = run_tool_loop(
-            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary,
+            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary, unattended, pre_approved_writes,
         )
         .await?;
         interrupted = outcome.interrupted;
@@ -938,7 +1053,7 @@ async fn run_turn_inner(
         // (already finished) kept its own skills-bearing prefix.
         {
             let synth_system =
-                compose::build_system(&prompt, ctx, &[], &memory_facts, rag_trimmed.as_deref(), unattended, gk_fallback);
+                compose::build_system(&prompt, ctx, &[], &memory_facts, rag_trimmed.as_deref(), unattended, gk_fallback, workspace_note);
             if let Some(first) = messages.first_mut() {
                 first["content"] = json!(synth_system);
             }
@@ -1037,7 +1152,7 @@ async fn run_turn_inner(
                     {
                         // Cancel-aware: the tool dispatch is not itself cancel-wrapped, so race it here.
                         crate::tools::NativeDecision::Allowed(w) => tokio::select! {
-                            r = crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), &[], &custom_tools, &w, &tc.arguments) =>
+                            r = crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), &[], &custom_tools, &w, &tc.arguments) =>
                                 r.unwrap_or_else(|e| format!("error: {e}")),
                             _ = cancel.notified() => { interrupted = true; "error: cancelled".to_string() }
                         },
@@ -1203,6 +1318,7 @@ async fn run_turn_inner(
                         tool: "generate_artefact".into(),
                         summary: format!("Generate “{title}” as a downloadable document?"),
                         args: pending,
+                        detail: None,
                     };
                     let _ = tx.send(frame.clone()).await;
                     if let Some(uid) = ctx.user_id {
@@ -1238,6 +1354,7 @@ async fn run_turn_inner(
                             // approve won and its durable resume will generate it.
                             _ => {
                                 if crate::agent::decide(state, rid, false).await.unwrap_or(false) {
+                                    crate::agent::broadcast_resolved(state, ctx.user_id, rid, false);
                                     crate::agent::finish(state, rid, "rejected").await;
                                 }
                             }
@@ -1281,7 +1398,7 @@ async fn run_turn_inner(
     }
 
     if let Some(message) = errored {
-        let _ = tx.send(ServerFrame::ChatError { turn_id: Some(turn_id), message }).await;
+        let _ = tx.send(ServerFrame::ChatError { turn_id: Some(turn_id), message, chat_id: Some(chat_id) }).await;
     } else if interrupted {
         // Post-stream → durable synchronous append: off the TTFT
         // path, and a terminal turn event must not be droppable.
@@ -1475,6 +1592,184 @@ struct Activity {
     /// the retrieval Coverage summary, rendered as a completed
     /// activity step (set after the tool loop so `observe` can't clobber it).
     coverage: Option<String>,
+    /// Commands the turn actually ran (a folder command or a code-interpreter
+    /// run), with enough to show a "what I did" summary later without re-running
+    /// anything: the command, how it exited, how long it took, and the tail of its
+    /// output. Only successful dispatches are recorded (a declined or timed-out
+    /// gate is not a run).
+    commands: Vec<CommandRun>,
+    /// Files the turn actually changed in a connected folder, so a summary can
+    /// list them and (on the desktop) offer to put them back. A path written more
+    /// than once in a turn is one entry, carrying its final operation.
+    files: Vec<FileChange>,
+}
+
+/// One command a turn ran, kept for the end-of-turn summary.
+#[derive(Default, serde::Serialize)]
+struct CommandRun {
+    command: String,
+    /// The process exit code, when it could be read from the output; absent rather
+    /// than a made-up zero when the shape was not what was expected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i64>,
+    duration_ms: u64,
+    /// The last of the command's output, capped so a long build log does not bloat
+    /// the message row.
+    stdout_tail: String,
+}
+
+/// One file a turn changed in a connected folder.
+#[derive(serde::Serialize)]
+struct FileChange {
+    path: String,
+    /// "write" | "delete".
+    op: String,
+}
+
+/// The longest tail of a command's output kept on the message.
+const COMMAND_TAIL_CHARS: usize = 2000;
+
+/// Build the record of a command run from a finished tool call, or `None` when the
+/// call was not a command or did not actually run. The output is read back from
+/// the same rendered string the model was given, so the summary and the model see
+/// the same result.
+fn command_run(name: &str, args: &Value, result: &str, duration_ms: u64) -> Option<CommandRun> {
+    if result.starts_with("error:") {
+        return None; // blocked, denied, declined or timed out — not a run
+    }
+    let (command, exit_code) = match name {
+        crate::tools::desktop::TERMINAL_RUN => {
+            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let code = result
+                .strip_prefix("exit code ")
+                .and_then(|r| r.split(['\n', ' ']).next())
+                .and_then(|n| n.trim().parse::<i64>().ok());
+            (cmd, code)
+        }
+        "code_interpreter" => {
+            let code = result
+                .strip_prefix("exit_code: ")
+                .and_then(|r| r.lines().next())
+                .and_then(|n| n.trim().parse::<i64>().ok());
+            ("code".to_string(), code)
+        }
+        _ => return None,
+    };
+    let stdout_tail = {
+        let n = result.chars().count();
+        if n <= COMMAND_TAIL_CHARS {
+            result.to_string()
+        } else {
+            result.chars().skip(n - COMMAND_TAIL_CHARS).collect()
+        }
+    };
+    Some(CommandRun { command, exit_code, duration_ms, stdout_tail })
+}
+
+/// Build the record of a file change from a finished tool call, or `None` when the
+/// call did not change a file or did not succeed.
+fn file_change(name: &str, args: &Value, result: &str) -> Option<FileChange> {
+    if result.starts_with("error:") {
+        return None;
+    }
+    let op = match name {
+        crate::tools::desktop::FS_WRITE => "write",
+        crate::tools::desktop::FS_DELETE => "delete",
+        _ => return None,
+    };
+    let path = args.get("path").and_then(|v| v.as_str())?.to_string();
+    Some(FileChange { path, op: op.to_string() })
+}
+
+/// A side effect worth recording on the message for the end-of-turn summary.
+enum ActivityEffect {
+    Command(CommandRun),
+    File(FileChange),
+}
+
+/// The one side effect a finished tool call left, if any.
+fn tool_effect(name: &str, args: &Value, result: &str, duration_ms: u64) -> Option<ActivityEffect> {
+    if let Some(c) = command_run(name, args, result, duration_ms) {
+        return Some(ActivityEffect::Command(c));
+    }
+    file_change(name, args, result).map(ActivityEffect::File)
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use crate::tools::desktop::{FS_DELETE, FS_WRITE, TERMINAL_RUN};
+
+    #[test]
+    fn a_command_is_read_back_from_its_rendered_output() {
+        let args = json!({ "command": "npm test" });
+        let result = "exit code 0\nran 12 tests, all passed\n";
+        let effect = tool_effect(TERMINAL_RUN, &args, result, 1830).expect("a command effect");
+        let ActivityEffect::Command(c) = effect else { panic!("expected a command") };
+        assert_eq!(c.command, "npm test");
+        assert_eq!(c.exit_code, Some(0));
+        assert_eq!(c.duration_ms, 1830);
+        assert!(c.stdout_tail.contains("all passed"));
+    }
+
+    #[test]
+    fn a_non_zero_exit_is_kept() {
+        let args = json!({ "command": "cargo build" });
+        let effect = tool_effect(TERMINAL_RUN, &args, "exit code 101\nerror\n", 40).unwrap();
+        let ActivityEffect::Command(c) = effect else { panic!() };
+        assert_eq!(c.exit_code, Some(101));
+    }
+
+    #[test]
+    fn a_failed_dispatch_is_not_a_run() {
+        // A declined or timed-out gate renders an "error:" string, not a result.
+        let args = json!({ "command": "rm -rf /" });
+        assert!(tool_effect(TERMINAL_RUN, &args, "error: the user declined this tool call", 5).is_none());
+    }
+
+    #[test]
+    fn writes_and_deletes_become_file_changes() {
+        let w = tool_effect(FS_WRITE, &json!({ "path": "notes.md" }), "{\"ok\":true}", 3).unwrap();
+        let ActivityEffect::File(f) = w else { panic!() };
+        assert_eq!((f.path.as_str(), f.op.as_str()), ("notes.md", "write"));
+        let d = tool_effect(FS_DELETE, &json!({ "path": "old.txt" }), "{\"ok\":true}", 2).unwrap();
+        let ActivityEffect::File(f) = d else { panic!() };
+        assert_eq!(f.op, "delete");
+    }
+
+    #[test]
+    fn a_read_only_tool_leaves_no_effect() {
+        assert!(tool_effect("desktop.fs_read", &json!({ "path": "a" }), "the file's text", 1).is_none());
+        assert!(tool_effect("web_search", &json!({}), "results", 1).is_none());
+    }
+
+    #[test]
+    fn the_same_file_written_twice_stays_one_entry() {
+        let mut a = Activity::default();
+        a.record(ActivityEffect::File(FileChange { path: "a.rs".into(), op: "write".into() }));
+        a.record(ActivityEffect::File(FileChange { path: "a.rs".into(), op: "write".into() }));
+        a.record(ActivityEffect::File(FileChange { path: "b.rs".into(), op: "write".into() }));
+        assert_eq!(a.files.len(), 2);
+    }
+
+    #[test]
+    fn nothing_worth_recording_serialises_to_none() {
+        assert!(Activity::default().to_json().is_none());
+    }
+
+    #[test]
+    fn a_command_survives_into_the_stored_json() {
+        let mut a = Activity::default();
+        a.record(ActivityEffect::Command(CommandRun {
+            command: "ls".into(),
+            exit_code: Some(0),
+            duration_ms: 12,
+            stdout_tail: "a\nb\n".into(),
+        }));
+        let json = a.to_json().expect("non-empty");
+        assert_eq!(json["commands"][0]["command"], "ls");
+        assert_eq!(json["commands"][0]["exit_code"], 0);
+    }
 }
 
 impl Activity {
@@ -1505,12 +1800,35 @@ impl Activity {
         }
     }
 
+    /// Record one side effect (a command that ran, a file that changed). A file
+    /// touched twice in a turn stays one entry, carrying its latest operation.
+    fn record(&mut self, effect: ActivityEffect) {
+        match effect {
+            ActivityEffect::Command(c) => self.commands.push(c),
+            ActivityEffect::File(f) => match self.files.iter_mut().find(|x| x.path == f.path) {
+                Some(existing) => existing.op = f.op,
+                None => self.files.push(f),
+            },
+        }
+    }
+
     /// JSON to store on the message, or `None` when nothing happened.
     fn to_json(&self) -> Option<Value> {
-        if self.steps.is_empty() && self.tools.is_empty() && self.coverage.is_none() {
+        if self.steps.is_empty()
+            && self.tools.is_empty()
+            && self.coverage.is_none()
+            && self.commands.is_empty()
+            && self.files.is_empty()
+        {
             None
         } else {
-            Some(json!({ "steps": self.steps, "tools": self.tools, "coverage": self.coverage }))
+            Some(json!({
+                "steps": self.steps,
+                "tools": self.tools,
+                "coverage": self.coverage,
+                "commands": self.commands,
+                "files": self.files,
+            }))
         }
     }
 }
@@ -1824,6 +2142,7 @@ async fn run_tool_loop(
     ci_files: &[crate::code_interpreter::InputFile],
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     rag_ctx: Option<&crate::tools::RagToolCtx>,
+    desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     messages: &mut Vec<Value>,
     activity: &mut Activity,
     reasoning: Option<&crate::reasoning::ReasoningSpec>,
@@ -1832,6 +2151,13 @@ async fn run_tool_loop(
     cancel: &Arc<Notify>,
     phases: &mut TurnPhases,
     show_commentary: bool,
+    // No human is watching this turn (a scheduled job): a gated call parks the run
+    // for approval and frees the worker rather than blocking on a live decision.
+    unattended: bool,
+    // The owner's standing agreement that a device automation may write files in
+    // its folder without a card each time. Never covers deletion. Only meaningful
+    // together with `unattended`.
+    pre_approved_writes: bool,
 ) -> Result<ToolLoopOutcome> {
     let sem = Arc::new(Semaphore::new(agent.tool_concurrency.max(1)));
     let mut tokens_used: i64 = 0;
@@ -1961,6 +2287,19 @@ async fn run_tool_loop(
         let mut auto: Vec<&ml::ToolCall> = Vec::new();
         let mut gated: Vec<&ml::ToolCall> = Vec::new();
         let mut by_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        // An administrator can insist on a card for every command, even where the
+        // machine's boundary would otherwise let a contained one run unasked. Read
+        // only when there is a folder in play, so an ordinary turn pays nothing.
+        let always_prompt_commands = if desktop_ctx.is_some() {
+            crate::config::runtime::get(&state.pg, "desktop.always_prompt_commands")
+                .await
+                .ok()
+                .flatten()
+                .map(|e| e.value == "true")
+                .unwrap_or(false)
+        } else {
+            false
+        };
         for tc in &step.tool_calls {
             // Loop guard: refuse an EXACT repeat of a call already made this turn
             // (the model loops on a tool that failed/timed out). Hand back a firm
@@ -1976,16 +2315,71 @@ async fn run_tool_loop(
             }
             // A gated call pauses for human approval: a side-effecting MCP tool, or
             // a custom tool that is side-effecting or a script.
-            let hitl = run_id.is_some()
-                && ((crate::mcp::is_namespaced(&tc.name)
-                    && match crate::mcp::split(&tc.name) {
-                        Some((s, t)) => crate::mcp::is_side_effecting(state, s, t).await,
-                        None => false,
+            // Changing or running something in somebody's own folder is asked
+            // about, every time, with one exception: a command they have already
+            // agreed to by how it starts. Deleting is never that exception —
+            // there is no version of it that running again more carefully undoes.
+            // Only something actually offered this turn is worth asking about. A
+            // name the model produced that was never on its list is not a request
+            // to weigh up — it is the tell of an injected instruction, and putting
+            // it in front of the user as a card would both mislead them and teach
+            // them to click through. It goes down the ordinary path, where the
+            // authorisation seam refuses it and records why.
+            // How strong a boundary the machine keeps, and whether this command
+            // asked for the network: the two things that decide, on top of any
+            // agreed prefix, whether a command need be asked about at all.
+            let sandbox_full = desktop_ctx.map(|d| d.sandbox_tier == "full").unwrap_or(false);
+            let net_requested =
+                tc.arguments.get("net").and_then(|v| v.as_bool()).unwrap_or(false);
+            // Does an agreed prefix already cover this command, at the network level
+            // it needs? Computed here because it needs the folder's prefix list; the
+            // rule itself lives in one place, `desktop::desktop_call_gated`, shared
+            // with its test. A command wanting the network is only covered by an
+            // agreement made with the network, and only where the boundary can hold
+            // that distinction.
+            let terminal_prefix_ok = tc.name == crate::tools::desktop::TERMINAL_RUN
+                && desktop_ctx
+                    .and_then(|d| {
+                        tc.arguments
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .and_then(|c| d.allowed_prefix(c, sandbox_full && net_requested))
                     })
-                    || custom_tools
-                        .get(&tc.name)
-                        .map(|r| r.kind == "script" || r.side_effecting)
-                        .unwrap_or(false));
+                    .is_some();
+            let desktop_gated = crate::tools::desktop::desktop_call_gated(
+                &tc.name,
+                authorised.contains(&tc.name),
+                crate::tools::effect(&tc.name),
+                pre_approved_writes,
+                terminal_prefix_ok,
+                sandbox_full,
+                net_requested,
+                always_prompt_commands,
+            );
+            // Record a pre-approved write that is about to run without a card, so
+            // the standing agreement leaves as clear a trail as a per-call one.
+            if pre_approved_writes
+                && tc.name == crate::tools::desktop::FS_WRITE
+                && authorised.contains(&tc.name)
+            {
+                let mut ev = crate::audit::AuditEvent::action(
+                    "desktop.pre_approved_write",
+                    ctx.role.as_str(),
+                );
+                ev.actor_user_id = ctx.user_id;
+                ev.payload = Some(json!({ "chat_id": chat_id, "tool": tc.name, "pre_approved": true }));
+                let _ = crate::audit::append(&state.pg, &ev).await;
+            }
+            let mcp_gated = crate::mcp::is_namespaced(&tc.name)
+                && match crate::mcp::split(&tc.name) {
+                    Some((s, t)) => crate::mcp::is_side_effecting(state, s, t).await,
+                    None => false,
+                };
+            let custom_gated = custom_tools
+                .get(&tc.name)
+                .map(|r| r.kind == "script" || r.side_effecting)
+                .unwrap_or(false);
+            let hitl = run_id.is_some() && (desktop_gated || mcp_gated || custom_gated);
             if hitl {
                 gated.push(tc);
             } else {
@@ -1996,19 +2390,25 @@ async fn run_tool_loop(
             let sem = sem.clone();
             async move {
                 let _permit = sem.acquire().await.expect("semaphore");
-                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, authorised, overrides, ci_files, custom_tools, rag_ctx, tc).await
+                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, authorised, overrides, ci_files, custom_tools, rag_ctx, desktop_ctx, tc).await
             }
         }))
         .await;
-        for (id, r) in auto_results {
+        for (id, r, effect) in auto_results {
             by_id.insert(id, r);
+            if let Some(e) = effect {
+                activity.record(e);
+            }
         }
         for tc in gated {
-            let (id, r) = gated_call(
-                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, tc,
+            let (id, r, effect) = gated_call(
+                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, desktop_ctx, tc, unattended,
             )
             .await;
             by_id.insert(id, r);
+            if let Some(e) = effect {
+                activity.record(e);
+            }
         }
 
         // Append results in the model's original call order.
@@ -2043,13 +2443,14 @@ async fn run_one_call(
     ci_files: &[crate::code_interpreter::InputFile],
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     rag_ctx: Option<&crate::tools::RagToolCtx>,
+    desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     tc: &ml::ToolCall,
-) -> (String, String) {
+) -> (String, String, Option<ActivityEffect>) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
     let _ = tx
         .send(ServerFrame::ChatTool { turn_id, name: tc.name.clone(), phase: "started".into(), detail: None })
         .await;
-    audit_tool(state, ctx, chat_id, &tc.name, "invoked");
+    audit_tool(state, ctx, chat_id, &tc.name, "invoked", desktop_ctx);
     let started = OffsetDateTime::now_utc();
     let is_mcp = crate::mcp::is_namespaced(&tc.name);
     let custom_row = custom_tools.get(&tc.name);
@@ -2096,7 +2497,7 @@ async fn run_one_call(
                 .await
                 {
                     crate::tools::NativeDecision::Allowed(w) => {
-                        crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, ci_files, custom_tools, &w, &tc.arguments).await
+                        crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, desktop_ctx, ci_files, custom_tools, &w, &tc.arguments).await
                     }
                     crate::tools::NativeDecision::Recoverable(m) => Ok(m),
                     crate::tools::NativeDecision::Denied(e) => Err(e),
@@ -2110,7 +2511,7 @@ async fn run_one_call(
         }
     };
     let ms = (OffsetDateTime::now_utc() - started).whole_milliseconds();
-    audit_tool(state, ctx, chat_id, &tc.name, "completed");
+    audit_tool(state, ctx, chat_id, &tc.name, "completed", desktop_ctx);
     let _ = tx
         .send(ServerFrame::ChatTool { turn_id, name: tc.name.clone(), phase: "finished".into(), detail: None })
         .await;
@@ -2125,7 +2526,8 @@ async fn run_one_call(
     metrics::histogram!("tool_call_duration_seconds", "tool" => tc.name.clone(), "kind" => kind)
         .record(ms as f64 / 1000.0);
     tracing::debug!(tool = %tc.name, ms, "tool dispatched");
-    (id, result)
+    let effect = tool_effect(&tc.name, &tc.arguments, &result, ms.max(0) as u64);
+    (id, result, effect)
 }
 
 /// A side-effecting gated call (MCP or custom): pause for explicit human approval
@@ -2145,20 +2547,30 @@ async fn gated_call(
     authorised: &crate::tools::AuthorisedTools,
     overrides: &std::collections::HashMap<String, crate::tools::Override>,
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
+    desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
     tc: &ml::ToolCall,
-) -> (String, String) {
+    unattended: bool,
+) -> (String, String, Option<ActivityEffect>) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
     if let Err(e) = crate::agent::request_approval(
         state, run_id, ctx.user_id, ctx.role.as_str(), &tc.name, &tc.arguments, 0,
     )
     .await
     {
-        return (id, format!("error: {e}"));
+        return (id, format!("error: {e}"), None);
     }
-    let summary = if custom_tools.contains_key(&tc.name) {
-        format!("Run custom tool `{}`?", tc.name)
-    } else {
-        format!("Run MCP tool `{}`?", tc.name)
+    // What the user is being asked. A folder action says what it would do to
+    // which file, in a shape a client can render as the change itself; everything
+    // else asks in a sentence, as it always has.
+    let (summary, detail) = match desktop_ctx.filter(|_| crate::tools::desktop::is_desktop_tool(&tc.name)) {
+        Some(d) => (
+            crate::tools::desktop::approval_summary(d, &tc.name, &tc.arguments),
+            crate::tools::desktop::approval_detail(d, &tc.name, &tc.arguments),
+        ),
+        None if custom_tools.contains_key(&tc.name) => {
+            (format!("Run custom tool `{}`?", tc.name), None)
+        }
+        None => (format!("Run MCP tool `{}`?", tc.name), None),
     };
     let frame = ServerFrame::AgentApproval {
         run_id,
@@ -2166,11 +2578,38 @@ async fn gated_call(
         tool: tc.name.clone(),
         summary,
         args: tc.arguments.clone(),
+        detail,
     };
     let _ = tx.send(frame.clone()).await;
     if let Some(uid) = ctx.user_id {
         state.hub.send_to_user(uid, frame);
     }
+
+    // No human is in this turn (a scheduled job). Holding the worker on a live
+    // decision would pin a scheduler slot for the whole approval window and then
+    // auto-reject — a guaranteed failure for any write an automation was set up to
+    // make. Instead the run is already parked at `awaiting_approval` with the exact
+    // call persisted: leave it there, free the worker, and let the owner approve
+    // from any client later. The durable resume then carries the call out. This is
+    // deliberately generic, so an MCP or custom tool in an automation pauses the
+    // same honest way a folder write does.
+    if unattended {
+        crate::agent::audit_run(
+            state,
+            ctx.user_id,
+            ctx.role.as_str(),
+            "agent.approval_deferred",
+            run_id,
+            serde_json::json!({ "tool": tc.name }),
+        )
+        .await;
+        return (
+            id,
+            "paused: awaiting the owner's approval; the run will continue once approved".into(),
+            None,
+        );
+    }
+
     let rx = state.approvals.register(run_id);
     let decided = tokio::time::timeout(
         std::time::Duration::from_secs(agent.controls.approval_timeout_secs),
@@ -2184,16 +2623,17 @@ async fn gated_call(
         Ok(Ok(true)) => {
             // Gated tools are MCP/custom side-effecting calls, never code_interpreter or
             // search_library → no CI files, no RAG-tool context.
-            let (_id, r) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, tc).await;
+            let (_id, r, effect) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, desktop_ctx, tc).await;
             crate::agent::mark_running(state, run_id).await;
-            (id, r)
+            (id, r, effect)
         }
-        Ok(Ok(false)) => (id, "error: the user declined this tool call".into()),
+        Ok(Ok(false)) => (id, "error: the user declined this tool call".into(), None),
         _ => {
             if crate::agent::decide(state, run_id, false).await.unwrap_or(false) {
+                crate::agent::broadcast_resolved(state, ctx.user_id, run_id, false);
                 crate::agent::finish(state, run_id, "rejected").await;
             }
-            (id, "error: tool approval timed out".into())
+            (id, "error: tool approval timed out".into(), None)
         }
     }
 }
@@ -2309,6 +2749,7 @@ async fn resolve_chat(
     project_id: Option<Uuid>,
     agent_id: Option<Uuid>,
     title: &str,
+    origin: origin::ChatOrigin,
 ) -> Result<(Uuid, Option<Uuid>, Option<Uuid>, String, bool)> {
     let owner = ctx
         .user_id
@@ -2331,8 +2772,8 @@ async fn resolve_chat(
         None => {
             let id = Uuid::now_v7();
             sqlx::query!(
-                "INSERT INTO chats (id, owner_user_id, project_id, agent_id, title) VALUES ($1, $2, $3, $4, $5)",
-                id, owner, project_id, agent_id, title
+                "INSERT INTO chats (id, owner_user_id, project_id, agent_id, title, origin) VALUES ($1, $2, $3, $4, $5, $6)",
+                id, owner, project_id, agent_id, title, origin.as_str()
             )
             .execute(&state.pg)
             .await?;
@@ -2944,7 +3385,7 @@ async fn synthesize_per_part(
     // Spawn one generate task per part, each forwarding its GenEvents to an ordered channel.
     let mut receivers: Vec<mpsc::Receiver<ml::GenEvent>> = Vec::with_capacity(parts.len());
     for part in parts {
-        let system = compose::build_system(prompt, ctx, &[], memory_facts, Some(&part.context), unattended, gk_fallback);
+        let system = compose::build_system(prompt, ctx, &[], memory_facts, Some(&part.context), unattended, gk_fallback, None);
         let user = format!(
             "Full request (for context only — do not answer the other parts): {prompt}\n\nAnswer ONLY this part: {}",
             part.title
@@ -3089,7 +3530,7 @@ async fn synthesize_per_part(
         {
             cont += 1;
             tracing::warn!(part = %part.title, cont, "per-part answer truncated; auto-continuing");
-            let system = compose::build_system(prompt, ctx, &[], memory_facts, Some(&part.context), unattended, gk_fallback);
+            let system = compose::build_system(prompt, ctx, &[], memory_facts, Some(&part.context), unattended, gk_fallback, None);
             let user = format!(
                 "Full request (for context only — do not answer the other parts): {prompt}\n\nAnswer ONLY this part: {}",
                 part.title
@@ -3361,12 +3802,34 @@ fn audit_event(state: &AppState, ctx: &AuthContext, action: &str, chat_id: Uuid,
     audit::enqueue(&state.audit_tx, event);
 }
 
-fn audit_tool(state: &AppState, ctx: &AuthContext, chat_id: Uuid, name: &str, action: &str) {
+fn audit_tool(
+    state: &AppState,
+    ctx: &AuthContext,
+    chat_id: Uuid,
+    name: &str,
+    action: &str,
+    // The machine and the folder, when the call was work done on somebody's own
+    // computer. Answering afterwards for what was done to their files means
+    // knowing which machine and which folder, not only which tool.
+    desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
+) {
     let mut event = AuditEvent::action(format!("tool.{action}"), ctx.role.as_str());
     event.actor_user_id = ctx.user_id;
     event.resource_type = Some("tool".into());
     event.resource_id = Some(chat_id);
-    event.payload = Some(json!({ "tool": name }));
+    event.payload = Some(match desktop_ctx.filter(|_| crate::tools::desktop::is_desktop_tool(name)) {
+        Some(d) => json!({
+            "tool": name,
+            "device_id": d.workspace.device_id,
+            "workspace_id": d.workspace.id,
+            "workspace_path": d.workspace.path,
+            // Whether a command ran inside the machine's operating-system boundary.
+            // Only a command has one, and only on a machine that keeps the full tier;
+            // the record says which commands did, so a relaxed prompt is accountable.
+            "sandboxed": name == crate::tools::desktop::TERMINAL_RUN && d.sandbox_tier == "full",
+        }),
+        None => json!({ "tool": name }),
+    });
     audit::enqueue(&state.audit_tx, event);
 }
 

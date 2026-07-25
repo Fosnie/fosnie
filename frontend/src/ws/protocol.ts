@@ -51,7 +51,7 @@ export interface ReasoningSpec {
 }
 
 export type ClientFrame =
-  | { type: "chat.send"; chat_id?: string | null; content: string; agent_id?: string | null; project_id?: string | null; attachment_ids?: string[]; thinking?: string | null; reasoning?: ReasoningSpec | null; llm_provider_id?: string | null }
+  | { type: "chat.send"; chat_id?: string | null; content: string; agent_id?: string | null; project_id?: string | null; attachment_ids?: string[]; thinking?: string | null; reasoning?: ReasoningSpec | null; llm_provider_id?: string | null; workspace_id?: string | null }
   | { type: "chat.cancel"; turn_id: string }
   // Regenerate an answer in place (also drives edit + restart-from-here). The
   // anchoring user message is reused; every message at/after the deletion point
@@ -90,7 +90,7 @@ export type ServerFrame =
   | { type: "chat.message_posted"; chat_id: string; message_id: string; citations: Citation[] }
   | { type: "chat.message_started"; chat_id: string; message_id: string; agent?: string }
   | { type: "chat.message_token"; chat_id: string; message_id: string; delta: string }
-  | { type: "chat.error"; turn_id: string | null; message: string }
+  | { type: "chat.error"; turn_id: string | null; message: string; chat_id?: string }
   | { type: "chat.tool"; turn_id: string; name: string; phase: string; detail?: string }
   | { type: "web_search.progress"; chat_id: string; turn_id: string; detail: string }
   | { type: "research.progress"; chat_id: string; run_id: string; phase: string; detail?: string; sources_read?: number; sections_done?: number; sections_total?: number; sections?: string[] }
@@ -99,11 +99,13 @@ export type ServerFrame =
   | { type: "verification.status"; run_id: string; status: string; progress?: string }
   | { type: "verification.complete"; run_id: string; score: number | null; total: number; supported: number; contradicted: number; not_mentioned: number }
   | { type: "repair.complete"; run_id: string; document_id: string; regenerated: number; cut: number; kept: number; error?: string }
-  | { type: "agent.approval"; run_id: string; turn_id: string; tool: string; summary: string; args: Record<string, unknown> }
+  | { type: "agent.approval"; run_id: string; turn_id: string; tool: string; summary: string; args: Record<string, unknown>; detail?: Record<string, unknown> | null }
+  | { type: "agent.approval.resolved"; run_id: string; approved: boolean }
   | { type: "chat.compacted"; turn_id: string; summarised: number }
   | { type: "context.warning"; chat_id: string; usage_pct: number }
   | { type: "ingest.status"; doc_id: string; kb_id: string; status: string; error?: string }
   | { type: "automation.reminder"; automation_id: string; name: string; due_at: string; in_seconds: number }
+  | { type: "automation.run_finished"; automation_id: string; run_id: string; status: string }
   | { type: "presence"; user_id: string; status: string }
   | { type: "invalidate"; keys: string[][] }
   | { type: "pong" }

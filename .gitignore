@@ -50,3 +50,20 @@ Thumbs.db
 # NOTE: backend/.sqlx is intentionally committed — sqlx offline query cache,
 # required to build without a live database.
 target-test/
+
+# --- Shared crates + desktop client (cargo build output, node deps) ---
+/crates/*/target/
+/desktop/src-tauri/target/
+/desktop/node_modules/
+/desktop/src-tauri/gen/
+
+# What release/publish-desktop.sh assembles for upload: the installer twice over
+# and its manifest. Build output, reproducible from a signed build, and far too
+# large to keep in git.
+/dist/
+
+# The update signing key belongs in the same custody as the licence key and not
+# in a checkout at all. This rule is the backstop: the key cannot be revoked, so
+# one careless `git add .` in a public repository is unrecoverable.
+*updater*.key
+*updater*.key.pub

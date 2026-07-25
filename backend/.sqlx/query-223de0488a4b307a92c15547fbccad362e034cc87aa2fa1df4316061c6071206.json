@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO workspace_command_prefixes (id, workspace_id, prefix, with_network, added_by) VALUES ($1, $2, 'git', true, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "223de0488a4b307a92c15547fbccad362e034cc87aa2fa1df4316061c6071206"
+}

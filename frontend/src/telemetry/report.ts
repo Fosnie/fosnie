@@ -14,13 +14,19 @@
 
 // Client-side error telemetry. Reports browser errors to the backend's
 // intra-perimeter sink (POST /api/telemetry) so a client crash is visible to
-// the operator instead of being silent. Same-origin only — no egress.
+// the operator instead of being silent. It goes to the instance the SPA is
+// talking to and nowhere else — no egress.
 //
 // Deliberately self-contained: a BARE fetch with NO auth header (the endpoint
 // is public, because errors frequently happen exactly when auth is unavailable
-// — before login, during a token refresh, or when Keycloak is down). Telemetry
+// — before login, during a token refresh, or when the identity provider is
+// down; asking for a token here could itself trigger a login redirect out of a
+// crash handler). Only the instance base is borrowed from the request layer, so
+// a client that addresses a remote instance reports to that instance. Telemetry
 // must never throw and must never spam itself, so every path is guarded and a
 // throttle + dedupe sits in front of the network call.
+
+import { apiUrl } from "@/api/instance";
 
 export type ClientErrorKind = "error" | "unhandledrejection" | "react" | "chunk";
 
@@ -81,7 +87,7 @@ export function reportClientError(input: { kind: ClientErrorKind; message: strin
       release: typeof __APP_RELEASE__ !== "undefined" ? __APP_RELEASE__ : undefined,
       ts: now,
     };
-    void fetch("/api/telemetry", {
+    void fetch(apiUrl("/api/telemetry"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

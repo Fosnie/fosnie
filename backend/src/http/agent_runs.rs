@@ -154,6 +154,7 @@ pub async fn approve_run(
         return Err(AppError::Conflict("agent run is no longer awaiting approval".into()));
     }
     crate::agent::audit_run(&state, ctx.user_id, ctx.role.as_str(), "agent.approved", run_id, json!({})).await;
+    crate::agent::broadcast_resolved(&state, ctx.user_id, run_id, true);
     // Fast path: a live turn is awaiting → it executes. Else durable resume task.
     if !state.approvals.resolve(run_id, true) {
         scheduler::enqueue(&state.pg, TaskType::AgentResume, json!({ "run_id": run_id })).await?;
@@ -172,6 +173,7 @@ pub async fn reject_run(
         return Err(AppError::Conflict("agent run is no longer awaiting approval".into()));
     }
     crate::agent::audit_run(&state, ctx.user_id, ctx.role.as_str(), "agent.rejected", run_id, json!({})).await;
+    crate::agent::broadcast_resolved(&state, ctx.user_id, run_id, false);
     state.approvals.resolve(run_id, false); // unblock a waiter (no generation)
     crate::agent::finish(&state, run_id, "rejected").await;
     Ok(Json(json!({ "ok": true, "status": "rejected" })))
@@ -189,6 +191,8 @@ pub async fn cancel_run(
     require_run_actor(&state, &ctx, run_id).await?;
     crate::agent::kill(&state, run_id).await;
     crate::agent::audit_run(&state, ctx.user_id, ctx.role.as_str(), "agent.cancelled", run_id, json!({})).await;
+    // If the run was sitting on an approval gate, settle its card everywhere.
+    crate::agent::broadcast_resolved(&state, ctx.user_id, run_id, false);
     state.approvals.resolve(run_id, false); // unblock any waiter
     Ok(Json(json!({ "ok": true, "status": "cancelled" })))
 }

@@ -7,18 +7,314 @@
 # ml/Dockerfile. Migrations are embedded in the backend binary (run on boot).
 name: release
 
+# Two tag shapes, two releases. `v*` is the platform: images and the deploy
+# assets. `desktop-v*` is the installable client, which ships on its own schedule
+# because it is installed once and updated on its own — so it must not drag a
+# platform release along with it, hence the guards on the jobs below.
 on:
   push:
-    tags: ["v*"]
-  workflow_dispatch: {}
+    tags: ["v*", "desktop-v*"]
+  workflow_dispatch:
+    inputs:
+      desktop_version:
+        description: "Re-publish this desktop version without cutting a tag, e.g. 0.1.1"
+        required: false
+        default: ""
 
 permissions:
   contents: write   # attach assets to the Release
   packages: write   # push to GHCR
 
 jobs:
-  images:
+  # Gate. The frontend suite includes structural guards that a review cannot
+  # reliably catch by eye — every request going through one layer, no credential
+  # leaving it — so they have to be machine-enforced or they decay. Typechecking
+  # is not repeated here: the image build runs `npm run build` (tsc -b) inside
+  # backend/Dockerfile and fails on a type error anyway. Interim measure until a
+  # full CI workflow lands with publication; nothing ships past a red suite.
+  checks:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # `npm install`, not `npm ci`: the committed lockfile is generated on
+      # Windows and omits linux-only optional deps (see backend/Dockerfile).
+      - run: npm install --no-audit --no-fund
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+
+  # The wire format, checked on its own. The server and the installed client are
+  # released separately and meet at whatever versions a user happens to have, so
+  # the frame snapshots are the one thing that must not move quietly. No database
+  # and no toolchain beyond stable Rust: seconds, not minutes.
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test
+        working-directory: crates/fosnie-protocol
+
+  # The installable client. Built from the same frontend the images build, so the
+  # interface cannot drift between the two.
+  #
+  # Artefacts only: nothing here is attached to the Release. An unsigned
+  # application that connects to a company's systems and runs in the background is
+  # the exact shape endpoint protection exists to stop, so an unsigned build goes
+  # to testers by hand and no further. Signing is switched on by the Azure
+  # secrets appearing (see desktop/docs/updater-keys.md); until then the Windows
+  # job says in its summary that what it produced is not publishable.
+  desktop:
+    needs: [checks, protocol]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: desktop-windows
+          - os: macos-latest
+            artifact: desktop-macos
+    runs-on: ${{ matrix.os }}
+    # Resolved here because the secrets context cannot be read from a step's `if`.
+    env:
+      SIGNING_CONFIGURED: ${{ secrets.AZURE_SIGNING_ACCOUNT != '' }}
+      UPDATER_KEY_CONFIGURED: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # `npm install`, not `npm ci`: the committed lockfile is generated on
+      # Windows and omits linux-only optional deps (see backend/Dockerfile).
+      - run: npm install --no-audit --no-fund
+        working-directory: frontend
+      - run: npm install --no-audit --no-fund
+        working-directory: desktop
+
+      # An update artefact is signed as it is produced, so a build that is asked
+      # for one without a key fails outright — the installer is written and the
+      # command still exits non-zero. Two builds rather than one flag: with the
+      # key, the full release; without it, the same client minus the update
+      # artefact it could not sign.
+      - name: Build the client
+        if: env.UPDATER_KEY_CONFIGURED == 'true'
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run build
+
+      - name: Build the client (no update artefact, no signing key here)
+        if: env.UPDATER_KEY_CONFIGURED != 'true'
+        working-directory: desktop
+        run: npm run build:unsigned
+
+      # Signs the installer once the Trusted Signing account exists. UNPROVEN
+      # until then: it has never run with real credentials, so the first signed
+      # release must be checked by hand (signature present, SmartScreen
+      # behaviour) before it is published. See desktop/docs/updater-keys.md.
+      - name: Sign the installer
+        if: matrix.os == 'windows-latest' && env.SIGNING_CONFIGURED == 'true'
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: desktop/src-tauri/target/release/bundle/msi
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Say whether this build can be published
+        if: matrix.os == 'windows-latest' && env.SIGNING_CONFIGURED != 'true'
+        shell: bash
+        run: |
+          echo "### Desktop client: UNSIGNED" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Code signing is not configured, so this installer is for testing only and must not be published. See desktop/docs/updater-keys.md." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            desktop/src-tauri/target/release/bundle/msi/*
+            desktop/src-tauri/target/release/bundle/dmg/*
+            desktop/src-tauri/target/release/bundle/macos/*
+
+  # Publishing the client: the installer under a versioned and a stable name, and
+  # the manifest installed clients read, to the object storage behind
+  # get.fosnie.dev.
+  #
+  # This job assembles nothing itself — release/publish-desktop.sh does, and the
+  # signing machine runs the same script. That is deliberate: what a person
+  # uploads by hand and what this job uploads are the same bytes arranged the same
+  # way, rather than two procedures that agree until the day they do not.
+  #
+  # It ends green in three cases that are not publications — no update signature,
+  # no storage credentials, nothing to do — and says so in its summary each time.
+  # A skip that looks like a success is the one thing worse than a failure here,
+  # so read the summary, not the tick.
+  #
+  # macOS is not published yet (no Apple account). Adding it is another platform
+  # entry in the manifest and another object in the upload; nothing structural.
+  publish:
+    needs: desktop
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/desktop-v') || inputs.desktop_version != ''
+    env:
+      # Read here rather than in a step `if`, which cannot see the secrets context.
+      R2_CONFIGURED: ${{ secrets.R2_ACCESS_KEY_ID != '' }}
+      # Turn on when this repository is public and the client is published as a
+      # GitHub Release as well. get.fosnie.dev stays the stable URL and the source
+      # updaters read either way; the Release becomes the canonical archive.
+      GITHUB_RELEASE_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tag says what is being published; three files in the tree say what was
+      # built. Nothing keeps them in step, and the moment that matters is this one.
+      - name: Resolve and check the version
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.desktop_version }}" ]; then
+            VERSION="${{ inputs.desktop_version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#desktop-v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          CONF=$(python3 -c 'import json;print(json.load(open("desktop/src-tauri/tauri.conf.json"))["version"])')
+          PKG=$(python3 -c 'import json;print(json.load(open("desktop/package.json"))["version"])')
+          CRATE=$(sed -n 's/^version = "\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml | head -n1)
+          for pair in "configuration:$CONF" "package:$PKG" "crate:$CRATE"; do
+            name="${pair%%:*}"; got="${pair#*:}"
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error::publishing $VERSION but the $name says $got"
+              exit 1
+            fi
+          done
+          echo "Publishing desktop $VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows
+          path: bundle
+
+      # No signature means the build had no key and took the unsigned path, which
+      # produces a client but no update artefact. Publishing that would leave every
+      # installation unable to move off it.
+      - name: Check there is something publishable
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Where the installer landed inside the artefact is decided by the
+          # upload's own path flattening, so it is found rather than assumed.
+          SIG=$(find bundle -name '*.msi.sig' -type f | head -n1 || true)
+          if [ -n "$SIG" ]; then
+            echo "publishable=true" >> "$GITHUB_OUTPUT"
+            echo "msidir=$(dirname "$SIG")" >> "$GITHUB_OUTPUT"
+          else
+            echo "publishable=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::this build carries no update signature — nothing was published"
+            {
+              echo "### Desktop publish: SKIPPED"
+              echo ""
+              echo "This build produced no update artefact, so there is nothing to publish."
+              echo "Releases are built and signed on the release machine and assembled with"
+              echo "\`release/publish-desktop.sh\`; see desktop/docs/updater-keys.md."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Assemble what gets published
+        if: steps.guard.outputs.publishable == 'true'
+        shell: bash
+        run: |
+          bash release/publish-desktop.sh \
+            --bundle "${{ steps.guard.outputs.msidir }}" \
+            --version "${{ steps.v.outputs.version }}" \
+            --out dist
+
+      - name: Say that no storage is configured
+        if: steps.guard.outputs.publishable == 'true' && env.R2_CONFIGURED != 'true'
+        shell: bash
+        run: |
+          echo "::warning::object-storage credentials are absent — nothing was uploaded"
+          {
+            echo "### Desktop publish: SKIPPED"
+            echo ""
+            echo "The release was assembled but no storage credentials are configured, so"
+            echo "nothing was uploaded. The assembled files are in the job's \`dist\` directory."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The order is the whole point. The manifest is what tells every installed
+      # client that a new version exists; uploaded before the installer it names,
+      # it points all of them at a file that is not there yet.
+      - name: Upload, installer first and manifest last
+        if: steps.guard.outputs.publishable == 'true' && env.R2_CONFIGURED == 'true'
+        shell: bash
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          put() {
+            aws s3api put-object \
+              --endpoint-url "$ENDPOINT" \
+              --bucket "$BUCKET" \
+              --key "desktop/$1" \
+              --body "dist/desktop/$1" \
+              --content-type "$2" > /dev/null
+            echo "uploaded desktop/$1"
+          }
+          MSI=$(cd dist/desktop && ls *.msi | grep -v '^Fosnie-Setup.msi$')
+          put "$MSI" application/octet-stream
+          put "Fosnie-Setup.msi" application/octet-stream
+          put "latest.json" application/json
+
+          {
+            echo "### Desktop publish: DONE"
+            echo ""
+            echo "Version ${{ steps.v.outputs.version }} is live at get.fosnie.dev."
+            echo ""
+            echo "If the build was not code-signed, it is published anyway: that is a"
+            echo "deliberate position for an internal beta, not an oversight. The unsigned"
+            echo "warning in the build job stands as the reminder that it has a cost on"
+            echo "every machine that installs it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach to the GitHub Release
+        if: steps.guard.outputs.publishable == 'true' && env.GITHUB_RELEASE_ENABLED == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/desktop/*.msi
+            dist/desktop/latest.json
+
+  images:
+    needs: checks
+    runs-on: ubuntu-latest
+    # A desktop tag publishes a client, not a platform. Without this it would also
+    # push images to GHCR under a version nobody asked for.
+    if: "!startsWith(github.ref, 'refs/tags/desktop-v')"
     strategy:
       matrix:
         include:
@@ -68,7 +364,9 @@ jobs:
   release-assets:
     needs: images
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # Platform tags only — `refs/tags/` alone would also match a desktop tag and
+    # cut a platform Release from release notes that were never written for it.
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
       - name: Attach deploy assets to the Release

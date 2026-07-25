@@ -1,0 +1,18 @@
+{
+  "name": "fosnie-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Build scripts for the Fosnie desktop client. The interface is the platform's own web application, built from ../frontend — this package only drives that build and the Tauri bundler. `build` produces a release with its update artefact and therefore requires the signing key; `build:unsigned` leaves the update artefact out, which is what a machine without the key can produce.",
+  "scripts": {
+    "frontend:dev": "npm --prefix ../frontend run dev",
+    "frontend:build": "npm --prefix ../frontend run build",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:unsigned": "tauri build --config src-tauri/tauri.unsigned.conf.json",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

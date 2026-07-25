@@ -22,18 +22,54 @@ import { queryClient } from "@/api/client";
 import { App } from "@/app/App";
 import { ErrorBoundary } from "@/telemetry/ErrorBoundary";
 import { installGlobalErrorHandlers } from "@/telemetry/report";
+import { isShell } from "@/shell/detect";
 
 // Catch window-level errors (async, resource, uncaught) before React mounts.
 installGlobalErrorHandlers();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </QueryClientProvider>
-    </ErrorBoundary>
-  </StrictMode>,
-);
+const root = createRoot(document.getElementById("root")!);
+
+function renderApp() {
+  root.render(
+    <StrictMode>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <AuthProvider>
+            <App />
+          </AuthProvider>
+        </QueryClientProvider>
+      </ErrorBoundary>
+    </StrictMode>,
+  );
+}
+
+// Inside the desktop client the instance is not the one serving this bundle, so
+// the client is asked where to point and what credential to present before the
+// application renders. In a browser this branch is not taken and the boot path
+// below is exactly what it always was.
+if (isShell()) {
+  // The frame first, and separately: it has to be there for the pairing screen
+  // as much as for the application, and neither waits on the other.
+  void import("@/shell/chrome").then(({ mountFrame }) => mountFrame());
+  void import("@/shell/boot").then(({ bootShell }) => bootShell(root, renderApp));
+}
+// `#/connect` is a development affordance for driving a remote instance from a
+// browser (see app/DevConnect). The whole branch — and the module it loads — is
+// dropped from a production build, where the only way into the remote mode is a
+// native shell configuring the instance before boot.
+else if (import.meta.env.DEV && window.location.hash.startsWith("#/connect")) {
+  void import("@/app/DevConnect").then(({ DevConnect }) => {
+    root.render(
+      <StrictMode>
+        <DevConnect
+          onReady={() => {
+            history.replaceState(null, "", window.location.pathname);
+            renderApp();
+          }}
+        />
+      </StrictMode>,
+    );
+  });
+} else {
+  renderApp();
+}

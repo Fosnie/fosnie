@@ -28,6 +28,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::audit::{self, AuditEvent};
+use crate::auth::device::MaybeDevice;
 use crate::auth::keycloak::AuthUser;
 use crate::auth::{AuthContext, permissions};
 use crate::error::{AppError, Result};
@@ -86,8 +87,13 @@ fn owner(ctx: &AuthContext) -> Result<Uuid> {
 pub async fn create_key(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
+    device: MaybeDevice,
     Json(body): Json<CreateBody>,
 ) -> Result<impl IntoResponse> {
+    // Minting a key is barred from a paired device: the key would outlive the
+    // device's own revocation, turning a revocable device token into permanent
+    // access. Keys are minted from an interactive web session only.
+    device.require_session()?;
     gate(&state, &ctx).await?;
     // A session that exists only to finish enrolling a second factor is not a
     // fully authenticated session, and minting a long-lived credential from one
@@ -196,8 +202,13 @@ pub async fn admin_list_keys(
 pub async fn admin_revoke_key(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
+    device: MaybeDevice,
     Path((_user_id, id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode> {
+    // Reaching across to revoke another user's key is a web-session action, even
+    // for an administrator: a device does not manage credentials on the account,
+    // and this is the same cross-user admin write as signing out their devices.
+    device.require_session()?;
     gate(&state, &ctx).await?;
     state.rbac.require_permission(&state.pg, &ctx, permissions::USERS_MANAGE).await?;
     revoke(&state, &ctx, id, None).await

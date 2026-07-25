@@ -52,6 +52,13 @@ pub struct WsAuth {
     /// True when the socket was authorised via a `?resume=` token (reconnect),
     /// so the handler replays buffered frames after `Hello`.
     pub resumed: bool,
+    /// Set when the socket was authenticated as a paired desktop device. Carried
+    /// so a reconnect re-mints a resume token that still names the device, and so
+    /// a conversation the socket starts is stamped with where it came from.
+    pub device_id: Option<Uuid>,
+    /// Where a conversation started on this socket is recorded as coming from,
+    /// derived from how the socket authenticated.
+    pub origin: crate::chat::origin::ChatOrigin,
 }
 
 impl FromRequestParts<AppState> for WsAuth {
@@ -88,21 +95,38 @@ impl FromRequestParts<AppState> for WsAuth {
             Some(KeycloakAuthStatus::Success(_))
         );
         if token_present {
+            // A validated JWT is always a browser session; a desktop client never
+            // reaches this branch (it holds no JWT), so its origin is web.
             let ctx = state.auth.authenticate(parts, state).await?;
-            return Ok(WsAuth { ctx, resumed: false });
+            return Ok(WsAuth {
+                ctx,
+                resumed: false,
+                device_id: None,
+                origin: crate::chat::origin::ChatOrigin::Web,
+            });
         }
         if let Some(token) = parts.uri.query().and_then(|q| query_param(q, "resume")) {
-            if let Some(user_id) = session::lookup_resume(&state.redis, &token).await? {
+            if let Some((user_id, device_id)) = session::lookup_resume(&state.redis, &token).await? {
                 let ctx = auth::load_context(&state.pg, user_id).await?;
-                return Ok(WsAuth { ctx, resumed: true });
+                return Ok(WsAuth {
+                    ctx,
+                    resumed: true,
+                    device_id,
+                    origin: crate::chat::origin::ChatOrigin::from_device(device_id),
+                });
             }
         }
         // Single-use connect ticket (minted over the authenticated HTTP path) —
         // keeps the JWT out of the socket URL. load_context re-checks deactivation.
         if let Some(ticket) = parts.uri.query().and_then(|q| query_param(q, "ticket")) {
-            if let Some(user_id) = session::redeem_ticket(&state.redis, &ticket).await? {
+            if let Some((user_id, device_id)) = session::redeem_ticket(&state.redis, &ticket).await? {
                 let ctx = auth::load_context(&state.pg, user_id).await?;
-                return Ok(WsAuth { ctx, resumed: false });
+                return Ok(WsAuth {
+                    ctx,
+                    resumed: false,
+                    device_id,
+                    origin: crate::chat::origin::ChatOrigin::from_device(device_id),
+                });
             }
         }
         Err(AppError::Unauthorized(
@@ -116,6 +140,13 @@ impl FromRequestParts<AppState> for WsAuth {
 /// origin of `server.public_url`. Exact match on scheme://host[:port].
 fn origin_allowed(server: &crate::config::ServerConfig, origin: &str) -> bool {
     let origin = origin.trim();
+    // A desktop client is admitted regardless of what the browser allow-list
+    // says. It is not a browsing context, so it is not a cross-site hijacking
+    // vector, and an operator who narrows `allowed_ws_origins` for the web must
+    // not thereby lock out their own desktop clients.
+    if server.desktop_origins.iter().any(|o| o.trim() == origin) {
+        return true;
+    }
     if !server.allowed_ws_origins.is_empty() {
         return server.allowed_ws_origins.iter().any(|o| o.trim() == origin);
     }
@@ -141,7 +172,7 @@ pub async fn ws_handler(
     auth: WsAuth,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(state, socket, auth.ctx, auth.resumed))
+    ws.on_upgrade(move |socket| handle_socket(state, socket, auth))
 }
 
 /// Frames worth retaining for replay — discrete events, not the high-volume
@@ -216,7 +247,8 @@ async fn hello_frame(
     }
 }
 
-async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, resumed: bool) {
+async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
+    let WsAuth { ctx, resumed, device_id, origin } = auth;
     // Break-glass principals have no user identity and cannot own/drive chats.
     let Some(user_id) = ctx.user_id else {
         return;
@@ -225,9 +257,21 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<ServerFrame>(256);
 
-    state.hub.register(socket_id, user_id, tx.clone());
+    state.hub.register(socket_id, user_id, device_id, tx.clone());
+    // A machine that has just come back may owe make-up runs for folder
+    // automations it missed while it was away. Off the connection path so a slow
+    // catch-up never delays the socket coming up; it claims its own work and is a
+    // no-op when there is none.
+    if let Some(dev) = device_id {
+        let st = state.clone();
+        tokio::spawn(async move {
+            crate::scheduler::catchup_device(&st, user_id, dev).await;
+        });
+    }
     let _ = session::register_socket(&state.redis, socket_id, user_id).await;
-    let resume_token = session::issue_resume(&state.redis, user_id)
+    // The resume token carries the device id too, so a reconnect within the
+    // window keeps marking what this socket creates as coming from the desktop.
+    let resume_token = session::issue_resume(&state.redis, user_id, device_id)
         .await
         .unwrap_or_default();
 
@@ -277,11 +321,11 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
             Message::Text(text) => match serde_json::from_str::<ClientFrame>(text.as_str()) {
-                Ok(ClientFrame::ChatSend { chat_id, content, project_id, agent_id, attachment_ids, thinking, reasoning, llm_provider_id }) => {
+                Ok(ClientFrame::ChatSend { chat_id, content, project_id, agent_id, attachment_ids, thinking, reasoning, llm_provider_id, workspace_id }) => {
                     // Coarse per-user abuse guard on the expensive turn path.
                     if !crate::cache::rate_limit_ok(&state.redis, &format!("chat:{user_id}"), 30, 60).await {
                         let _ = tx
-                            .send(ServerFrame::ChatError { turn_id: None, message: "You're sending messages too quickly — please slow down.".into() })
+                            .send(ServerFrame::ChatError { turn_id: None, message: "You're sending messages too quickly — please slow down.".into(), chat_id: None })
                             .await;
                         continue;
                     }
@@ -298,7 +342,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                         let attachments =
                             crate::http::chat_attachments::take_attachments(&st, &ctxc, &attachment_ids).await;
                         crate::chat::run_turn(
-                            &st, &ctxc, turn_id, chat_id, project_id, agent_id, content, attachments,
+                            &st, crate::chat::origin::TurnContext::new(&ctxc, origin).with_device(device_id).with_workspace(workspace_id), turn_id, chat_id, project_id, agent_id, content, attachments,
                             Vec::new(), false, None, reasoning, llm_provider_id, None, &txc, cancel,
                         )
                         .await;
@@ -311,7 +355,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                     // answer + anything after — no prompt duplication.
                     if !crate::cache::rate_limit_ok(&state.redis, &format!("chat:{user_id}"), 30, 60).await {
                         let _ = tx
-                            .send(ServerFrame::ChatError { turn_id: None, message: "You're sending messages too quickly — please slow down.".into() })
+                            .send(ServerFrame::ChatError { turn_id: None, message: "You're sending messages too quickly — please slow down.".into(), chat_id: None })
                             .await;
                         continue;
                     }
@@ -326,14 +370,14 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                         match crate::chat::regenerate_prepare(&st, &ctxc, chat_id, from_message_id, content).await {
                             Ok((anchor_id, anchor_content)) => {
                                 crate::chat::run_turn(
-                                    &st, &ctxc, turn_id, Some(chat_id), None, None, anchor_content,
+                                    &st, crate::chat::origin::TurnContext::new(&ctxc, origin).with_device(device_id), turn_id, Some(chat_id), None, None, anchor_content,
                                     Vec::new(), Vec::new(), false, Some(anchor_id), None, None, None, &txc, cancel,
                                 )
                                 .await;
                             }
                             Err(e) => {
                                 let _ = txc
-                                    .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string() })
+                                    .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string(), chat_id: Some(chat_id) })
                                     .await;
                             }
                         }
@@ -343,6 +387,46 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                 Ok(ClientFrame::ChatCancel { turn_id }) => {
                     state.hub.cancel_turn(socket_id, turn_id);
                 }
+                Ok(ClientFrame::DesktopToolResult { call_id, ok, result }) => {
+                    // The answer to something this server asked this machine to do
+                    // in a folder of its own. Only a machine is ever asked, and only
+                    // the machine the call was sent to is listened to: a browser tab
+                    // has no device to answer as, and a different device's socket is
+                    // refused by `resolve`, which accepts a reply only from the
+                    // device the call is bound to.
+                    let Some(from_device) = device_id else {
+                        tracing::warn!(%socket_id, "ignoring a folder-tool result from a connection that is not a device");
+                        continue;
+                    };
+                    let reply = crate::tools::DesktopReply { ok, result };
+                    if !state.desktop_calls.resolve(call_id, from_device, reply) {
+                        // Nothing was waiting, the reply is a duplicate, or it came
+                        // from a device the call was not sent to. In every case there
+                        // is nowhere to put it.
+                        tracing::debug!(%call_id, "a folder-tool result arrived with nothing to match it");
+                    }
+                }
+                Ok(ClientFrame::DesktopToolProgress { call_id, chunk }) => {
+                    // Output from work still going on. Shown beside the turn that
+                    // asked for it, so a command that takes a minute is visible
+                    // while it takes it — but only from the device the call was sent
+                    // to, so nobody else can type into somebody's turn.
+                    let Some(from_device) = device_id else {
+                        continue;
+                    };
+                    if let Some(turn_id) = state.desktop_calls.turn_of(call_id, from_device) {
+                        let detail: String = chunk.chars().rev().take(400).collect::<Vec<_>>()
+                            .into_iter().rev().collect();
+                        let _ = tx
+                            .send(ServerFrame::ChatTool {
+                                turn_id,
+                                name: "desktop.terminal_run".into(),
+                                phase: "progress".into(),
+                                detail: Some(detail),
+                            })
+                            .await;
+                    }
+                }
                 Ok(ClientFrame::Auth { token: _ }) => {
                     // In-band session refresh: extend presence + resume window
                     // and hand back a fresh resume token. (Cryptographic
@@ -350,7 +434,9 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                     // upgrade-time auth stands; this keeps a long-lived socket's
                     // session alive past the original token's expiry.)
                     let _ = session::refresh_presence(&state.redis, user_id).await;
-                    let resume_token = session::issue_resume(&state.redis, user_id)
+                    // Keep the device on the refreshed resume token, so a desktop
+                    // socket that refreshes mid-session stays a desktop socket.
+                    let resume_token = session::issue_resume(&state.redis, user_id, device_id)
                         .await
                         .unwrap_or_default();
                     let _ = tx
@@ -358,8 +444,10 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                         .await;
                 }
                 Ok(ClientFrame::ClientHello { client_kind, client_version, capabilities }) => {
-                    // Recorded, not enforced: it identifies the connection for
-                    // telemetry and for marking what it creates. A connection
+                    // Recorded, not enforced: descriptive telemetry only. What a
+                    // conversation is marked with comes from how the socket
+                    // authenticated, never from this self-declared field — a web
+                    // client could otherwise call itself a desktop. A connection
                     // that never sends this stays what every client is today.
                     let kind = client_kind.as_deref().unwrap_or("web");
                     let _ = session::record_client(
@@ -370,6 +458,17 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                         &capabilities,
                     )
                     .await;
+                    // How strong a boundary this machine keeps for a command it
+                    // runs is worth acting on, not just recording: it decides how
+                    // much the instance can stop asking the person about. It is
+                    // written only for a genuine device connection, never from
+                    // this self-declared field on a browser socket — the same
+                    // reason the connection's kind comes from how it authenticated.
+                    // Absent or unrecognised, it settles to the weaker tier, so a
+                    // machine is only ever trusted less than it claims, never more.
+                    if let Some(did) = device_id {
+                        crate::tools::desktop::record_sandbox_tier(&state.pg, did, &capabilities).await;
+                    }
                     tracing::debug!(%socket_id, client_kind = %kind, "client identified itself");
                 }
                 Ok(ClientFrame::Unknown) => {
@@ -385,7 +484,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                         crate::http::messaging::send_via_ws(&state, &ctx, chat_id, &content, mentions).await
                     {
                         let _ = tx
-                            .send(ServerFrame::ChatError { turn_id: None, message: e.to_string() })
+                            .send(ServerFrame::ChatError { turn_id: None, message: e.to_string(), chat_id: None })
                             .await;
                     }
                 }
@@ -396,13 +495,13 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                     let txc = tx.clone();
                     tokio::spawn(async move {
                         let frame = if !st.features.enabled_for_user(&st, Some(user_id), "voice").await {
-                            ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into() }
+                            ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into(), chat_id: None }
                         } else {
                             match base64::engine::general_purpose::STANDARD.decode(audio_base64.as_bytes()) {
-                                Err(e) => ServerFrame::ChatError { turn_id: None, message: format!("bad audio: {e}") },
+                                Err(e) => ServerFrame::ChatError { turn_id: None, message: format!("bad audio: {e}"), chat_id: None },
                                 Ok(bytes) => match crate::ml::transcribe(&st.http, &st.boot.ml.base_url, &bytes, &mime, crate::ml::provider_overrides(&st, Some(user_id)).await).await {
                                     Ok(text) => ServerFrame::VoiceTranscript { text },
-                                    Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string() },
+                                    Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string(), chat_id: None },
                                 },
                             }
                         };
@@ -414,14 +513,14 @@ async fn handle_socket(state: AppState, socket: WebSocket, ctx: AuthContext, res
                     let txc = tx.clone();
                     tokio::spawn(async move {
                         let frame = if !st.features.enabled_for_user(&st, Some(user_id), "voice").await {
-                            ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into() }
+                            ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into(), chat_id: None }
                         } else {
                             match crate::ml::synthesize(&st.http, &st.boot.ml.base_url, &text, voice.as_deref(), crate::ml::provider_overrides(&st, Some(user_id)).await).await {
                                 Ok((bytes, mime)) => ServerFrame::VoiceAudio {
                                     audio_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
                                     mime,
                                 },
-                                Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string() },
+                                Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string(), chat_id: None },
                             }
                         };
                         let _ = txc.send(frame).await;
@@ -550,6 +649,7 @@ mod tests {
             static_dir: String::new(),
             public_url: public_url.into(),
             allowed_ws_origins: allowed.iter().map(|s| s.to_string()).collect(),
+            desktop_origins: Vec::new(),
         }
     }
 

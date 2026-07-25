@@ -28,7 +28,9 @@ import {
   useCalendar,
   useGroupChats,
   useLibraries,
+  useMyDevices,
   useProjects,
+  useWorkspaces,
 } from "@/api/client";
 import { Icon } from "@/components/icons";
 import { Dropdown } from "@/components/Dropdown";
@@ -46,6 +48,10 @@ function fmt(s: string | null | undefined): string {
   if (!s) return "—";
   const d = new Date(s);
   return isNaN(d.getTime()) ? s : d.toLocaleString();
+}
+
+function tierLabel(tier: string): string {
+  return tier === "ro" ? "read only" : tier === "rw_nd" ? "write, no delete" : "read & write";
 }
 
 export function Automations() {
@@ -117,6 +123,8 @@ function AutomationEditor({ id, onBack, onSaved }: { id?: string; onBack: () => 
   const projects = useProjects();
   const libraries = useLibraries();
   const groupChats = useGroupChats();
+  const devices = useMyDevices();
+  const workspaces = useWorkspaces();
   const { busy, run } = useBusy();
   const [name, setName] = useState("");
   const [schedule, setSchedule] = useState("0 0 9 * * Mon-Fri");
@@ -125,6 +133,13 @@ function AutomationEditor({ id, onBack, onSaved }: { id?: string; onBack: () => 
   const [projectId, setProjectId] = useState("");
   const [kbIds, setKbIds] = useState<string[]>([]);
   const [deliverChatId, setDeliverChatId] = useState("");
+  // Where the automation runs: on the server (default) or against a connected
+  // folder on one of the owner's machines.
+  const [mode, setMode] = useState<"server" | "device">("server");
+  const [deviceId, setDeviceId] = useState("");
+  const [workspaceId, setWorkspaceId] = useState("");
+  const [preApproved, setPreApproved] = useState(false);
+  const [runWhenBack, setRunWhenBack] = useState(false);
   const [justRan, setJustRan] = useState(false);
 
   // "Run now" feedback: the scheduler creates the `running` row a few seconds
@@ -142,15 +157,31 @@ function AutomationEditor({ id, onBack, onSaved }: { id?: string; onBack: () => 
     if (id && a) {
       setName(a.name); setSchedule(a.schedule); setPrompt(a.prompt); setAgentId(a.agent_id ?? "");
       setProjectId(a.project_id ?? ""); setKbIds(a.kb_ids ?? []); setDeliverChatId(a.deliver_group_chat_id ?? "");
+      setMode(a.workspace_id ? "device" : "server");
+      setWorkspaceId(a.workspace_id ?? "");
+      setPreApproved(a.pre_approved_writes); setRunWhenBack(a.run_when_back);
     }
   }, [id, detail.data]);
+
+  // The folder picker needs the machine chosen first; resolve it from the bound
+  // folder once the folder list has loaded (an existing device automation stores
+  // only the folder).
+  useEffect(() => {
+    if (workspaceId && !deviceId) {
+      const w = workspaces.data?.find((x) => x.id === workspaceId);
+      if (w) setDeviceId(w.device_id);
+    }
+  }, [workspaceId, deviceId, workspaces.data]);
 
   if (id && (detail.isLoading || !detail.data)) return <div className="main-scroll"><div className="panel">Loading…</div></div>;
   const a = detail.data;
   const isNew = !id;
   const active = a?.status === "active";
   const refresh = () => { qc.invalidateQueries({ queryKey: ["automation", id] }); qc.invalidateQueries({ queryKey: ["automations"] }); };
-  const valid = name.trim() && schedule.trim() && prompt.trim();
+  const valid = name.trim() && schedule.trim() && prompt.trim() && (mode === "server" || !!workspaceId);
+  // The folders on the chosen machine, most-recently-trusted first.
+  const deviceWorkspaces = (workspaces.data ?? []).filter((w) => w.device_id === deviceId && !w.revoked_at);
+  const selWorkspace = deviceWorkspaces.find((w) => w.id === workspaceId);
 
   // Tell the user exactly where each run's output will surface (the chat list is
   // workmode-scoped, so a personal run only shows in General).
@@ -164,11 +195,16 @@ function AutomationEditor({ id, onBack, onSaved }: { id?: string; onBack: () => 
 
   async function save() {
     if (!valid) return;
-    // Targets are nullable: send an explicit null to clear, an id to set.
+    // Targets are nullable: send an explicit null to clear, an id to set. A server
+    // automation sends a null folder (which also clears the device-only options).
+    const onDevice = mode === "device";
     const targets = {
       project_id: projectId || null,
       kb_ids: kbIds,
       deliver_group_chat_id: deliverChatId || null,
+      workspace_id: onDevice ? workspaceId || null : null,
+      pre_approved_writes: onDevice ? preApproved : false,
+      run_when_back: onDevice ? runWhenBack : false,
     };
     if (isNew) {
       await run("Create", () => createAutomation({ name: name.trim(), schedule: schedule.trim(), prompt: prompt.trim(), agent_id: agentId || undefined, ...targets }).then((r) => { qc.invalidateQueries({ queryKey: ["automations"] }); onSaved((r as { id: string }).id); }), `Automation “${name.trim()}” created.`);
@@ -217,6 +253,58 @@ function AutomationEditor({ id, onBack, onSaved }: { id?: string; onBack: () => 
             </div>
             <input className="field mono" style={{ marginTop: 10 }} value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="0 0 9 * * Mon-Fri" />
             <div className="ed-hint mono">6-field cron, seconds first: sec min hour dom mon dow. Min interval 5 min.</div>
+
+            <label className="form-label">Runs on</label>
+            <div className="chip-wrap">
+              <button type="button" className={"skill-chip" + (mode === "server" ? " on" : "")} onClick={() => setMode("server")}>Server</button>
+              <button type="button" className={"skill-chip" + (mode === "device" ? " on" : "")} onClick={() => setMode("device")}>A device</button>
+            </div>
+            {mode === "device" && (
+              <>
+                <Dropdown
+                  value={deviceId}
+                  onChange={(v) => { setDeviceId(v); setWorkspaceId(""); }}
+                  ariaLabel="Device"
+                  fullWidth
+                  icon={<Icon.Folder size={14} />}
+                  options={[
+                    { value: "", label: "Choose a machine…" },
+                    ...(devices.data ?? []).filter((d) => !d.revoked_at).map((d) => ({
+                      value: d.id,
+                      label: (d.online ? "● " : "○ ") + d.name,
+                    })),
+                  ]}
+                />
+                <Dropdown
+                  value={workspaceId}
+                  onChange={setWorkspaceId}
+                  ariaLabel="Folder"
+                  fullWidth
+                  icon={<Icon.Folder size={14} />}
+                  options={[
+                    { value: "", label: deviceId ? "Choose a folder…" : "Choose a machine first" },
+                    ...deviceWorkspaces.map((w) => ({ value: w.id, label: `${w.label || w.path} · ${tierLabel(w.tier)}` })),
+                  ]}
+                />
+                <div className="ed-hint mono">Its schedule stays here; only the folder work runs on the machine, and only while it is connected.</div>
+                <div className="auto-enable" style={{ marginTop: 10 }}>
+                  <div>
+                    <h4 style={{ margin: 0 }}>Pre-approved writes</h4>
+                    <span className="ed-hint mono" style={{ marginTop: 2 }}>
+                      Writes files in {selWorkspace ? (selWorkspace.label || selWorkspace.path) : "the folder"} without asking each time. Never deletes.
+                    </span>
+                  </div>
+                  <Switch on={preApproved} onClick={() => setPreApproved(!preApproved)} />
+                </div>
+                <div className="auto-enable" style={{ marginTop: 10 }}>
+                  <div>
+                    <h4 style={{ margin: 0 }}>Run when back online</h4>
+                    <span className="ed-hint mono" style={{ marginTop: 2 }}>If the machine was off when this was due, make it up once it reconnects.</span>
+                  </div>
+                  <Switch on={runWhenBack} onClick={() => setRunWhenBack(!runWhenBack)} />
+                </div>
+              </>
+            )}
 
             <label className="form-label">Agent</label>
             <Dropdown
@@ -302,16 +390,32 @@ function AutomationEditor({ id, onBack, onSaved }: { id?: string; onBack: () => 
               <div className="run-list">
                 {runs.isLoading && <p className="text-sm text-slate">Loading…</p>}
                 {runs.data?.length === 0 && <p className="text-sm text-slate/70">No runs yet.</p>}
-                {runs.data?.map((r) => (
-                  <div key={r.id} className="run-row">
-                    <span className={"run-dot " + (r.status === "failed" ? "error" : "done")} />
-                    <div className="run-info">
-                      <span className="run-out">{r.status === "failed" ? (r.error ?? "error") : r.status}</span>
-                      <span className="run-when mono">{fmt(r.started_at)}</span>
+                {runs.data?.map((r) => {
+                  const missedFamily = r.status === "missed" || r.status === "superseded" || r.status === "needs_approval";
+                  const dotClass = r.status === "failed" ? "error" : missedFamily ? "warn" : "done";
+                  const label =
+                    r.status === "failed" ? (r.error ?? "error")
+                    : r.status === "missed" ? `missed · ${r.reason ?? "not run"}`
+                    // A superseded run is a miss that a reconnect made up: never ran itself.
+                    : r.status === "superseded" ? "missed · made up on reconnect"
+                    : r.status === "needs_approval" ? "needs approval"
+                    : r.status;
+                  return (
+                    <div key={r.id} className="run-row">
+                      <span className={"run-dot " + dotClass} />
+                      <div className="run-info">
+                        <span className="run-out">{label}</span>
+                        <span className="run-when mono">{fmt(r.started_at)}</span>
+                      </div>
+                      {r.status === "needs_approval" && r.output_chat_id && (
+                        <button className="btn btn-line sm" title="Answer the approval" onClick={() => nav(`/c/${r.output_chat_id}`)}>Answer</button>
+                      )}
+                      {r.status !== "needs_approval" && r.output_chat_id && (
+                        <button className="icon-btn" title="Open output chat" onClick={() => nav(`/c/${r.output_chat_id}`)}><Icon.ChevronR size={15} /></button>
+                      )}
                     </div>
-                    {r.output_chat_id && <button className="icon-btn" title="Open output chat" onClick={() => nav(`/c/${r.output_chat_id}`)}><Icon.ChevronR size={15} /></button>}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
           )}

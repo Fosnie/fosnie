@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::auth::device::MaybeDevice;
 use crate::auth::keycloak::AuthUser;
 use crate::auth::permissions;
 use crate::error::{AppError, Result};
@@ -317,9 +318,14 @@ pub async fn list_my_providers(
 pub async fn set_my_provider(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
+    device: MaybeDevice,
     Path(role): Path<String>,
     Json(body): Json<UpsertProvider>,
 ) -> Result<Json<serde_json::Value>> {
+    // Provider writes are barred from a paired device: overwriting a role's
+    // endpoint would reroute the owner's model traffic elsewhere. Model settings
+    // are changed from an interactive web session only.
+    device.require_session()?;
     if !byok_enabled(&state).await {
         return Err(AppError::Forbidden("bring-your-own-key is not enabled on this deployment".into()));
     }
@@ -406,8 +412,10 @@ pub async fn set_my_provider(
 pub async fn delete_my_provider(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
+    device: MaybeDevice,
     Path(role): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
+    device.require_session()?;
     let uid = ctx.user_id.ok_or_else(|| AppError::Forbidden("no user".into()))?;
     let mut tx = state.pg.begin().await?;
     sqlx::query!(
@@ -739,8 +747,12 @@ pub async fn set_admin_llm_default(
 pub async fn create_my_llm(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
+    device: MaybeDevice,
     Json(body): Json<UpsertLlm>,
 ) -> Result<Json<serde_json::Value>> {
+    // Model-provider writes are barred from a paired device (endpoint reroute is
+    // a traffic-redirection vector); web session only.
+    device.require_session()?;
     if !byok_enabled(&state).await {
         return Err(AppError::Forbidden("bring-your-own-key is not enabled on this deployment".into()));
     }
@@ -752,9 +764,11 @@ pub async fn create_my_llm(
 pub async fn update_my_llm(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
+    device: MaybeDevice,
     Path(id): Path<Uuid>,
     Json(body): Json<UpsertLlm>,
 ) -> Result<Json<serde_json::Value>> {
+    device.require_session()?;
     if !byok_enabled(&state).await {
         return Err(AppError::Forbidden("bring-your-own-key is not enabled on this deployment".into()));
     }
@@ -766,8 +780,10 @@ pub async fn update_my_llm(
 pub async fn delete_my_llm(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
+    device: MaybeDevice,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
+    device.require_session()?;
     let uid = ctx.user_id.ok_or_else(|| AppError::Forbidden("no user".into()))?;
     delete_llm_row(&state, &ctx, "user", Some(uid), id).await
 }

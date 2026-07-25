@@ -173,6 +173,14 @@ pub struct FeaturesConfig {
     /// The code-interpreter tool (Firecracker microVM, Linux+KVM only). The tool
     /// is never advertised or dispatchable while this is false.
     pub code_interpreter: bool,
+    /// Working in a folder on a paired machine. A presence capability, not an
+    /// egress one: the work happens on the user's own computer, at their own
+    /// request, after they have connected a folder there and agreed to each
+    /// change. Default **on**, because the gates that matter are the folder
+    /// itself and the approval in front of the person — this switch is for an
+    /// administrator who wants the whole family off the instance regardless.
+    #[serde(default = "default_true")]
+    pub desktop_execution: bool,
     /// Voice (dictation + read-aloud). Requires STT/TTS engines configured on the
     /// ML service; the voice endpoints/frames are refused while this is false.
     #[serde(default)]
@@ -448,6 +456,22 @@ pub struct ServerConfig {
     /// Each entry is a scheme://host[:port] with no path.
     #[serde(default)]
     pub allowed_ws_origins: Vec<String>,
+    /// Origins the desktop client presents. They are cross-origin to this server
+    /// by construction (the client serves its own shell from a local scheme), so
+    /// they must be permitted for both the WebSocket upgrade and ordinary
+    /// cross-origin requests to the native surface. The default covers the
+    /// standard desktop shell; it is overridable so a repackaged client using a
+    /// different local scheme can be admitted, and an operator who runs no
+    /// desktop clients can empty it to switch the allowance off entirely.
+    #[serde(default = "default_desktop_origins")]
+    pub desktop_origins: Vec<String>,
+}
+
+fn default_desktop_origins() -> Vec<String> {
+    ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -483,6 +507,12 @@ pub struct StorageConfig {
     /// under the user message and in the docs rail.
     #[serde(default = "default_chat_attachments_dir")]
     pub chat_attachments_dir: String,
+    /// The one desktop installer this instance hands to its own users: the
+    /// installer, its update signature, and a small metadata sidecar. An
+    /// installation that serves its own client is one its users can install and
+    /// update without reaching us at all, which is the point.
+    #[serde(default = "default_desktop_installer_dir")]
+    pub desktop_installer_dir: String,
 }
 
 fn default_message_attachments_dir() -> String {
@@ -495,6 +525,10 @@ fn default_chat_attachments_dir() -> String {
 
 fn default_avatars_dir() -> String {
     "./data/avatars".into()
+}
+
+fn default_desktop_installer_dir() -> String {
+    "./data/desktop-installer".into()
 }
 
 fn default_skills_library_dir() -> String {
@@ -619,6 +653,7 @@ impl Default for BootConfig {
                 static_dir: "../frontend/dist".into(),
                 public_url: "http://localhost:8080".into(),
                 allowed_ws_origins: Vec::new(),
+                desktop_origins: default_desktop_origins(),
             },
             database_url: String::new(),
             redis_url: "redis://localhost:6379".into(),
@@ -635,6 +670,7 @@ impl Default for BootConfig {
                 message_attachments_dir: default_message_attachments_dir(),
                 avatars_dir: default_avatars_dir(),
                 chat_attachments_dir: default_chat_attachments_dir(),
+                desktop_installer_dir: default_desktop_installer_dir(),
             },
             scheduler: SchedulerConfig {
                 worker_threads: 2,
@@ -659,7 +695,7 @@ impl Default for BootConfig {
                 client_secret: String::new(),
             },
             log_level: "info".into(),
-            features: FeaturesConfig { code_interpreter: false, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: true, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false },
+            features: FeaturesConfig { code_interpreter: false, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: true, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false },
             tool_timeout_secs: HashMap::new(),
             code_interpreter_vm: CodeInterpreterConfig::default(),
             code_interpreter: CodeInterpreterBackendConfig::default(),

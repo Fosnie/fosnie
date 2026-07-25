@@ -36,6 +36,18 @@ use crate::audit::{self, AuditEvent};
 use crate::error::{AppError, Result};
 use crate::state::AppState;
 
+/// What a durable resume actually did with the pending call.
+///
+/// Most resumes are terminal: the call ran (or was refused, which is still a
+/// final answer), and the run is finished. A folder call is the exception — it
+/// can only run while its machine is connected, so a resume that arrives with the
+/// machine offline must not be marked done. It is *deferred*: parked again, to be
+/// carried out the next time the owner approves or the machine reappears.
+pub enum ResumeOutcome {
+    Completed,
+    Deferred,
+}
+
 fn token_key(run_id: Uuid) -> String {
     format!("pai:agentrun:{run_id}")
 }
@@ -89,6 +101,13 @@ pub async fn alive(state: &AppState, run_id: Uuid) -> bool {
         .await
         .unwrap_or(0);
     exists > 0
+}
+
+/// Release a run's kill-token without touching its status. Used by the approval
+/// TTL sweep, which claims the terminal status itself in one atomic update and
+/// then only needs the token gone.
+pub async fn release_token(state: &AppState, run_id: Uuid) {
+    drop_token(state, run_id).await;
 }
 
 /// Drop the run's kill-token (used by `finish` to release the TTL key).
@@ -152,6 +171,21 @@ pub async fn decide(state: &AppState, run_id: Uuid, approve: bool) -> Result<boo
     Ok(n == 1)
 }
 
+/// Tell every one of the user's connected clients that a run's approval gate is
+/// settled — approved and about to run, or closed (rejected, timed out,
+/// auto-declined, cancelled). A pending approval card is shown on every device
+/// the user has open, but only one of them takes the decision; without this, the
+/// others sit asking a question that has already been answered. Best-effort and
+/// process-local (the socket registry is; Postgres remains the authority), so a
+/// `None` user or an absent socket simply means nobody to tell here.
+pub fn broadcast_resolved(state: &AppState, user_id: Option<Uuid>, run_id: Uuid, approved: bool) {
+    if let Some(uid) = user_id {
+        state
+            .hub
+            .send_to_user(uid, crate::ws::protocol::ServerFrame::AgentApprovalResolved { run_id, approved });
+    }
+}
+
 /// Final state; releases the kill-token (does NOT force-cancel — that is `kill`).
 pub async fn finish(state: &AppState, run_id: Uuid, status: &str) {
     let _ = sqlx::query!(
@@ -178,8 +212,21 @@ pub async fn execute_approved(state: &AppState, run_id: Uuid) -> Result<()> {
     if status.as_deref() != Some("approved") {
         return Ok(()); // rejected / cancelled / already completed — not ours to run
     }
-    execute_pending(state, run_id).await?;
-    finish(state, run_id, "completed").await;
+    match execute_pending(state, run_id).await? {
+        ResumeOutcome::Completed => finish(state, run_id, "completed").await,
+        // The folder's machine was not there to carry the call out. Return the run
+        // to where it was — waiting for approval — rather than finishing it, so the
+        // next approval or the machine's reconnect runs it. Keep the kill-token.
+        ResumeOutcome::Deferred => {
+            let _ = sqlx::query!(
+                "UPDATE agent_runs SET status = 'awaiting_approval', updated_at = now() \
+                 WHERE id = $1 AND status = 'approved'",
+                run_id,
+            )
+            .execute(&state.pg)
+            .await;
+        }
+    }
     Ok(())
 }
 
@@ -224,7 +271,7 @@ async fn refuse_resume(state: &AppState, run_id: Uuid, chat_id: Uuid, tool: &str
 /// changed since). Only side-effecting MCP and custom tools ever pause for
 /// approval, so only those resume here; a native pending (which no path should
 /// ever persist, since native tools never pause) fails closed and is audited.
-pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<()> {
+pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<ResumeOutcome> {
     let r = sqlx::query!(
         "SELECT chat_id, turn_id, acting_user_id, agent_id, pending_tool, pending_args FROM agent_runs WHERE id = $1",
         run_id
@@ -233,7 +280,9 @@ pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<()> {
     .await?
     .ok_or_else(|| AppError::Validation("agent run not found".into()))?;
 
-    let (Some(chat_id), Some(_turn_id)) = (r.chat_id, r.turn_id) else { return Ok(()) };
+    let (Some(chat_id), Some(turn_id)) = (r.chat_id, r.turn_id) else {
+        return Ok(ResumeOutcome::Completed);
+    };
     let args = r.pending_args.unwrap_or_else(|| json!({}));
 
     // The egress/permission-bearing tools (MCP + custom) resume through the SAME
@@ -249,13 +298,13 @@ pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<()> {
             // unscoped. A NULL-agent run can never legitimately carry such a call.
             let (Some(agent_id), Some(user_id)) = (r.agent_id, r.acting_user_id) else {
                 refuse_resume(state, run_id, chat_id, pending, "no agent or acting user").await;
-                return Ok(());
+                return Ok(ResumeOutcome::Completed);
             };
             let ctx = match crate::auth::load_context(&state.pg, user_id).await {
                 Ok(c) => c,
                 Err(_) => {
                     refuse_resume(state, run_id, chat_id, pending, "acting user unavailable").await;
-                    return Ok(());
+                    return Ok(ResumeOutcome::Completed);
                 }
             };
             // The agent's granted tools are the source of truth for both grant shapes.
@@ -285,7 +334,7 @@ pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<()> {
                 // was the resume-time bypass.
                 if !agent_tools.iter().any(|t| t == pending) {
                     refuse_resume(state, run_id, chat_id, pending, "tool not granted to agent").await;
-                    return Ok(());
+                    return Ok(ResumeOutcome::Completed);
                 }
                 let (_defs, map) =
                     crate::tools::custom::load_enabled_custom(&state.pg, &agent_tools).await;
@@ -300,18 +349,96 @@ pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<()> {
                     }
                 }
             }
-            return Ok(());
+            return Ok(ResumeOutcome::Completed);
         }
     }
 
-    // Nothing else resumes durably. Native tools never pause for approval, so no
-    // native name is ever persisted as a pending call. If one somehow is (a stale
+    // A folder tool is native (it lives in `tools::ALL`), so it does not resume
+    // through the MCP/custom path above and would otherwise be refused below. It
+    // has its own durable resume: the machine carries the call out, addressed over
+    // the hub, after the same re-checks the live loop would do. The arm is kept
+    // narrow — a folder tool AND a live folder binding for this chat — so no other
+    // native gains a resume path by accident.
+    if let Some(pending) = r.pending_tool.as_deref() {
+        if crate::tools::desktop::is_desktop_tool(pending) {
+            // The machine is whichever one owns the chat's bound folder; the run
+            // does not carry a device of its own, so there is one source of truth
+            // and it cannot drift. No live binding ⇒ fail closed.
+            let device_id: Option<Uuid> = sqlx::query_scalar!(
+                "SELECT w.device_id FROM chat_workspace cw \
+                 JOIN device_workspaces w ON w.id = cw.workspace_id \
+                 WHERE cw.chat_id = $1 AND w.revoked_at IS NULL",
+                chat_id,
+            )
+            .fetch_optional(&state.pg)
+            .await?;
+
+            let (Some(user_id), Some(device_id)) = (r.acting_user_id, device_id) else {
+                refuse_resume(state, run_id, chat_id, pending, "no device binding for resume").await;
+                return Ok(ResumeOutcome::Completed);
+            };
+
+            // Not there to carry it out: keep the pause rather than fail it, and
+            // say why. A later approval, or the machine reconnecting, runs it.
+            if !state.hub.is_device_online(user_id, device_id) {
+                audit_run(
+                    state,
+                    Some(user_id),
+                    "system",
+                    "agent.resume_deferred",
+                    run_id,
+                    json!({ "tool": pending, "reason": "device offline" }),
+                )
+                .await;
+                return Ok(ResumeOutcome::Deferred);
+            }
+
+            // Re-authorise from scratch: the approval is not a substitute for
+            // re-checking that the user, the folder, and its level of trust are all
+            // still what they were (tier and boundary are re-checked inside
+            // `execute` → `prepare`).
+            let ctx = match crate::auth::load_context(&state.pg, user_id).await {
+                Ok(c) => c,
+                Err(_) => {
+                    refuse_resume(state, run_id, chat_id, pending, "acting user unavailable").await;
+                    return Ok(ResumeOutcome::Completed);
+                }
+            };
+            let dctx = match crate::tools::desktop::load_ctx(&state.pg, chat_id, Some(device_id)).await
+            {
+                Some(d) => d.with_route(crate::tools::desktop::DesktopSink::DeviceRoute {
+                    user_id,
+                    device_id,
+                }),
+                None => {
+                    refuse_resume(state, run_id, chat_id, pending, "folder no longer connected").await;
+                    return Ok(ResumeOutcome::Completed);
+                }
+            };
+            // A sender kept alive only so the device route's fallback never sees a
+            // closed channel; the route ignores it and addresses the hub.
+            let (tx, _rx) = tokio::sync::mpsc::channel(1);
+            let res = crate::tools::desktop::execute(
+                state, &ctx, chat_id, &tx, &dctx, turn_id, pending, &args,
+            )
+            .await;
+            let status = if res.is_ok() { "ok" } else { "error" };
+            metrics::counter!("tool_calls_total", "tool" => pending.to_string(), "kind" => "desktop", "status" => status)
+                .increment(1);
+            // Ran, or errored honestly (offline mid-call, refused at the boundary):
+            // either way the resume is done and the run is finished.
+            return Ok(ResumeOutcome::Completed);
+        }
+    }
+
+    // Nothing else resumes durably. Other native tools never pause for approval, so
+    // no such name is ever persisted as a pending call. If one somehow is (a stale
     // row, or a future regression), fail closed and audit rather than run it
     // unscoped — there is no native durable-resume path.
     if let Some(pending) = r.pending_tool.as_deref() {
         refuse_resume(state, run_id, chat_id, pending, "native tool has no durable resume path").await;
     }
-    Ok(())
+    Ok(ResumeOutcome::Completed)
 }
 
 /// Audit a run lifecycle event, tagged with `run_id` so the audit doubles as the

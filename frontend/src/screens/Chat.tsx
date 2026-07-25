@@ -25,6 +25,13 @@ import { ArtefactPanelHost } from "@/components/artefacts/ArtefactPanel";
 import { useArtefactActions } from "@/components/artefacts/useArtefactActions";
 import { useArtefactPanel } from "@/components/artefacts/useArtefactPanel";
 import { AgentActivity } from "@/components/agentActivity";
+import { PlanPanel } from "@/components/PlanPanel";
+import { TurnSummary } from "@/components/TurnSummary";
+import { applyResolved, type PendingApproval } from "@/screens/approvalState";
+import { FolderMenu } from "@/components/FolderMenu";
+import { rememberPrefix } from "@/components/FolderApproval";
+import { cancelLocalCall } from "@/shell/folders";
+import { useChatWorkspace } from "@/api/client";
 import { Groundedness } from "@/components/groundedness";
 import { useFeedback } from "@/components/feedback";
 import { useActiveProject } from "@/app/ProjectContext";
@@ -83,6 +90,44 @@ interface Msg {
   reasoningTokens?: number;
   /** Files the user attached to this message — rendered under the bubble + in the rail. */
   attachments?: ChatAttachmentMeta[];
+  /** The turn that produced this message, so a folder change made during it can
+   * be listed and undone from its inline summary (desktop only). */
+  turnId?: string;
+}
+
+// An image attachment under a user message. The bytes route is credential-gated,
+// so the element is handed an object URL fetched with the caller's credentials
+// rather than a link to the endpoint; the URL is revoked when the message
+// scrolls out of the list. Clicking saves the file.
+function AttachmentImage({ att }: { att: ChatAttachmentMeta }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let held: string | null = null;
+    let cancelled = false;
+    chatAttachmentUrl(att.id)
+      .then((u) => {
+        if (cancelled) URL.revokeObjectURL(u);
+        else {
+          held = u;
+          setUrl(u);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (held) URL.revokeObjectURL(held);
+    };
+  }, [att.id]);
+  if (!url) return <div className="ed-hint mono">Loading image…</div>;
+  return (
+    <button
+      className="msg-attach-img"
+      title={att.filename}
+      onClick={() => downloadChatAttachment(att.id, att.filename).catch((e) => toast((e as Error).message))}
+    >
+      <img src={url} alt={att.filename} loading="lazy" />
+    </button>
+  );
 }
 
 export function Chat() {
@@ -126,7 +171,28 @@ export function Chat() {
   // report posts (chat.message_posted).
   const [deepRoadmap, setDeepRoadmap] = useState<{ sections: string[]; done: number; phase: string; detail?: string; sourcesRead?: number } | null>(null);
   // An agent run paused on a gated action, awaiting the user's approve/reject.
-  const [approval, setApproval] = useState<{ runId: string; tool: string; summary: string } | null>(null);
+  // `detail` (present for a folder action) carries what a client can render as a
+  // change to agree to rather than a sentence to wave through.
+  // `state` tracks whether this gate is still open ('pending'), was approved, or
+  // was closed some other way (rejected here, or settled on another device). A
+  // resolved card stays visible with its buttons spent, so a decision taken
+  // elsewhere is not a card that silently vanishes.
+  const [approval, setApproval] = useState<PendingApproval | null>(null);
+  // Live output of a command running in a connected folder, keyed by the turn,
+  // so it can be shown as it arrives and the run stopped mid-way.
+  const [terminalOut, setTerminalOut] = useState<string>("");
+  // The folder this chat is bound to, for the restore block's "show in folder".
+  const boundWorkspace = useChatWorkspace(chatId ?? undefined);
+  // A folder chosen in the composer on a brand-new chat, before it has an id to
+  // bind to. It rides the first `chat.send`; from then the binding lives server-side.
+  const [pendingWorkspace, setPendingWorkspace] = useState<string | null>(null);
+
+  // "Actions only": hide the assistant's prose and leave the plan, tool cards,
+  // approvals, summaries and artefacts — for reviewing what a long agentic turn
+  // actually did without the wall of text. Per-chat and in memory only (kept out
+  // of storage on purpose: it is a viewing mode, not a preference).
+  const [actionsOnly, setActionsOnly] = useState(false);
+  useEffect(() => { setActionsOnly(false); }, [chatId]);
 
   const [showNewAgent, setShowNewAgent] = useState(false);
   const [citation, setCitation] = useState<Citation | null>(null);
@@ -401,6 +467,31 @@ export function Chat() {
     }
   }, [chatId, history.data]);
 
+  // A turn's server-derived activity (the files it changed and commands it ran,
+  // for the end-of-turn summary) lives only on the persisted message — no live
+  // frame carries it. Merge it onto the matching message once history has it, so
+  // the summary appears the moment the turn settles rather than only after a
+  // reload. This is needed because the full reseed above is skipped for a chat we
+  // created in this view; here we touch only settled (non-pending) messages and
+  // only the activity, so a still-streaming turn is never disturbed.
+  useEffect(() => {
+    if (!history.data) return;
+    const byId = new Map(history.data.map((m) => [m.id, m.activity] as const));
+    setMessages((prev) => {
+      let changed = false;
+      const next = prev.map((m) => {
+        if (m.pending) return m;
+        const dbActivity = byId.get(m.id);
+        if (!dbActivity || dbActivity === m.activity) return m;
+        // Only fill in the server-only side (files/commands); keep whatever the
+        // live frames already put on steps/tools if the DB somehow lacks them.
+        changed = true;
+        return { ...m, activity: { ...m.activity, ...dbActivity } };
+      });
+      return changed ? next : prev;
+    });
+  }, [history.data]);
+
   // Streaming follow is owned solely by Virtuoso `followOutput`:
   // a scroll-on-every-[messages]-change effect here would re-pin to the bottom
   // each frame and stop the user scrolling up mid-stream. Sending jumps to the
@@ -428,7 +519,7 @@ export function Chat() {
           flushTokens.current(); // drain any buffered tokens onto the old id first
           const prev = pendingId.current;
           pendingId.current = s.message_id;
-          setMessages((p) => p.map((m) => (m.id === prev ? { ...m, id: s.message_id } : m)));
+          setMessages((p) => p.map((m) => (m.id === prev ? { ...m, id: s.message_id, turnId: s.turn_id } : m)));
           break;
         }
         case "chat.token": {
@@ -474,6 +565,11 @@ export function Chat() {
           } else if (t.phase === "progress") {
             // Live detail from a streaming tool (e.g. "round 2: reading example.com").
             setRunningToolDetail(t.detail ?? null);
+            // A command running in a folder streams its output here; keep it so
+            // the panel shows it building up rather than only the last line.
+            if (t.name === "desktop.terminal_run" && t.detail) {
+              setTerminalOut((prev) => (prev + t.detail).slice(-8000));
+            }
           } else {
             setRunningTool(null);
             setRunningToolDetail(null);
@@ -524,8 +620,17 @@ export function Chat() {
           break;
         }
         case "agent.approval": {
-          const a = f as { run_id: string; tool: string; summary: string };
-          setApproval({ runId: a.run_id, tool: a.tool, summary: a.summary });
+          const a = f as { run_id: string; tool: string; summary: string; detail?: Record<string, unknown> | null };
+          setApproval({ runId: a.run_id, tool: a.tool, summary: a.summary, detail: a.detail ?? null, state: "pending" });
+          if (a.tool === "desktop.terminal_run") setTerminalOut("");
+          break;
+        }
+        case "agent.approval.resolved": {
+          // The gate was decided — here, or on another device the user has open.
+          // Settle the pending card in place (approved, or closed) rather than
+          // leaving it asking a question that already has an answer.
+          const r = f as { run_id: string; approved: boolean };
+          setApproval((prev) => applyResolved(prev, r.run_id, r.approved));
           break;
         }
         case "chat.completed": {
@@ -682,8 +787,21 @@ export function Chat() {
       if (ok) await approveAgentRun(rid);
       else await rejectAgentRun(rid);
     } catch (e) {
+      // A 409 means the gate was already decided (a timeout, or the user on
+      // another device got there first). That is not an error to report — the
+      // decision stands, and the resolved frame has already settled the card.
+      if ((e as { status?: number }).status === 409) return;
       setNotice((e as Error).message);
     }
+  }
+
+  // "Always allow this command here": agree the prefix for the folder this
+  // approval is about, before approving the run, so the next identical command
+  // does not stop to ask. The folder id rides on the approval detail.
+  async function allowPrefixForApproval(prefix: string, withNetwork: boolean) {
+    const wsId = approval?.detail?.workspace_id as string | undefined;
+    if (!wsId) throw new Error("this action is not tied to a folder");
+    await rememberPrefix(wsId, prefix, withNetwork);
   }
 
   // Core send: build the optimistic bubbles + emit the chat.send frame with the
@@ -724,7 +842,17 @@ export function Chat() {
       // sticks (and a regenerate reuses it). Absent on composer-less sends → the chat's
       // stored provider / deployment default.
       llm_provider_id: extras.llmProviderId ?? null,
+      // The folder chosen in the composer, carried so a new chat's first message
+      // already works in it — the chat is created by this send, and could not be
+      // bound to a folder before it existed. Only sent when nothing is bound yet;
+      // an existing chat's binding lives server-side.
+      workspace_id: chatRef.current ? null : (pendingWorkspace ?? null),
     });
+    if (!chatRef.current && pendingWorkspace) {
+      // It rode this send; the chat now exists and will carry it. Clear the
+      // one-shot so a later turn does not re-bind it over a switch.
+      setPendingWorkspace(null);
+    }
     scrollToBottom();
   }
   // Sends that bypass the composer (EmptyChat suggestion, Regenerate): no per-turn
@@ -889,6 +1017,8 @@ export function Chat() {
               onExport={(fmt) => exportChat(chatId, fmt).catch((e) => toast(`Export failed: ${(e as Error).message}`))}
               onArchive={archiveCurrent}
               onShare={() => setSharing(true)}
+              actionsOnly={actionsOnly}
+              onToggleActionsOnly={() => setActionsOnly((v) => !v)}
             />
           )}
           {notice && (
@@ -896,6 +1026,14 @@ export function Chat() {
               {notice} <button onClick={() => setNotice(null)} className="underline">dismiss</button>
             </div>
           )}
+          {/* The live turn's plan, pinned above the stream so "where are we" is
+              always in view. Sourced from the pending message's own steps; it
+              vanishes when the turn ends and the finished message carries the plan. */}
+          {sending ? (() => {
+            const pending = messages.find((m) => m.pending && m.role === "assistant");
+            const steps = pending?.activity?.steps ?? [];
+            return steps.length ? <PlanPanel steps={steps} /> : null;
+          })() : null}
           <Virtuoso
             customScrollParent={threadEl ?? undefined}
             data={messages}
@@ -952,16 +1090,7 @@ export function Chat() {
                       <div className="msg-attachments">
                         {atts.map((a) =>
                           a.mime.startsWith("image/") ? (
-                            <a
-                              key={a.id}
-                              href={chatAttachmentUrl(a.id)}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="msg-attach-img"
-                              title={a.filename}
-                            >
-                              <img src={chatAttachmentUrl(a.id)} alt={a.filename} loading="lazy" />
-                            </a>
+                            <AttachmentImage key={a.id} att={a} />
                           ) : (
                             <button
                               key={a.id}
@@ -1003,7 +1132,7 @@ export function Chat() {
                       <div className="ai-text" style={{ color: "var(--red)" }}>{m.content}</div>
                     ) : (
                       <>
-                        {reasoning && reasoning.trim() && (
+                        {!actionsOnly && reasoning && reasoning.trim() && (
                           <Reasoning reasoning={reasoning} startedAt={m.startedAt} live={live} tokens={m.reasoningTokens} />
                         )}
                         {/* Pre-token wait: pending with no reasoning and no answer yet —
@@ -1022,7 +1151,7 @@ export function Chat() {
                           }
                           return <Thinking startedAt={m.startedAt} />;
                         })()}
-                        {answer && (
+                        {answer && !actionsOnly && (
                           <MessageMarkdown
                             answer={answer}
                             pending={m.pending}
@@ -1047,9 +1176,24 @@ export function Chat() {
                         startedAt={m.startedAt}
                         runningTool={m.pending ? runningTool : null}
                         runningDetail={m.pending ? runningToolDetail : null}
-                        approval={m.pending && approval ? { tool: approval.tool, summary: approval.summary } : null}
+                        approval={m.pending && approval ? { tool: approval.tool, summary: approval.summary, detail: approval.detail, state: approval.state } : null}
                         onApprove={() => decideApproval(true)}
                         onReject={() => decideApproval(false)}
+                        onAllowPrefix={allowPrefixForApproval}
+                        terminalOut={m.pending && runningTool === "desktop.terminal_run" ? terminalOut : null}
+                        onKillTerminal={() => { if (turnId.current) void cancelLocalCall(turnId.current).catch(() => {}); }}
+                      />
+                    ) : null}
+
+                    {/* "What I did": the files this turn changed and the commands it
+                        ran, once it has finished. Renders nothing for a turn with no
+                        side effects. Carries the restore block on the desktop. */}
+                    {!m.pending ? (
+                      <TurnSummary
+                        activity={m.activity}
+                        turnId={m.turnId}
+                        startedAt={m.startedAt}
+                        workspaceId={boundWorkspace.data?.id}
                       />
                     ) : null}
 
@@ -1291,6 +1435,7 @@ export function Chat() {
                 })}
               </>
             )}
+            <FolderMenu chatId={chatId ?? null} pending={pendingWorkspace} setPending={setPendingWorkspace} close={close} />
           </>
         )}
       />
@@ -1332,13 +1477,15 @@ export function Chat() {
 
 // ── Chat header: serif title (double-click to rename) + export/archive menu ──
 function ChatHeader({
-  title, onRename, onExport, onArchive, onShare,
+  title, onRename, onExport, onArchive, onShare, actionsOnly, onToggleActionsOnly,
 }: {
   title: string;
   onRename: (t: string) => void;
   onExport: (fmt: "md" | "json" | "pdf") => void;
   onArchive: () => void;
   onShare: () => void;
+  actionsOnly: boolean;
+  onToggleActionsOnly: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(title);
@@ -1370,6 +1517,14 @@ function ChatHeader({
         <h2 className="chat-h-title serif" onDoubleClick={() => setEditing(true)} title="Double-click to rename">{title}</h2>
       )}
       <div className="chat-h-actions" ref={ref}>
+        <button
+          className={"icon-btn" + (actionsOnly ? " active" : "")}
+          title={actionsOnly ? "Show everything" : "Actions only: hide prose, keep the plan, tools and results"}
+          aria-pressed={actionsOnly}
+          onClick={onToggleActionsOnly}
+        >
+          <Icon.Filter size={15} />
+        </button>
         <button className="icon-btn" title="Rename" onClick={() => setEditing(true)}><Icon.Edit size={15} /></button>
         <div className="menu-wrap">
           <button className="icon-btn" title="More" onClick={() => setMenu((m) => !m)}><Icon.Dots size={16} /></button>

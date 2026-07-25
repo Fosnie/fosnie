@@ -99,6 +99,68 @@ def _openai_reasoning_effort(model: str | None, req: dict[str, Any]) -> str | No
     return None
 
 
+def _tool_effort(effort: str | None, base: str, model: str | None, has_tools: bool) -> str | None:
+    """Reasoning effort for a step that carries tools. gpt-5.x Chat Completions
+    accepts function tools ONLY with reasoning disabled (see the note on
+    `_openai_reasoning_effort`); a reasoning level would 400 and the tools would be
+    dropped on retry, silently stripping the agent of every tool it was given. So a
+    tool-carrying step on gpt-5.x runs reasoning-off; the caller's chosen reasoning
+    is preserved for the final answer segment, which carries no tools. Everything
+    else keeps its effort unchanged."""
+    if has_tools and _is_openai(base) and (model or "").lower().startswith("gpt-5"):
+        return "none"
+    return effort
+
+
+_OPENAI_FN_BAD = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _openai_sanitise_names(
+    tools: list[dict[str, Any]] | None, messages: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]], dict[str, str]]:
+    """OpenAI requires function names to match `^[a-zA-Z0-9_-]+$`, but our tools are
+    namespaced with dots (e.g. `desktop.fs_write`). Sent verbatim they 400 — in the
+    tool DEFINITIONS and in the tool_calls carried in the message HISTORY — which on
+    the graceful retry strips the whole tools array, so the agent silently loses
+    every tool. Rewrite both for the wire (dots etc → `_`) and return a map that
+    restores the originals on the tool_calls the model sends back. No-op for names
+    that are already valid, and for non-OpenAI bases (the caller gates on that)."""
+    remap: dict[str, str] = {}
+
+    def fix(name: str | None) -> str | None:
+        if name and _OPENAI_FN_BAD.search(name):
+            safe = _OPENAI_FN_BAD.sub("_", name)
+            remap[safe] = name  # last-writer-wins; the closed tool set has no clashes
+            return safe
+        return name
+
+    safe_tools = tools
+    if tools:
+        safe_tools = [
+            {**t, "function": {**(t.get("function") or {}), "name": fix((t.get("function") or {}).get("name"))}}
+            if t.get("function")
+            else t
+            for t in tools
+        ]
+    safe_messages = messages
+    if any(m.get("tool_calls") for m in messages):
+        safe_messages = []
+        for m in messages:
+            tcs = m.get("tool_calls")
+            if tcs:
+                m = {
+                    **m,
+                    "tool_calls": [
+                        {**tc, "function": {**(tc.get("function") or {}), "name": fix((tc.get("function") or {}).get("name"))}}
+                        if tc.get("function")
+                        else tc
+                        for tc in tcs
+                    ],
+                }
+            safe_messages.append(m)
+    return safe_tools, safe_messages, remap
+
+
 def _normalise_reasoning_tokens(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     """Surface a normalised `reasoning_tokens` on an OpenAI-shape usage dict
     (OpenAI nests it under `completion_tokens_details.reasoning_tokens`). No-op if
@@ -292,6 +354,11 @@ async def chat_step(
         return await anthropic_adapter.a_chat_step(messages, tools, sampling, model)
     if gemini_adapter.is_gemini_native(base):
         return await gemini_adapter.a_chat_step(messages, tools, sampling, model)
+    # OpenAI rejects our dotted tool names (desktop.fs_write) in the tool defs and in
+    # the history's tool_calls; rewrite them for the wire and restore on the way back.
+    remap: dict[str, str] = {}
+    if _is_openai(base):
+        tools, messages, remap = _openai_sanitise_names(tools, messages)
     stage = _consume_stage()
     guided = _consume_guided()
     model = model or cfg("llm_model", settings.llm_model)
@@ -313,6 +380,7 @@ async def chat_step(
             payload["presence_penalty"] = sampling["presence_penalty"]
     req = _reasoning_request(sampling)
     effort = _openai_reasoning_effort(model, req) if (req and _is_openai(base)) else None
+    effort = _tool_effort(effort, base, model, bool(tools))
     if effort:
         payload["reasoning_effort"] = effort
     # Local/vLLM qwen models: steer `enable_thinking` from the reasoning toggle (they
@@ -364,7 +432,8 @@ async def chat_step(
                 args = json.loads(args)
             except json.JSONDecodeError:
                 args = {}
-        tool_calls.append({"id": t.get("id"), "name": fn.get("name"), "arguments": args or {}})
+        nm = fn.get("name")
+        tool_calls.append({"id": t.get("id"), "name": remap.get(nm, nm), "arguments": args or {}})
     content = msg.get("content") or ""
     # a model may emit a tool call as TEXT in `content` instead of
     # the native array (this leaked a `read_skill` UUID into an answer). When no native
@@ -617,6 +686,11 @@ async def stream_chat(
     stage = _consume_stage()
     model = model or cfg("llm_model", settings.llm_model)
     token_key, sampling_ok = _gen_caps(base, model)
+    # The message history (and any tools) may carry our dotted tool names, which
+    # OpenAI rejects — sanitise before the wire so the final answer does not 400 on
+    # a prior desktop tool call. Only real OpenAI needs this.
+    if _is_openai(base):
+        tools, messages, _ = _openai_sanitise_names(tools, messages)
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -636,6 +710,10 @@ async def stream_chat(
     # never sent to vLLM/Ollama/local) when not applicable, so it can't 400.
     req = _reasoning_request(sampling)
     effort = _openai_reasoning_effort(model, req) if (req and _is_openai(base)) else None
+    # NB: do NOT force reasoning-off here when tools are present. Unlike the
+    # non-streaming `chat_step`, this path routes a reasoning gpt-5.x + tools call
+    # through the Responses API (`want_tools_responses` below), which carries tools
+    # AND reasoning; the chat-completions fallback disables reasoning itself.
     if effort:
         payload["reasoning_effort"] = effort
     # Whether to forward the reasoning trace to the client (paid for either way).
