@@ -47,6 +47,8 @@ import {
   useMyDevices,
   createPairingCode,
   revokeDevice,
+  useDesktopInstaller,
+  downloadDesktopInstaller,
   type Device,
   type CreatedApiKey,
   type MyProvider,
@@ -60,6 +62,7 @@ import { confirmDialog, toast } from "@/components/dialogs";
 import { PanelHead } from "@/components/editor";
 import { Icon } from "@/components/icons";
 import { ShellAbout } from "@/shell/About";
+import { isShell } from "@/shell/detect";
 import { useAppearance } from "@/app/AppearanceContext";
 import { useAuth } from "@/auth/AuthProvider";
 import { authConfig } from "@/auth/config";
@@ -585,6 +588,49 @@ const PLATFORM_LABEL: Record<Device["platform"], string> = {
   linux: "Linux",
 };
 
+// Where the desktop app comes from. If an administrator has put the installer on
+// this instance, it is handed out from here and nobody has to go anywhere else —
+// which for an organisation that does not let its machines reach the internet is
+// the whole point. Otherwise this is a link to where the release lives.
+//
+// Hidden inside the installed client: it is already the desktop app.
+function GetTheApp() {
+  const installer = useDesktopInstaller(!isShell());
+  const [busy, setBusy] = useState(false);
+  if (isShell()) return null;
+
+  const meta = installer.data;
+  if (!meta) return null;
+
+  if (!meta.available) {
+    return (
+      <a className="btn btn-line sm" href={meta.download_url} target="_blank" rel="noreferrer">
+        <Icon.Download size={14} /> Get the desktop app
+      </a>
+    );
+  }
+
+  const get = async () => {
+    setBusy(true);
+    try {
+      await downloadDesktopInstaller(meta.filename ?? "fosnie-desktop.msi");
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button type="button" className="btn btn-line sm" disabled={busy} onClick={get}>
+        <Icon.Download size={14} /> {busy ? "Downloading…" : "Get the desktop app"}
+      </button>
+      <span className="ed-hint mono">v{meta.version}</span>
+    </>
+  );
+}
+
 // Paired desktop machines. A sibling of the API-keys tab, deliberately apart: a
 // device is minted by pairing (a code read into the app), not typed in here, and
 // a device token reaches this instance's own surface rather than the
@@ -688,10 +734,11 @@ function DevicesSection() {
         </div>
       )}
 
-      <div className="prof-card" style={{ marginBottom: 12, display: "block" }}>
+      <div className="prof-card" style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
         <button type="button" className="btn btn-gold sm" disabled={busy} onClick={pair}>
           <Icon.Desktop size={14} /> Pair a device
         </button>
+        <GetTheApp />
       </div>
 
       {live.length === 0 && !devices.isLoading && (

@@ -2607,6 +2607,39 @@ export async function adminRevokeDevice(userId: string, deviceId: string) {
   return apiFetch<void>(`/api/admin/users/${userId}/devices/${deviceId}`, { method: "DELETE" });
 }
 
+/** Whether this instance serves the desktop installer itself, and where to send
+ * people if it does not. An installation that hosts its own copy lets an
+ * organisation get the client without anyone leaving its network. */
+export interface DesktopInstaller {
+  available: boolean;
+  version: string | null;
+  filename: string | null;
+  size: number | null;
+  sha256: string | null;
+  uploaded_at: string | null;
+  has_signature: boolean;
+  /** Where to go when `available` is false. */
+  download_url: string;
+}
+
+export function useDesktopInstaller(enabled = true) {
+  return useQuery({
+    queryKey: ["desktop-installer"],
+    queryFn: () => apiFetch<DesktopInstaller>("/api/desktop/installer/meta"),
+    enabled,
+  });
+}
+
+/** Fetch the locally-served installer. Through the request layer rather than a
+ * plain link: the bytes are behind the session, so a bare href would 401. */
+export async function downloadDesktopInstaller(filename: string): Promise<void> {
+  const res = await apiRequest("/api/desktop/installer");
+  if (!res.ok) {
+    throw new Error(`${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  }
+  saveBlob(await res.blob(), filename);
+}
+
 // --- Deep Research -----------------------------------
 
 export interface ResearchRequestBody {

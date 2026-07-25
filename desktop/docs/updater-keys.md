@@ -42,6 +42,19 @@ signing, or sign on a machine where you can.
 If a release is ever signed with the wrong password, do not try to patch around
 it. Rebuild and re-sign.
 
+**This is why CI does not sign.** The key in use has a password, and the only way
+to supply one reliably is to type it, which no runner can do. The release
+workflow therefore takes its unsigned path: it produces a client, but no update
+artefact, and its publish job says so and stops rather than uploading a release
+nobody could ever move off. A release is built and signed on the release machine,
+assembled with `release/publish-desktop.sh`, and uploaded from there.
+
+The workflow still carries `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, so if the key is
+ever replaced with a password-free one the only change needed is the secret
+itself. Do not add the password to the secrets in the meantime: an artefact
+signed with an empty password when one was intended looks exactly like a good one
+until every installation refuses it at once.
+
 ### Signing a release
 
 `tauri build` produces the installer and, because `createUpdaterArtifacts` is on,
@@ -59,6 +72,21 @@ that has no key builds with `npm --prefix desktop run build:unsigned`, which
 produces the same client without the update artefact. That is what CI does when
 the key secret is absent, and what to use for a local test build.
 
+The build leaves two files beside each other: the installer,
+`Fosnie_0.1.1_x64_en-US.msi`, and its detached signature,
+`Fosnie_0.1.1_x64_en-US.msi.sig`. The signature is over the installer itself,
+not over an archive of it, and it records the name of the file it signed:
+
+```text
+trusted comment: timestamp:… file:Fosnie_0.1.1_x64_en-US.msi
+```
+
+That name and the manifest's `url` must agree. If they do not, every client
+downloads the update happily and then refuses it at the verification step, all at
+once and with nothing wrong on the server. `release/publish-desktop.sh` refuses
+to assemble a release whose signature names a different file, which is the point
+of running it rather than copying files by hand.
+
 Then publish, at `https://get.fosnie.dev/desktop/latest.json`:
 
 ```json
@@ -69,7 +97,7 @@ Then publish, at `https://get.fosnie.dev/desktop/latest.json`:
   "platforms": {
     "windows-x86_64": {
       "signature": "<contents of the .sig file>",
-      "url": "https://get.fosnie.dev/desktop/Fosnie_0.1.1_x64_en-US.msi.zip"
+      "url": "https://get.fosnie.dev/desktop/Fosnie_0.1.1_x64_en-US.msi"
     }
   }
 }
@@ -77,6 +105,31 @@ Then publish, at `https://get.fosnie.dev/desktop/latest.json`:
 
 Clients check that manifest at startup and once a day, download quietly, and ask
 before installing.
+
+## Publishing
+
+```sh
+release/publish-desktop.sh --bundle desktop/src-tauri/target/release/bundle/msi \
+                           --version 0.1.1 --out dist
+```
+
+It writes the three objects to upload and checks what it was given first: exactly
+one installer and one signature, the signature naming that installer, and the
+version agreeing with the client's own configuration.
+
+**Upload the manifest last, every time.** The manifest is what tells every
+installed client that a new version exists; published before the installer it
+names, it points all of them at a file that is not there yet. The same ordering
+holds wherever a release is served from: the published channel, an instance
+serving its own copy, or a hand upload.
+
+An instance can also serve the installer to its own users, which is how an
+organisation that does not let its machines reach the internet gets the client
+and its updates. A super-admin uploads the installer and its `.sig` under
+**Super-admin → Desktop client**; paired clients then look at that instance
+before the published channel. The instance never serves an update it has no
+signature for, because a client that receives a manifest it cannot verify stops
+instead of looking elsewhere.
 
 ### Rotating the key
 

@@ -34,6 +34,7 @@ pub mod chats;
 pub mod devices;
 pub mod agent_runs;
 pub mod config_admin;
+pub mod desktop;
 pub mod documents;
 pub mod profile;
 pub mod export;
@@ -192,6 +193,18 @@ pub fn router(
         .route("/api/admin/ping", get(admin_ping))
         .route("/api/admin/breakglass/grants", get(breakglass_grants))
         .route("/api/admin/integrations/{kind}", axum::routing::put(integrations::set_enabled))
+        // The desktop installer this instance hands to its own users. Break-glass
+        // rather than client-admin: this decides what software an entire estate is
+        // offered and then runs, which is a different order of thing from
+        // configuring the platform. The cap is generous but deliberate — the body
+        // is buffered whole, so it is also the memory this route can cost.
+        .route(
+            "/api/admin/desktop-installer",
+            get(desktop::admin_meta)
+                .post(desktop::upload)
+                .delete(desktop::clear)
+                .layer(DefaultBodyLimit::max(300 * 1024 * 1024)),
+        )
         // Super-admin panel (ephemeral break-glass): session + dynamic tuning knobs,
         // cross-user chat viewing, and account deactivate / GDPR erasure.
         .route("/api/admin/super/session", get(superadmin::session))
@@ -277,6 +290,14 @@ pub fn router(
                 "/api/admin/users/{id}/devices/{device_id}",
                 delete(devices::admin_revoke_device),
             )
+            // Getting the desktop client, and keeping it current, from this
+            // instance rather than from us. These three are deliberately NOT
+            // fenced to browser sessions: the updater in an installed client
+            // carries a device token and no cookie, and it is the principal they
+            // exist for. `AuthUser` already accepts either.
+            .route("/api/desktop/installer", get(desktop::download))
+            .route("/api/desktop/latest.json", get(desktop::latest_manifest))
+            .route("/api/desktop/installer/meta", get(desktop::meta))
             // Folders a paired machine has been told it may work in. Connecting
             // one starts on that machine (device token only); everything else —
             // seeing them, withdrawing them, choosing one for a conversation,

@@ -28,7 +28,10 @@ const HDR = "X-Break-Glass";
 
 async function bg(grant: string, path: string, init?: RequestInit): Promise<Response> {
   const headers: Record<string, string> = { [HDR]: grant, ...(init?.headers as Record<string, string>) };
-  if (init?.body) headers["Content-Type"] = "application/json";
+  // JSON is the default because almost everything here is JSON, but only a
+  // default: a caller sending bytes says so and is not overruled.
+  const typed = Object.keys(headers).some((k) => k.toLowerCase() === "content-type");
+  if (init?.body && !typed) headers["Content-Type"] = "application/json";
   const res = await fetch(apiUrl(path), { ...init, headers });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -96,6 +99,7 @@ function Gate({ onUnlock }: { onUnlock: (grant: string, s: Session["grant"]) => 
 const SECTIONS = [
   { id: "settings", label: "Settings", ready: true },
   { id: "integrations", label: "Integrations", ready: true },
+  { id: "desktop", label: "Desktop client", ready: true },
   { id: "chats", label: "All chats", ready: true },
   { id: "accounts", label: "Accounts", ready: true },
 ] as const;
@@ -150,6 +154,7 @@ function Panel({ grant, session, onLock }: { grant: string; session: NonNullable
         <main className="sa-main">
           {section === "settings" && <Settings grant={grant} />}
           {section === "integrations" && <Integrations grant={grant} />}
+          {section === "desktop" && <DesktopClient grant={grant} />}
           {section === "chats" && <Chats grant={grant} />}
           {section === "accounts" && <Accounts grant={grant} />}
         </main>
@@ -214,7 +219,7 @@ function Settings({ grant }: { grant: string }) {
     return [...m.entries()];
   }, [knobs]);
 
-  const GROUP_LABEL: Record<string, string> = { rag: "Retrieval (RAG)", chat: "Chat", ingest: "Ingestion", groundedness: "Groundedness", workflows: "Workflows", voice: "Voice", research: "Deep Research" };
+  const GROUP_LABEL: Record<string, string> = { rag: "Retrieval (RAG)", chat: "Chat", ingest: "Ingestion", groundedness: "Groundedness", workflows: "Workflows", voice: "Voice", research: "Deep Research", desktop: "Desktop client", api: "API" };
 
   if (!knobs) return <div className="ed-hint mono">{err ? <span style={{ color: "var(--red)" }}>{err}</span> : "Loading…"}</div>;
 
@@ -251,12 +256,14 @@ function Settings({ grant }: { grant: string }) {
                   />
                 ) : (
                   <>
+                    {/* A free-text knob (a URL, say) needs room and no spinner;
+                        the numeric ones keep their bounds. */}
                     <input
                       className="field sm"
-                      type="number"
-                      style={{ width: 96 }}
-                      min={k.min ?? undefined}
-                      max={k.max ?? undefined}
+                      type={k.value_type === "string" ? "text" : "number"}
+                      style={{ width: k.value_type === "string" ? 280 : 96 }}
+                      min={k.value_type === "string" ? undefined : k.min ?? undefined}
+                      max={k.value_type === "string" ? undefined : k.max ?? undefined}
                       value={drafts[k.key] ?? ""}
                       onChange={(e) => setDrafts((d) => ({ ...d, [k.key]: e.target.value }))}
                     />
@@ -339,6 +346,151 @@ function Integrations({ grant }: { grant: string }) {
           ))}
         </section>
       )}
+    </div>
+  );
+}
+
+// --- Desktop client (the installer this instance hands out) -------------------
+
+interface Installer {
+  available: boolean;
+  version: string | null;
+  filename: string | null;
+  size: number | null;
+  sha256: string | null;
+  uploaded_at: string | null;
+  has_signature: boolean;
+  download_url: string;
+}
+
+const KINDS = [
+  { kind: "installer", label: "Installer", accept: ".msi", hint: "The .msi people install." },
+  { kind: "signature", label: "Update signature", accept: ".sig", hint: "The .sig produced beside it. Without it, installed clients keep updating from the public channel." },
+  { kind: "manifest", label: "Update manifest", accept: ".json", hint: "Optional. Read for its release notes and date; where it points is ignored." },
+] as const;
+
+function megabytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function DesktopClient({ grant }: { grant: string }) {
+  const [meta, setMeta] = useState<Installer | null>(null);
+  const [version, setVersion] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const m: Installer = await (await bg(grant, "/api/admin/desktop-installer")).json();
+      setMeta(m);
+      if (m.version) setVersion(m.version);
+    } catch (e) { setErr((e as Error).message); }
+  }
+  useEffect(() => { void load(); /* eslint-disable-next-line */ }, []);
+
+  async function send(kind: string, file: File) {
+    const v = version.trim();
+    if (!v) { setErr("Give the version these files belong to first."); return; }
+    setBusy(kind); setErr(null);
+    try {
+      const q = `filename=${encodeURIComponent(file.name)}&kind=${kind}&version=${encodeURIComponent(v)}`;
+      await bg(grant, `/api/admin/desktop-installer?${q}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      });
+      await load();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(null); }
+  }
+
+  async function remove() {
+    setBusy("clear"); setErr(null);
+    try {
+      await bg(grant, "/api/admin/desktop-installer", { method: "DELETE" });
+      await load();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setBusy(null); }
+  }
+
+  return (
+    <div>
+      <h2 className="sa-title">Desktop client</h2>
+      <p className="ed-hint" style={{ marginBottom: 18 }}>
+        Serve the desktop installer from here and nobody has to fetch it from the internet: the profile page hands out
+        this copy, and clients paired with this instance look here for updates before anywhere else. One version is
+        kept, so uploading a different one replaces what is here.
+      </p>
+      {err && <div className="ed-hint" style={{ color: "var(--red)", marginBottom: 12 }}>{err}</div>}
+
+      <section className="sa-card">
+        <h3 className="sa-card-h">Currently served</h3>
+        {!meta ? <div className="ed-hint mono">Loading…</div> : !meta.available ? (
+          <div className="ed-hint">Nothing here yet. Until something is uploaded, people are sent to <span className="mono">{meta.download_url}</span> instead.</div>
+        ) : (
+          <>
+            <div className="sa-knob">
+              <div className="sa-knob-l">
+                <div className="sa-knob-label">Version {meta.version}</div>
+                <div className="field-help mono">{meta.filename}{meta.size ? ` · ${megabytes(meta.size)}` : ""} · uploaded {meta.uploaded_at}</div>
+              </div>
+              <div className="sa-knob-r">
+                <button className="btn btn-line sm" disabled={busy === "clear"} onClick={remove}>
+                  {busy === "clear" ? "…" : "Remove"}
+                </button>
+              </div>
+            </div>
+            <div className="sa-knob">
+              <div className="sa-knob-l">
+                <div className="sa-knob-label">SHA-256</div>
+                {/* Shown because vetting pipelines check it before an installer is
+                    allowed near a managed machine. */}
+                <div className="field-help mono" style={{ wordBreak: "break-all" }}>{meta.sha256}</div>
+              </div>
+            </div>
+            {!meta.has_signature && (
+              <div className="ed-hint" style={{ color: "var(--red)" }}>
+                No update signature here, so this copy is offered as a download only: installed clients go on updating
+                from the public channel until the .sig is uploaded too.
+              </div>
+            )}
+          </>
+        )}
+      </section>
+
+      <section className="sa-card">
+        <h3 className="sa-card-h">Upload</h3>
+        <div className="sa-knob">
+          <div className="sa-knob-l">
+            <div className="sa-knob-label">Version</div>
+            <div className="field-help">Which release these files are, exactly as the build names it. A different version replaces what is stored.</div>
+          </div>
+          <div className="sa-knob-r">
+            <input className="field sm mono" style={{ width: 120 }} placeholder="0.1.1" value={version} onChange={(e) => setVersion(e.target.value)} />
+          </div>
+        </div>
+        {KINDS.map((k) => (
+          <div key={k.kind} className="sa-knob">
+            <div className="sa-knob-l">
+              <div className="sa-knob-label">{k.label}</div>
+              <div className="field-help">{k.hint}</div>
+            </div>
+            <div className="sa-knob-r">
+              <input
+                type="file"
+                accept={k.accept}
+                disabled={busy !== null || !version.trim()}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (f) void send(k.kind, f);
+                }}
+              />
+              {busy === k.kind && <span className="ed-hint mono">uploading…</span>}
+            </div>
+          </div>
+        ))}
+      </section>
     </div>
   );
 }

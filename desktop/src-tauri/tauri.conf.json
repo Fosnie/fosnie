@@ -33,7 +33,8 @@
     },
     "updater": {
       "endpoints": ["https://get.fosnie.dev/desktop/latest.json"],
-      "pubkey": "REPLACE_WITH_THE_RELEASE_PUBLIC_KEY"
+      "dangerousInsecureTransportProtocol": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRFQjQwRjhBNzZBQjE5RjQKUldUMEdhdDJpZyswVG1WaUxMcXJlcnV5RHAvbkphQ2ZKOEFiSXllbDdxV3pZczJqaVlyRjdMT28K"
     }
   },
   "bundle": {

@@ -24,13 +24,24 @@
 //!
 //! The download is verified against the signing key compiled into this build
 //! before it is offered at all. An update that does not verify is not an update.
+//!
+//! Where it looks is the part worth reading. The instance this client is paired
+//! with is asked first, and only if it has nothing to say is the public channel
+//! asked. An organisation that does not let its machines reach the internet can
+//! therefore keep its whole estate current from its own server, with its own
+//! administrator deciding when the version moves; an ordinary installation
+//! notices nothing, because an instance serving no installer answers with a
+//! plain "nothing here" and the check carries on.
 
 use std::sync::Mutex;
 use std::time::Duration;
 
+use reqwest::Url;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
+
+use crate::state::Shell;
 
 /// A release has been fetched, verified, and is waiting for a yes.
 pub const EVENT_UPDATE_READY: &str = "shell:update-ready";
@@ -71,21 +82,7 @@ pub fn spawn_checks(app: AppHandle) {
 /// that must not happen is announcing an update that then cannot be installed,
 /// so the slot is only filled once the bytes are in hand and verified.
 async fn check(app: &AppHandle) {
-    let updater = match app.updater() {
-        Ok(updater) => updater,
-        Err(e) => {
-            tracing::debug!(error = %e, "no update channel is configured");
-            return;
-        }
-    };
-    let update = match updater.check().await {
-        Ok(Some(update)) => update,
-        Ok(None) => return,
-        Err(e) => {
-            tracing::debug!(error = %e, "could not check for updates");
-            return;
-        }
-    };
+    let Some(update) = find(app).await else { return };
 
     let version = update.version.clone();
     let notes = update.body.clone();
@@ -110,6 +107,81 @@ async fn check(app: &AppHandle) {
     }
     tracing::info!(%version, "an update is ready to install");
     let _ = app.emit(EVENT_UPDATE_READY, UpdateReady { version, notes });
+}
+
+/// Ask the instance, then the public channel, and stop at the first answer.
+async fn find(app: &AppHandle) -> Option<Update> {
+    if let Some((url, token)) = instance_endpoint(app).await {
+        tracing::debug!(%url, "asking the instance for an update");
+        if let Some(update) = ask(app, Some(url), Some(token)).await {
+            return Some(update);
+        }
+    }
+    ask(app, None, None).await
+}
+
+/// The instance's own update manifest, and the credential to read it with.
+///
+/// Both come from the pairing: an unpaired client has no instance to ask and
+/// goes straight to the public channel.
+async fn instance_endpoint(app: &AppHandle) -> Option<(Url, String)> {
+    let shell = app.try_state::<Shell>()?;
+    let base = shell.paired_base_url()?;
+    let token = shell.pairing().await?.token;
+    let url = format!("{}/api/desktop/latest.json", base.trim_end_matches('/'))
+        .parse()
+        .ok()?;
+    Some((url, token))
+}
+
+/// One check, against one endpoint, carrying exactly the credential that
+/// endpoint should see.
+///
+/// Deliberately one endpoint at a time rather than a list. The updater applies
+/// its headers to every endpoint it is given and carries them into the download,
+/// so an instance and the public channel in the same list would mean this
+/// client's device token being sent to a server that has no business holding it.
+///
+/// `None` means the compiled-in public endpoint, with no credential at all.
+async fn ask(app: &AppHandle, url: Option<Url>, bearer: Option<String>) -> Option<Update> {
+    let mut builder = app.updater_builder().clear_headers();
+    if let Some(url) = url {
+        builder = match builder.endpoints(vec![url]) {
+            Ok(b) => b,
+            Err(e) => {
+                // The address a client is paired with is not something it gets
+                // to choose, so this is worth saying out loud once rather than
+                // failing silently: an instance reached over plain HTTP is
+                // refused here unless the build permits it.
+                tracing::warn!(error = %e, "this update endpoint cannot be used");
+                return None;
+            }
+        };
+    }
+    if let Some(token) = bearer {
+        builder = match builder.header("Authorization", format!("Bearer {token}")) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!(error = %e, "could not present the device token");
+                return None;
+            }
+        };
+    }
+
+    let updater = match builder.build() {
+        Ok(updater) => updater,
+        Err(e) => {
+            tracing::debug!(error = %e, "no update channel is configured");
+            return None;
+        }
+    };
+    match updater.check().await {
+        Ok(update) => update,
+        Err(e) => {
+            tracing::debug!(error = %e, "could not check for updates");
+            None
+        }
+    }
 }
 
 /// The release waiting to be installed, if there is one.

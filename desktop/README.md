@@ -84,6 +84,47 @@ key rotation are in [docs/updater-keys.md](docs/updater-keys.md) — read it bef
 publishing anything, and note in particular that the Windows upgrade code in
 `src-tauri/tauri.conf.json` is fixed permanently and must never be regenerated.
 
+`release/publish-desktop.sh` assembles what is published from a finished build:
+the installer under its versioned name, the same file under a stable one, and the
+update manifest. The release workflow runs that same script, so a release
+uploaded by hand and one uploaded by CI are the same bytes arranged the same way.
+
+## Building it yourself
+
+Anyone can build this client from source, and an organisation that will only run
+software it compiled itself is meant to:
+
+```sh
+npm --prefix ../frontend install
+npm install
+npm run build:unsigned
+```
+
+The installer appears under `src-tauri/target/release/bundle/msi/`. Two honest
+caveats, in full at
+[fosnie.dev/docs/desktop-build](https://fosnie.dev/docs/desktop-build): the
+result is unsigned, so Windows and endpoint protection will warn about it on
+every machine that installs it; and updates verify against the public key
+compiled into the build, so a self-built client updates from your own signed
+manifest or not at all.
+
+## Where updates come from
+
+The client asks the instance it is paired with before it asks anything else:
+`<instance>/api/desktop/latest.json`, with its device token, and only then the
+published channel. An instance serving no installer answers with a plain "nothing
+here" and the check carries on, so this costs an ordinary installation nothing
+and lets a closed network keep its whole estate current from its own server.
+
+`plugins.updater.dangerousInsecureTransportProtocol` in `tauri.conf.json` is on
+for that reason, and it is a smaller thing than the name suggests: an instance is
+frequently reached over plain HTTP inside a private network, and without this the
+client would refuse to ask it and quietly fall back to the internet — the exact
+outcome the arrangement exists to avoid. What it relaxes is the transport of the
+manifest. The installer itself is verified against the signing key compiled into
+the build, over any transport, and an update that does not verify is not
+installed.
+
 ## The icon
 
 `app-icon.png` is the source: the brand mark on the brand's near-black, composed

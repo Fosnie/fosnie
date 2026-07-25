@@ -507,6 +507,12 @@ pub struct StorageConfig {
     /// under the user message and in the docs rail.
     #[serde(default = "default_chat_attachments_dir")]
     pub chat_attachments_dir: String,
+    /// The one desktop installer this instance hands to its own users: the
+    /// installer, its update signature, and a small metadata sidecar. An
+    /// installation that serves its own client is one its users can install and
+    /// update without reaching us at all, which is the point.
+    #[serde(default = "default_desktop_installer_dir")]
+    pub desktop_installer_dir: String,
 }
 
 fn default_message_attachments_dir() -> String {
@@ -519,6 +525,10 @@ fn default_chat_attachments_dir() -> String {
 
 fn default_avatars_dir() -> String {
     "./data/avatars".into()
+}
+
+fn default_desktop_installer_dir() -> String {
+    "./data/desktop-installer".into()
 }
 
 fn default_skills_library_dir() -> String {
@@ -660,6 +670,7 @@ impl Default for BootConfig {
                 message_attachments_dir: default_message_attachments_dir(),
                 avatars_dir: default_avatars_dir(),
                 chat_attachments_dir: default_chat_attachments_dir(),
+                desktop_installer_dir: default_desktop_installer_dir(),
             },
             scheduler: SchedulerConfig {
                 worker_threads: 2,
