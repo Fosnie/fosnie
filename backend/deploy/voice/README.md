@@ -142,6 +142,30 @@ measurement, the unit everything else uses.
 The macOS / no-CUDA profile uses the sherpa-onnx CPU streaming engine, or simply the
 batch fallback. Live voice is **off by default** on the macOS example for this reason.
 
+## Dialling a line without a carrier (`softphone.py`)
+
+A telephone line answered by the deployment's own listener can be dialled from this
+box, with no carrier account and no telephone number. `softphone.py` stands in for
+the switchboard for the length of one call: it asks the deployment what to do with an
+incoming call, presents the single-use identifier it is given over TCP, streams 20 ms
+narrowband frames both ways, and asks afterwards whether anybody is to be rung. None
+of it is a test double: the identifier, the framing and the audio are the real ones.
+
+```
+uv run --with sounddevice --with numpy --with requests \
+  python softphone.py --to +441315550100 --key <the deployment's shared secret>
+```
+
+Speak when it says the line is up; Ctrl-C hangs up. `--wav f.wav` plays a sound file
+down the line instead of the microphone and `--save g.wav` keeps what the line said,
+which together make an unattended run. `--base`, `--host` and `--port` point it at a
+deployment other than `127.0.0.1:8088` / `127.0.0.1:9500`.
+
+Two things to expect on a box running batch engines: the spoken notice takes some
+seconds before anything the caller says is listened to, and a local model needs a
+while to answer, so an unattended `--seconds` window that is too short tears the call
+down mid-reply.
+
 ## Smoke
 
 ```
