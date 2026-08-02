@@ -34,7 +34,8 @@ tier (one product, one tier). It runs entirely inside
 your own infrastructure: no data, prompts, or documents leave it unless you
 explicitly enable an external connector. Bring your own model, a local LLM (vLLM,
 Ollama, llama.cpp) or an external API key (Anthropic, OpenAI, Gemini), and Fosnie
-gives you retrieval-augmented chat, agents, document work, research, and voice on top.
+gives you retrieval-augmented chat, agents, document work, research, and voice on top,
+in the browser, on your desktop, and on your telephone.
 
 Built for teams that hold other people's confidential data under a duty of care
 (legal, audit, finance, healthcare), where *"where does my data go?"* is the first question.
@@ -46,10 +47,14 @@ Built for teams that hold other people's confidential data under a duty of care
 - **🔌 Model-agnostic + BYOK**: point each capability (LLM, embeddings, rerank, OCR, STT/TTS) at a local engine or any external API, configured in the UI. Native Anthropic adapter (tools + extended thinking).
 - **🤖 Agents & workflows**: action-taking agent runs with human-in-the-loop approval, durable resume, and event-driven automations.
 - **🔎 Deep Research**: multi-step research over your documents, the web, or both, with a fully cited report.
-- **📄 Document work**: generate DOCX/PDF/XLSX/HTML, tracked-change accept/reject, tabular review.
-- **🗣️ Voice**: speech-to-text and text-to-speech, including live streaming with barge-in.
+- **📄 Document work**: generate DOCX/PPTX/PDF/XLSX/HTML, tracked-change accept/reject, tabular review.
+- **☎️ Telephone**: point a number at your instance and an agent answers it, taking messages, screening callers, booking appointments and handing over to a person. Carried by a telephone company or by your own telephone system, where the audio never leaves your network.
+- **🖥️ Desktop app**: Windows and macOS, paired to your own instance, able to work in a folder on your computer with every write, deletion and command shown to you first and reversible.
+- **🗣️ Voice**: speech-to-text and text-to-speech, including live streaming that searches your Libraries while you speak.
+- **🐍 Code interpreter**: agents write and run real Python in a zero-egress sandbox built fresh for each run (Firecracker or gVisor).
 - **✅ Groundedness**: verify answers against their sources and flag unsupported claims.
-- **🛠️ Tools & MCP**: built-in tools plus a Model Context Protocol host for your own connectors.
+- **🛠️ Tools & MCP**: built-in tools plus one-click Model Context Protocol connections over OAuth 2.1.
+- **🔗 OpenAI-compatible API**: point your own code at your instance with the API client you already use.
 - **👥 Teams & messaging**: group and project chats and direct messages, with at-rest encryption.
 - **🧾 Tamper-detecting audit**: a SHA-256 hash-chained, append-only audit log.
 
@@ -110,6 +115,8 @@ reproducible upgrades).
 | Deep Research, web search, code interpreter | ✅ | ✅ |
 | Agents + workflows (human-in-the-loop) | ✅ | ✅ |
 | Voice (incl. live streaming) | ✅ | ✅ |
+| Telephone lines answered by an agent | ✅ | ✅ |
+| Desktop app with connected folders | ✅ | ✅ |
 | Groundedness / verification | ✅ | ✅ |
 | Model-agnostic providers + per-user BYOK | ✅ | ✅ |
 | MCP host + connectors | ✅ | ✅ |
