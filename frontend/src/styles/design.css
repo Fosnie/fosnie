@@ -1138,6 +1138,12 @@ details[open] > .cites-summary .cites-chev { transform: rotate(180deg); }
    Panels
    ============================================================ */
 .panel { max-width: 1040px; margin: 0 auto; padding: 36px 40px 60px; }
+/* A data table with more columns than the panel is wide scrolls in its own box.
+   Without it the table is simply wider than everything else and the whole page
+   gains a horizontal scrollbar, dragging the headings and prose off-screen with
+   it. At every width, not only the narrow one: the panel is capped well below a
+   desktop viewport, so a wide table overflows it there too. */
+.table-scroll { overflow-x: auto; max-width: 100%; }
 .panel-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 30px; }
 .panel-title { font-size: 36px; color: var(--ink-cream); letter-spacing: -0.01em; }
 .panel-sub { color: var(--ink-2); font-size: 14.5px; margin: 8px 0 0; max-width: 520px; line-height: 1.55; }

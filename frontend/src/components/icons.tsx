@@ -21,7 +21,7 @@ import {
   Calculator, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight,
   CircleCheck, Clock, Copy, Database, Dot, Download, Ellipsis, FileStack,
   FileText, Files, Flag, Folder, Globe, Info, KeyRound, Layers, LayoutTemplate, ListFilter, Lock, LogOut,
-  Menu, MessageSquare, Mic, Minus, Monitor, NotebookPen, Paperclip, Pause, Pencil, Pin, Play, Plus, Quote,
+  Menu, MessageSquare, Mic, Minus, Monitor, NotebookPen, Paperclip, Pause, Pencil, Phone, Pin, Play, Plus, Quote,
   RotateCcw, Save, Scale, ScrollText, Search, SendHorizontal, ShieldCheck,
   Smile, SlidersHorizontal, Sparkles, Square, SquareTerminal, Table2, Telescope,
   ThumbsDown, ThumbsUp, TriangleAlert, Trash2, User, Users, Waypoints, Workflow,
@@ -48,7 +48,7 @@ const G = {
   Like: ThumbsUp, Dislike: ThumbsDown, Wrench, Blocks, At: AtSign, Bell, Note: NotebookPen,
   Globe, Calc: Calculator, Lightning: Zap, Tune: ThinkingEffort, User, Send2: SendHorizontal,
   Save, Smile, Mic, LiveVoice, Workflows: Waypoints, Menu, Template: LayoutTemplate,
-  Desktop: Monitor,
+  Desktop: Monitor, Phone,
   // The window's own controls, where this application draws its frame.
   Minimise: Minus, Maximise: Square, Restore: Copy,
 } as const;

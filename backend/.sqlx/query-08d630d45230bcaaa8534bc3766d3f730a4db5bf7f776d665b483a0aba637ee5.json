@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.transfer_to, c.to_e164 FROM calls c WHERE c.provider = $1 AND c.provider_call_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "transfer_to",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "transfer_to"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "to_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "to_e164"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "08d630d45230bcaaa8534bc3766d3f730a4db5bf7f776d665b483a0aba637ee5"
+}

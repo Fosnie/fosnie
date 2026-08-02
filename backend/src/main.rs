@@ -109,6 +109,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("running migrations");
     db::run_migrations(&pg).await.context("running migrations")?;
 
+    // Close any telephone call left open by a run that stopped while carrying it. What
+    // carries a call is held in memory, so once this process has started, no call can
+    // still be in progress from before it; left alone those records would sit as though
+    // live for ever.
+    fosnie_backend::telephony::log::reconcile_open_calls(&pg).await;
+
     // Audit the key provider at boot (kind + active key-id — never the key material).
     {
         let key_id = key_provider

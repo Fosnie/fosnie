@@ -69,17 +69,41 @@ pub async fn detect(
         .map_err(|e| AppError::Other(anyhow::anyhow!("turn detector decode: {e}")))
 }
 
+/// How many turn-silence thresholds a semantic detector may hold a turn for before the
+/// silence alone ends it.
+///
+/// A multiple rather than a dial of its own, so it scales with whatever the threshold is
+/// set to on each transport and there is no second number to keep in step.
+pub const TURN_HOLD_MULTIPLE: u64 = 4;
+
+/// The longest a detector may hold one turn.
+pub fn hold_ceiling_ms(threshold_ms: u64) -> u64 {
+    threshold_ms.saturating_mul(TURN_HOLD_MULTIPLE)
+}
+
 /// Decide whether to end the speaker's turn. Acoustic/STT endpointing OR trailing
 /// silence beyond the configured threshold ends the utterance; when a semantic
 /// detector is present we additionally require it to judge the turn complete, so a
 /// mid-thought pause holds. Without a detector the silence gate decides.
+///
+/// `hold_ceiling_ms` bounds how long that hold may last. A detector holds a turn by
+/// declining to call it complete, and there is no answer it can give that means "I have
+/// stopped working": a model that never agrees, or agrees only on speech it was not
+/// trained for, would hold a turn for ever. On a telephone that is not a stalled
+/// interface but a call that stays open, with nothing arriving and the caller paying for
+/// it, so the hold has a ceiling. Reaching it is a fault worth alerting on, not a normal
+/// way for a turn to end.
 pub fn should_fire_turn(
     endpoint: bool,
     silence_ms: u64,
     threshold_ms: u64,
+    hold_ceiling_ms: u64,
     detector_present: bool,
     turn_complete: bool,
 ) -> bool {
+    if silence_ms >= hold_ceiling_ms {
+        return true;
+    }
     let ended = endpoint || silence_ms >= threshold_ms;
     if detector_present {
         ended && turn_complete
@@ -92,27 +116,64 @@ pub fn should_fire_turn(
 mod tests {
     use super::*;
 
+    /// The threshold used throughout, with a ceiling far enough away that these cases
+    /// are about the gate rather than about the bound.
+    const T: u64 = 600;
+    const CEILING: u64 = 2400;
+
     #[test]
     fn silence_gate_fires_without_detector() {
         // Trailing silence past the threshold ends the turn.
-        assert!(should_fire_turn(false, 700, 600, false, false));
+        assert!(should_fire_turn(false, 700, T, CEILING, false, false));
         // ...but not before it.
-        assert!(!should_fire_turn(false, 500, 600, false, false));
+        assert!(!should_fire_turn(false, 500, T, CEILING, false, false));
         // An STT endpoint ends it regardless of the silence timer.
-        assert!(should_fire_turn(true, 0, 600, false, false));
+        assert!(should_fire_turn(true, 0, T, CEILING, false, false));
     }
 
     #[test]
     fn detector_holds_a_midthought_pause() {
         // Silence elapsed but the speaker isn't done → HOLD (the whole point).
-        assert!(!should_fire_turn(false, 700, 600, true, false));
+        assert!(!should_fire_turn(false, 700, T, CEILING, true, false));
         // Silence elapsed AND the semantic model agrees → fire.
-        assert!(should_fire_turn(false, 700, 600, true, true));
+        assert!(should_fire_turn(false, 700, T, CEILING, true, true));
         // The detector may fire BEFORE the silence threshold, once the utterance
         // has endpointed and it judges completeness.
-        assert!(should_fire_turn(true, 100, 600, true, true));
+        assert!(should_fire_turn(true, 100, T, CEILING, true, true));
         // ...but never fires while the utterance is still open (no endpoint, short
         // silence), even if a stale `turn_complete` is set.
-        assert!(!should_fire_turn(false, 100, 600, true, true));
+        assert!(!should_fire_turn(false, 100, T, CEILING, true, true));
+    }
+
+    /// A detector that has stopped agreeing must not be able to stop the conversation
+    /// happening. On a telephone the alternative is a call that stays open, silent and
+    /// billed, until the caller gives up.
+    #[test]
+    fn a_detector_that_never_agrees_cannot_hold_the_turn_for_ever() {
+        assert!(
+            should_fire_turn(false, CEILING, T, CEILING, true, false),
+            "at the ceiling, silence alone ends the turn"
+        );
+        assert!(should_fire_turn(false, CEILING + 1000, T, CEILING, true, false));
+    }
+
+    /// But the ceiling is a backstop, not the gate: one step below it a genuine
+    /// mid-thought pause is still held.
+    #[test]
+    fn the_ceiling_does_not_fire_early() {
+        assert!(!should_fire_turn(false, CEILING - 1, T, CEILING, true, false));
+    }
+
+    /// The ceiling follows the threshold, so a transport that waits less before ending a
+    /// turn also waits less before overriding the detector, and neither number is set
+    /// twice.
+    #[test]
+    fn the_ceiling_scales_with_the_threshold() {
+        assert_eq!(hold_ceiling_ms(600), 2400);
+        assert_eq!(hold_ceiling_ms(900), 3600);
+        assert!(hold_ceiling_ms(600) > 600, "a ceiling below the gate would disable the hold");
+        // A threshold large enough to overflow the multiplication must not wrap round to
+        // a tiny ceiling, which would end every turn immediately.
+        assert_eq!(hold_ceiling_ms(u64::MAX), u64::MAX);
     }
 }

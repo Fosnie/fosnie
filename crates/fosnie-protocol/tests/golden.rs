@@ -172,6 +172,24 @@ fn server_cases() -> Vec<(&'static str, ServerFrame)> {
             ServerFrame::VoiceLiveState { state: "listening".into(), retrieving: false },
         ),
         (
+            // The flag is skipped when false, so the true case has to be pinned
+            // separately: it is the only one that puts the field on the wire.
+            "voice_state_retrieving",
+            ServerFrame::VoiceLiveState { state: "listening".into(), retrieving: true },
+        ),
+        ("voice_partial", ServerFrame::VoicePartial { text: "how much rain".into() }),
+        ("voice_final", ServerFrame::VoiceFinal { text: "how much rain fell?".into() }),
+        (
+            "voice_tts_chunk",
+            ServerFrame::VoiceTtsChunk {
+                audio_base64: "AAEC".into(),
+                mime: "audio/mpeg".into(),
+                seq: 7,
+            },
+        ),
+        ("voice_tts_end", ServerFrame::VoiceTtsEnd),
+        ("voice_error", ServerFrame::VoiceError { message: "the assistant timed out".into() }),
+        (
             "research_progress",
             ServerFrame::ResearchProgress {
                 chat_id: id(4),

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT closed_on FROM diary_closures WHERE owner_user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "closed_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "diary_closures",
+            "name": "closed_on"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8d5a196797323b3654c1446a1ef670d0b2742608f6dd6688f3d60cbb699c3fbc"
+}

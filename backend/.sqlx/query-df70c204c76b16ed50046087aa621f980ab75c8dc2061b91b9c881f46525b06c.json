@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET conflict_check = $2 WHERE id = $1 AND ended_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "df70c204c76b16ed50046087aa621f980ab75c8dc2061b91b9c881f46525b06c"
+}

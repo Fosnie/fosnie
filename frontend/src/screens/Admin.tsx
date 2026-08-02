@@ -45,6 +45,43 @@ import {
   useVoiceLive,
   setVoiceLive,
   type VoiceLiveBody,
+  CALL_OUTCOMES,
+  useTelephonyEnquiries,
+  setEnquiryHandled,
+  useConflictNames,
+  addConflictNames,
+  removeConflictName,
+  useDiary,
+  setDiary,
+  addDiaryClosure,
+  removeDiaryClosure,
+  useAppointments,
+  cancelAppointment,
+  type DiaryBody,
+  type DiaryOpening,
+  type Appointment,
+  useGroupChats,
+  type Enquiry,
+  usePhoneNumbers,
+  createPhoneNumber,
+  updatePhoneNumber,
+  deletePhoneNumber,
+  useTelephonyCalls,
+  useTelephonyCompliance,
+  deleteCallTranscript,
+  runTelephonyCheck,
+  type TelephonyCheck,
+  callRecordingUrl,
+  deleteCallRecording,
+  useNotifyTargets,
+  createNotifyTarget,
+  updateNotifyTarget,
+  deleteNotifyTarget,
+  testNotifyTarget,
+  NOTIFY_EVENTS,
+  type NotifyTarget,
+  type PhoneLine,
+  type CallRecord,
   useEmbeddingIndex,
   reindexEmbeddings,
   useAdminAnnouncements,
@@ -62,6 +99,7 @@ import {
   useAdminMcpServers,
   registerMcpServer,
   approveMcpServer,
+  patchMcpServer,
   deleteMcpServer,
   discoverMcpOauth,
   putMcpOauthClient,
@@ -104,6 +142,7 @@ import {
   usePrompts,
   useReadiness,
   useSkills,
+  useUsers,
   useWhoami,
 } from "@/api/client";
 import { AreaChart, Bars, Donut } from "@/components/charts";
@@ -111,7 +150,7 @@ import { Icon } from "@/components/icons";
 import { Dropdown } from "@/components/Dropdown";
 import { Workflows } from "@/screens/Workflows";
 import { useBusy } from "@/components/useBusy";
-import { BTN, BTN2, BTN_DANGER, Badge, H1, INPUT, LABEL, TD, TH } from "@/components/adminUi";
+import { BTN, BTN2, BTN_DANGER, Badge, H1, INPUT, LABEL, TD, TH, TableScroll } from "@/components/adminUi";
 import { getAdminSections, registerAdminSection } from "@/ext/registry";
 
 const ADMIN_ROLES = ["client_admin", "super_admin"];
@@ -366,77 +405,79 @@ function UsersSection({ selfId }: { selfId?: string }) {
       {users.isLoading ? (
         <p className="text-sm text-slate">Loading…</p>
       ) : (
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr>
-              <th className={TH}>Email</th>
-              <th className={TH}>Name</th>
-              <th className={TH}>Role</th>
-              <th className={TH}>Status</th>
-              <th className={TH}>MFA</th>
-              {publicApi && <th className={TH}>API keys</th>}
-              <th className={TH}>Devices</th>
-              <th className={TH}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.data?.map((u) => (
-              <tr key={u.id}>
-                <td className={TD}>{u.email}</td>
-                <td className={TD}>
-                  {u.display_name}
-                  {u.managed_by === "scim" && <Badge tone="slate">Managed by IdP</Badge>}
-                </td>
-                <td className={TD}><Badge tone={u.role.includes("admin") ? "gold" : "slate"}>{u.role}</Badge></td>
-                <td className={TD}>{u.deactivated ? <Badge tone="red">deactivated</Badge> : <Badge tone="green">active</Badge>}</td>
-                <td className={TD}>{u.mfa_enabled ? <Badge tone="green">on</Badge> : <Badge tone="slate">off</Badge>}</td>
-                {publicApi && (
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>Email</th>
+                <th className={TH}>Name</th>
+                <th className={TH}>Role</th>
+                <th className={TH}>Status</th>
+                <th className={TH}>MFA</th>
+                {publicApi && <th className={TH}>API keys</th>}
+                <th className={TH}>Devices</th>
+                <th className={TH}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.data?.map((u) => (
+                <tr key={u.id}>
+                  <td className={TD}>{u.email}</td>
+                  <td className={TD}>
+                    {u.display_name}
+                    {u.managed_by === "scim" && <Badge tone="slate">Managed by IdP</Badge>}
+                  </td>
+                  <td className={TD}><Badge tone={u.role.includes("admin") ? "gold" : "slate"}>{u.role}</Badge></td>
+                  <td className={TD}>{u.deactivated ? <Badge tone="red">deactivated</Badge> : <Badge tone="green">active</Badge>}</td>
+                  <td className={TD}>{u.mfa_enabled ? <Badge tone="green">on</Badge> : <Badge tone="slate">off</Badge>}</td>
+                  {publicApi && (
+                    <td className={TD}>
+                      <button
+                        className={BTN2}
+                        onClick={() => setOpenKeys((cur) => (cur === u.id ? null : u.id))}
+                      >
+                        {openKeys === u.id ? "Hide" : "View"}
+                      </button>
+                    </td>
+                  )}
                   <td className={TD}>
                     <button
                       className={BTN2}
-                      onClick={() => setOpenKeys((cur) => (cur === u.id ? null : u.id))}
+                      onClick={() => setOpenDevices((cur) => (cur === u.id ? null : u.id))}
                     >
-                      {openKeys === u.id ? "Hide" : "View"}
+                      {openDevices === u.id ? "Hide" : "View"}
                     </button>
                   </td>
-                )}
-                <td className={TD}>
-                  <button
-                    className={BTN2}
-                    onClick={() => setOpenDevices((cur) => (cur === u.id ? null : u.id))}
-                  >
-                    {openDevices === u.id ? "Hide" : "View"}
-                  </button>
-                </td>
-                <td className={TD}>
-                  {u.id === selfId ? (
-                    <span className="text-sm text-slate/60">you</span>
-                  ) : u.managed_by === "scim" ? (
-                    // Lifecycle owned by the customer IdP (SCIM) — deactivate there.
-                    <span className="text-xs text-slate/50">directory-managed</span>
-                  ) : u.deactivated ? (
-                    <button className={BTN2} disabled={!!busy} onClick={() => run("Reactivate", () => reactivateUser(u.id).then(refresh))}>
-                      Reactivate
-                    </button>
-                  ) : (
-                    <span className="inline-flex gap-2">
-                      {u.mfa_enabled && (
-                        // Device lost with no recovery codes left: clear the factor so
-                        // the user re-enrols (forced next login if MFA is mandatory).
-                        <button className={BTN2} disabled={!!busy} onClick={async () => { if (await confirmDialog({ title: "Reset this user's MFA?", body: "Their second factor is removed and every session is signed out. They set it up again at next sign-in.", confirmLabel: "Reset MFA" })) run("Reset MFA", () => resetUserMfa(u.id).then(refresh), "MFA reset."); }}>
-                          Reset MFA
-                        </button>
-                      )}
-                      <button className={BTN_DANGER} disabled={!!busy} onClick={() => run("Deactivate", () => deactivateUser(u.id).then(refresh))}>
-                        Deactivate
+                  <td className={TD}>
+                    {u.id === selfId ? (
+                      <span className="text-sm text-slate/60">you</span>
+                    ) : u.managed_by === "scim" ? (
+                      // Lifecycle owned by the customer IdP (SCIM) — deactivate there.
+                      <span className="text-xs text-slate/50">directory-managed</span>
+                    ) : u.deactivated ? (
+                      <button className={BTN2} disabled={!!busy} onClick={() => run("Reactivate", () => reactivateUser(u.id).then(refresh))}>
+                        Reactivate
                       </button>
-                    </span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    ) : (
+                      <span className="inline-flex gap-2">
+                        {u.mfa_enabled && (
+                          // Device lost with no recovery codes left: clear the factor so
+                          // the user re-enrols (forced next login if MFA is mandatory).
+                          <button className={BTN2} disabled={!!busy} onClick={async () => { if (await confirmDialog({ title: "Reset this user's MFA?", body: "Their second factor is removed and every session is signed out. They set it up again at next sign-in.", confirmLabel: "Reset MFA" })) run("Reset MFA", () => resetUserMfa(u.id).then(refresh), "MFA reset."); }}>
+                            Reset MFA
+                          </button>
+                        )}
+                        <button className={BTN_DANGER} disabled={!!busy} onClick={() => run("Deactivate", () => deactivateUser(u.id).then(refresh))}>
+                          Deactivate
+                        </button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
       {openKeys && (
         <div className="mt-3 rounded border border-slate/20 p-3">
@@ -590,19 +631,21 @@ function SharingSection() {
           ) : grants.data?.length === 0 ? (
             <p className="mb-4 text-sm text-slate/70">No grants — owner + admins always have access.</p>
           ) : (
-            <table className="mb-4 w-full border-collapse text-sm">
-              <thead><tr><th className={TH}>Principal</th><th className={TH}>Type</th><th className={TH}>Permission</th><th className={TH}></th></tr></thead>
-              <tbody>
-                {grants.data?.map((g) => (
-                  <tr key={g.id}>
-                    <td className={TD}>{nameOf.get(g.principal_id) ?? g.principal_id}</td>
-                    <td className={TD}>{g.principal_type === "user" ? "User" : "Group"}</td>
-                    <td className={TD}><Badge tone="gold">{g.permission}</Badge></td>
-                    <td className={TD}><button className={BTN_DANGER} disabled={!!busy} onClick={() => run("Revoke", () => revokeGrant(g.id).then(refresh))}>Revoke</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <TableScroll className="mb-4">
+              <table className="w-full border-collapse text-sm">
+                <thead><tr><th className={TH}>Principal</th><th className={TH}>Type</th><th className={TH}>Permission</th><th className={TH}></th></tr></thead>
+                <tbody>
+                  {grants.data?.map((g) => (
+                    <tr key={g.id}>
+                      <td className={TD}>{nameOf.get(g.principal_id) ?? g.principal_id}</td>
+                      <td className={TD}>{g.principal_type === "user" ? "User" : "Group"}</td>
+                      <td className={TD}><Badge tone="gold">{g.permission}</Badge></td>
+                      <td className={TD}><button className={BTN_DANGER} disabled={!!busy} onClick={() => run("Revoke", () => revokeGrant(g.id).then(refresh))}>Revoke</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroll>
           )}
 
           <div className="rounded-xl border border-navy-lighter bg-navy-light/40 p-4">
@@ -848,18 +891,24 @@ function AnalyticsView() {
       <details className="text-sm">
         <summary className="cursor-pointer text-slate hover:text-slate-lightest">Detailed breakdown (per model / user / agent)</summary>
         <div className="mt-3 space-y-5">
-          <table className="w-full border-collapse">
-            <thead><tr><th className={TH}>Model</th><th className={TH}>Answers</th><th className={TH}>Prompt</th><th className={TH}>Completion</th></tr></thead>
-            <tbody>{d.per_model.map((m, i) => <tr key={i}><td className={TD}>{m.model ?? "—"}</td><td className={TD}>{m.count}</td><td className={TD}>{m.prompt_tokens.toLocaleString()}</td><td className={TD}>{m.completion_tokens.toLocaleString()}</td></tr>)}</tbody>
-          </table>
-          <table className="w-full border-collapse">
-            <thead><tr><th className={TH}>User</th><th className={TH}>Answers</th><th className={TH}>Total tokens</th></tr></thead>
-            <tbody>{d.per_user.map((u, i) => <tr key={i}><td className={TD}>{u.email ?? u.user_id ?? "—"}</td><td className={TD}>{u.count}</td><td className={TD}>{(u.prompt_tokens + u.completion_tokens).toLocaleString()}</td></tr>)}</tbody>
-          </table>
-          <table className="w-full border-collapse">
-            <thead><tr><th className={TH}>Agent</th><th className={TH}>Answers</th><th className={TH}>Total tokens</th></tr></thead>
-            <tbody>{d.per_agent.map((g, i) => <tr key={i}><td className={TD}>{g.agent_name ?? (g.agent_id ? g.agent_id.slice(0, 8) : "(no agent)")}</td><td className={TD}>{g.count}</td><td className={TD}>{(g.prompt_tokens + g.completion_tokens).toLocaleString()}</td></tr>)}</tbody>
-          </table>
+          <TableScroll>
+            <table className="w-full border-collapse">
+              <thead><tr><th className={TH}>Model</th><th className={TH}>Answers</th><th className={TH}>Prompt</th><th className={TH}>Completion</th></tr></thead>
+              <tbody>{d.per_model.map((m, i) => <tr key={i}><td className={TD}>{m.model ?? "—"}</td><td className={TD}>{m.count}</td><td className={TD}>{m.prompt_tokens.toLocaleString()}</td><td className={TD}>{m.completion_tokens.toLocaleString()}</td></tr>)}</tbody>
+            </table>
+          </TableScroll>
+          <TableScroll>
+            <table className="w-full border-collapse">
+              <thead><tr><th className={TH}>User</th><th className={TH}>Answers</th><th className={TH}>Total tokens</th></tr></thead>
+              <tbody>{d.per_user.map((u, i) => <tr key={i}><td className={TD}>{u.email ?? u.user_id ?? "—"}</td><td className={TD}>{u.count}</td><td className={TD}>{(u.prompt_tokens + u.completion_tokens).toLocaleString()}</td></tr>)}</tbody>
+            </table>
+          </TableScroll>
+          <TableScroll>
+            <table className="w-full border-collapse">
+              <thead><tr><th className={TH}>Agent</th><th className={TH}>Answers</th><th className={TH}>Total tokens</th></tr></thead>
+              <tbody>{d.per_agent.map((g, i) => <tr key={i}><td className={TD}>{g.agent_name ?? (g.agent_id ? g.agent_id.slice(0, 8) : "(no agent)")}</td><td className={TD}>{g.count}</td><td className={TD}>{(g.prompt_tokens + g.completion_tokens).toLocaleString()}</td></tr>)}</tbody>
+            </table>
+          </TableScroll>
         </div>
       </details>
     </div>
@@ -951,19 +1000,21 @@ function VerificationView() {
       <div className="chart-card">
         <div className="chart-head"><h4>Lowest-grounded interactions</h4><span className="ed-hint mono">click to open the chat</span></div>
         {d.lowest_interactions.length ? (
-          <table className="w-full border-collapse text-sm">
-            <thead><tr><th className={TH}>Trust</th><th className={TH}>Flagged</th><th className={TH}>Interaction</th><th className={TH}>When</th></tr></thead>
-            <tbody>
-              {d.lowest_interactions.map((it) => (
-                <tr key={it.run_id} className="cursor-pointer hover:bg-navy-light" onClick={() => nav(`/c/${it.chat_id}`)}>
-                  <td className={TD}><TrustChip score={it.score} /></td>
-                  <td className={TD}>{it.flagged}</td>
-                  <td className={TD}>{it.snippet || "—"}</td>
-                  <td className={TD + " mono whitespace-nowrap"}>{new Date(it.created_at).toLocaleDateString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <TableScroll>
+            <table className="w-full border-collapse text-sm">
+              <thead><tr><th className={TH}>Trust</th><th className={TH}>Flagged</th><th className={TH}>Interaction</th><th className={TH}>When</th></tr></thead>
+              <tbody>
+                {d.lowest_interactions.map((it) => (
+                  <tr key={it.run_id} className="cursor-pointer hover:bg-navy-light" onClick={() => nav(`/c/${it.chat_id}`)}>
+                    <td className={TD}><TrustChip score={it.score} /></td>
+                    <td className={TD}>{it.flagged}</td>
+                    <td className={TD}>{it.snippet || "—"}</td>
+                    <td className={TD + " mono whitespace-nowrap"}>{new Date(it.created_at).toLocaleDateString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
         ) : <p className="text-sm text-slate/70">No verified interactions yet.</p>}
       </div>
 
@@ -1009,21 +1060,23 @@ function VerificationView() {
       <div className="chart-card">
         <div className="chart-head"><h4>Recent verification runs</h4><span className="ed-hint mono">drafts &amp; documents</span></div>
         {d.recent_runs.length ? (
-          <table className="w-full border-collapse text-sm">
-            <thead><tr><th className={TH}>Target</th><th className={TH}>Status</th><th className={TH}>Trust</th><th className={TH}>S / C / N</th><th className={TH}>When</th><th className={TH}></th></tr></thead>
-            <tbody>
-              {d.recent_runs.map((r) => (
-                <tr key={r.run_id}>
-                  <td className={TD}>{r.target_type}</td>
-                  <td className={TD}><Badge tone={r.status === "error" ? "red" : r.status === "succeeded" ? "green" : "slate"}>{r.status}</Badge></td>
-                  <td className={TD}><TrustChip score={r.score} /></td>
-                  <td className={TD + " mono"}>{r.supported} / {r.contradicted} / {r.not_mentioned}</td>
-                  <td className={TD + " mono whitespace-nowrap"}>{new Date(r.created_at).toLocaleDateString()}</td>
-                  <td className={TD}>{r.status === "succeeded" && <button className={BTN2} onClick={() => report(r.run_id)}>Report</button>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <TableScroll>
+            <table className="w-full border-collapse text-sm">
+              <thead><tr><th className={TH}>Target</th><th className={TH}>Status</th><th className={TH}>Trust</th><th className={TH}>S / C / N</th><th className={TH}>When</th><th className={TH}></th></tr></thead>
+              <tbody>
+                {d.recent_runs.map((r) => (
+                  <tr key={r.run_id}>
+                    <td className={TD}>{r.target_type}</td>
+                    <td className={TD}><Badge tone={r.status === "error" ? "red" : r.status === "succeeded" ? "green" : "slate"}>{r.status}</Badge></td>
+                    <td className={TD}><TrustChip score={r.score} /></td>
+                    <td className={TD + " mono"}>{r.supported} / {r.contradicted} / {r.not_mentioned}</td>
+                    <td className={TD + " mono whitespace-nowrap"}>{new Date(r.created_at).toLocaleDateString()}</td>
+                    <td className={TD}>{r.status === "succeeded" && <button className={BTN2} onClick={() => report(r.run_id)}>Report</button>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
         ) : <p className="text-sm text-slate/70">No draft verifications yet.</p>}
       </div>
     </div>
@@ -1040,19 +1093,21 @@ function IntegrationsSection() {
       <p className="mb-1 text-xs text-slate/70">External connectors ship dormant (zero-egress). Enabling permits outbound calls for that connector only.</p>
       <p className="mb-4 text-xs text-slate/60">Activation is a sensitive operation reserved for the ephemeral <strong>super-admin</strong> (an active break-glass session), not the client-admin — perform it out-of-band via the break-glass CLI. This view is read-only.</p>
       {conns.isLoading ? <p className="text-sm text-slate">Loading…</p> : (
-        <table className="w-full border-collapse text-sm">
-          <thead><tr><th className={TH}>Connector</th><th className={TH}>Category</th><th className={TH}>Egress</th><th className={TH}>State</th></tr></thead>
-          <tbody>
-            {conns.data?.map((c) => (
-              <tr key={c.kind}>
-                <td className={TD}>{c.display_name} <span className="text-xs text-slate/60">({c.kind})</span></td>
-                <td className={TD}>{c.category}</td>
-                <td className={TD}>{c.requires_egress ? <Badge tone="red">egress</Badge> : <Badge>local</Badge>}</td>
-                <td className={TD}>{c.enabled ? <Badge tone="gold">enabled</Badge> : <Badge>dormant</Badge>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead><tr><th className={TH}>Connector</th><th className={TH}>Category</th><th className={TH}>Egress</th><th className={TH}>State</th></tr></thead>
+            <tbody>
+              {conns.data?.map((c) => (
+                <tr key={c.kind}>
+                  <td className={TD}>{c.display_name} <span className="text-xs text-slate/60">({c.kind})</span></td>
+                  <td className={TD}>{c.category}</td>
+                  <td className={TD}>{c.requires_egress ? <Badge tone="red">egress</Badge> : <Badge>local</Badge>}</td>
+                  <td className={TD}>{c.enabled ? <Badge tone="gold">enabled</Badge> : <Badge>dormant</Badge>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </div>
   );
@@ -1097,6 +1152,25 @@ function McpServersSection() {
   const remove = async (s: McpServer) => {
     if (!(await confirmDialog({ title: `Delete MCP server '${s.slug}'?`, body: "Its tools are removed from agents and the connection is dropped.", danger: true, confirmLabel: "Delete" }))) return;
     run("Delete", async () => { await deleteMcpServer(s.id); refresh(); });
+  };
+  // Whether this server may be reached while somebody is on the telephone. Allowing it is
+  // a standing decision, so it is confirmed once here rather than asked per call, which is
+  // the thing that cannot happen mid-conversation.
+  const onCall = async (s: McpServer) => {
+    const allow = s.call_policy !== "allow";
+    if (allow) {
+      const ok = await confirmDialog({
+        title: `Let '${s.slug}' be used during a telephone call?`,
+        body: "On a call there is nobody to approve a tool that changes something, so this server's tools would run for an anonymous caller without anyone seeing them first. Every such call is recorded. Leave it refused and the agent tells the caller it cannot do that on the telephone and offers to take a message.",
+        confirmLabel: "Allow on calls",
+      });
+      if (!ok) return;
+    }
+    run(
+      "Save",
+      async () => { await patchMcpServer(s.id, { call_policy: allow ? "allow" : "refuse" }); refresh(); },
+      allow ? "Allowed during calls." : "Refused during calls.",
+    );
   };
   const statusTone = (s: string) => (s === "active" ? "green" : s === "quarantined" ? "red" : s === "unreachable" ? "red" : "slate");
 
@@ -1159,32 +1233,44 @@ function McpServersSection() {
       </div>
 
       {servers.isLoading ? <p className="text-sm text-slate">Loading…</p> : (
-        <table className="w-full border-collapse text-sm">
-          <thead><tr><th className={TH}>Slug</th><th className={TH}>Transport</th><th className={TH}>Status</th><th className={TH}>Tools</th><th className={TH}>Live</th><th className={TH}></th></tr></thead>
-          <tbody>
-            {(servers.data ?? []).map((s) => (
-              <tr key={s.id}>
-                <td className={TD}>{s.slug} <span className="text-xs text-slate/60">{s.name}</span></td>
-                <td className={TD}>
-                  {s.transport}{s.url ? <span className="text-xs text-slate/60"> · {s.url}</span> : null}
-                  {s.requires_egress ? <span className="ml-1"><Badge tone="gold">egress</Badge></span> : null}
-                  {s.auth_type && s.auth_type !== "none" ? <span className="ml-1"><Badge>{s.auth_type === "bearer" ? "bearer" : s.auth_header_name || "auth"}</Badge></span> : null}
-                </td>
-                <td className={TD}><Badge tone={statusTone(s.status)}>{s.status}</Badge></td>
-                <td className={TD}>{s.tool_count}</td>
-                <td className={TD}>{s.connected ? <Badge tone="green">connected</Badge> : <Badge>—</Badge>}</td>
-                <td className={TD}>
-                  {s.auth_type === "oauth" && (
-                    <button className={BTN2 + " mr-2"} disabled={!!busy} onClick={() => setOauthFor(s)}>OAuth</button>
-                  )}
-                  <button className={BTN2} disabled={!!busy} onClick={() => approve(s)}>{s.status === "active" ? "Re-pin" : s.status === "quarantined" ? "Re-approve" : "Approve"}</button>
-                  <button className={BTN_DANGER + " ml-2"} disabled={!!busy} onClick={() => remove(s)}>Delete</button>
-                </td>
-              </tr>
-            ))}
-            {(!servers.data || servers.data.length === 0) && <tr><td className={TD} colSpan={6}>No MCP servers registered.</td></tr>}
-          </tbody>
-        </table>
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead><tr><th className={TH}>Slug</th><th className={TH}>Transport</th><th className={TH}>Status</th><th className={TH}>Tools</th><th className={TH}>Live</th><th className={TH}>On calls</th><th className={TH}></th></tr></thead>
+            <tbody>
+              {(servers.data ?? []).map((s) => (
+                <tr key={s.id}>
+                  <td className={TD}>{s.slug} <span className="text-xs text-slate/60">{s.name}</span></td>
+                  <td className={TD}>
+                    {s.transport}{s.url ? <span className="text-xs text-slate/60"> · {s.url}</span> : null}
+                    {s.requires_egress ? <span className="ml-1"><Badge tone="gold">egress</Badge></span> : null}
+                    {s.auth_type && s.auth_type !== "none" ? <span className="ml-1"><Badge>{s.auth_type === "bearer" ? "bearer" : s.auth_header_name || "auth"}</Badge></span> : null}
+                  </td>
+                  <td className={TD}><Badge tone={statusTone(s.status)}>{s.status}</Badge></td>
+                  <td className={TD}>{s.tool_count}</td>
+                  <td className={TD}>{s.connected ? <Badge tone="green">connected</Badge> : <Badge>—</Badge>}</td>
+                  <td className={TD}>
+                    <button
+                      className={BTN2}
+                      disabled={!!busy}
+                      title="On a telephone call there is nobody to approve a tool that changes something. A server that is refused makes the agent say it cannot do that on the telephone and offer to take a message."
+                      onClick={() => onCall(s)}
+                    >
+                      {s.call_policy === "allow" ? "Allowed" : "Refused"}
+                    </button>
+                  </td>
+                  <td className={TD}>
+                    {s.auth_type === "oauth" && (
+                      <button className={BTN2 + " mr-2"} disabled={!!busy} onClick={() => setOauthFor(s)}>OAuth</button>
+                    )}
+                    <button className={BTN2} disabled={!!busy} onClick={() => approve(s)}>{s.status === "active" ? "Re-pin" : s.status === "quarantined" ? "Re-approve" : "Approve"}</button>
+                    <button className={BTN_DANGER + " ml-2"} disabled={!!busy} onClick={() => remove(s)}>Delete</button>
+                  </td>
+                </tr>
+              ))}
+              {(!servers.data || servers.data.length === 0) && <tr><td className={TD} colSpan={7}>No MCP servers registered.</td></tr>}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
 
       {oauthFor && (
@@ -1343,40 +1429,42 @@ function ConfigSection() {
       <H1>Runtime config</H1>
       <p className="mb-4 text-xs text-slate/70">Live, audited tuning knobs the platform reads at request time. Each shows its current value, or the built-in <span className="text-slate">default</span> if never set. The grey monospace text is the raw key; edit and Save.</p>
       {cfg.isLoading ? <p className="text-sm text-slate">Loading…</p> : (
-        <table className="w-full border-collapse text-sm">
-          <thead><tr><th className={TH}>Setting</th><th className={TH}>Value</th><th className={TH}>Type</th><th className={TH}>Scope</th><th className={TH}></th></tr></thead>
-          <tbody>
-            {rows.map((r) => {
-              const val = edits[r.key] ?? r.current;
-              const dirty = r.key in edits && edits[r.key] !== r.current;
-              return (
-                <tr key={r.key}>
-                  <td className={TD} style={{ maxWidth: 380 }}>
-                    <div className="text-slate-lightest">{r.label}{!r.isSet && <span className="ml-2 rounded bg-navy-lighter px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate/70">default</span>}</div>
-                    <div className="font-mono text-[10px] text-slate/50">{r.key}</div>
-                    {r.desc && <div className="mt-1 text-xs text-slate/70">{r.desc}</div>}
-                  </td>
-                  <td className={TD}>
-                    {r.value_type === "bool" ? (
-                      <Dropdown
-                        value={val === "true" ? "true" : "false"}
-                        fullWidth
-                        ariaLabel={r.key}
-                        onChange={(v) => setEdits((p) => ({ ...p, [r.key]: v }))}
-                        options={[{ value: "true", label: "true" }, { value: "false", label: "false" }]}
-                      />
-                    ) : (
-                      <input className={INPUT + " w-full"} value={val} onChange={(e) => setEdits((p) => ({ ...p, [r.key]: e.target.value }))} />
-                    )}
-                  </td>
-                  <td className={TD}>{r.value_type}</td>
-                  <td className={TD}>{r.scope}</td>
-                  <td className={TD}><button className={BTN} disabled={!!busy || !dirty} onClick={() => run("Save", () => setConfig(r.key, { value: val, value_type: r.value_type, scope: r.scope }).then(() => { setEdits((p) => { const n = { ...p }; delete n[r.key]; return n; }); refresh(); }), "Setting saved.")}>Save</button></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead><tr><th className={TH}>Setting</th><th className={TH}>Value</th><th className={TH}>Type</th><th className={TH}>Scope</th><th className={TH}></th></tr></thead>
+            <tbody>
+              {rows.map((r) => {
+                const val = edits[r.key] ?? r.current;
+                const dirty = r.key in edits && edits[r.key] !== r.current;
+                return (
+                  <tr key={r.key}>
+                    <td className={TD} style={{ maxWidth: 380 }}>
+                      <div className="text-slate-lightest">{r.label}{!r.isSet && <span className="ml-2 rounded bg-navy-lighter px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate/70">default</span>}</div>
+                      <div className="font-mono text-[10px] text-slate/50">{r.key}</div>
+                      {r.desc && <div className="mt-1 text-xs text-slate/70">{r.desc}</div>}
+                    </td>
+                    <td className={TD}>
+                      {r.value_type === "bool" ? (
+                        <Dropdown
+                          value={val === "true" ? "true" : "false"}
+                          fullWidth
+                          ariaLabel={r.key}
+                          onChange={(v) => setEdits((p) => ({ ...p, [r.key]: v }))}
+                          options={[{ value: "true", label: "true" }, { value: "false", label: "false" }]}
+                        />
+                      ) : (
+                        <input className={INPUT + " w-full"} value={val} onChange={(e) => setEdits((p) => ({ ...p, [r.key]: e.target.value }))} />
+                      )}
+                    </td>
+                    <td className={TD}>{r.value_type}</td>
+                    <td className={TD}>{r.scope}</td>
+                    <td className={TD}><button className={BTN} disabled={!!busy || !dirty} onClick={() => run("Save", () => setConfig(r.key, { value: val, value_type: r.value_type, scope: r.scope }).then(() => { setEdits((p) => { const n = { ...p }; delete n[r.key]; return n; }); refresh(); }), "Setting saved.")}>Save</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </div>
   );
@@ -1666,36 +1754,38 @@ function ProvidersSection() {
       {/* LLM is a list of named providers (multi-LLM); the other roles stay single-row. */}
       <LlmProvidersCard />
       {q.isLoading ? <p className="text-sm text-slate">Loading…</p> : (
-        <table className="w-full border-collapse text-sm">
-          <thead><tr><th className={TH}>Role</th><th className={TH}>Base URL</th><th className={TH}>Model</th><th className={TH}>API key</th><th className={TH}>Reasoning</th><th className={TH}>Enabled</th><th className={TH}>Test</th><th className={TH}></th></tr></thead>
-          <tbody>
-            {PROVIDER_ROLES.filter(([role]) => role !== "llm").map(([role, label]) => {
-              const db = byRole.get(role);
-              const d = draft(role);
-              const dirty = role in edits;
-              return (
-                <tr key={role}>
-                  <td className={TD}><div className="text-slate-lightest">{label}</div><div className="font-mono text-[10px] text-slate/50">{role}</div>{role === "embed" && <div className="text-[10px] text-slate/50">deployment-wide; not per-user</div>}</td>
-                  <td className={TD}><input className={INPUT + " w-full"} placeholder="(ML default)" value={d.base_url} onChange={(e) => setField(role, "base_url", e.target.value)} /></td>
-                  <td className={TD}><input className={INPUT + " w-full"} placeholder="(ML default)" value={d.model} onChange={(e) => setField(role, "model", e.target.value)} /></td>
-                  <td className={TD}><input type="password" className={INPUT + " w-full"} placeholder={db?.api_key_set ? "•••• set (blank = keep)" : "API key"} value={d.api_key} onChange={(e) => setField(role, "api_key", e.target.value)} /></td>
-                  <td className={TD}>{role === "llm" ? (
-                    <Dropdown
-                      value={d.reasoning_mode}
-                      onChange={(v) => setField(role, "reasoning_mode", v)}
-                      ariaLabel="Reasoning mode"
-                      fullWidth
-                      options={REASONING_MODES.map((m) => ({ value: m.value, label: m.label }))}
-                    />
-                  ) : <span className="text-slate/40">—</span>}</td>
-                  <td className={TD}><input type="checkbox" checked={d.enabled} onChange={(e) => setField(role, "enabled", e.target.checked)} /></td>
-                  <td className={TD}><div className="flex items-center gap-2"><button type="button" className={BTN} onClick={() => runTest(role, d)}>Test</button><ProviderTestStatus s={tests[role]} /></div></td>
-                  <td className={TD}><div className="flex items-center gap-2"><button type="button" className={BTN} disabled={!!busy || !dirty} onClick={() => run("Save", () => setProvider(role, { base_url: d.base_url || undefined, model: d.model || undefined, api_key: d.api_key || undefined, enabled: d.enabled, reasoning_mode: d.reasoning_mode }).then(async (res) => { setEdits((p) => { const n = { ...p }; delete n[role]; return n; }); refresh(); qc.invalidateQueries({ queryKey: ["whoami"] }); flashSaved(role); await maybeOfferReindex(role, res); }), "Provider saved.")}>Save</button>{saved[role] && <span className="text-xs text-green-400">Saved ✓</span>}</div></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead><tr><th className={TH}>Role</th><th className={TH}>Base URL</th><th className={TH}>Model</th><th className={TH}>API key</th><th className={TH}>Reasoning</th><th className={TH}>Enabled</th><th className={TH}>Test</th><th className={TH}></th></tr></thead>
+            <tbody>
+              {PROVIDER_ROLES.filter(([role]) => role !== "llm").map(([role, label]) => {
+                const db = byRole.get(role);
+                const d = draft(role);
+                const dirty = role in edits;
+                return (
+                  <tr key={role}>
+                    <td className={TD}><div className="text-slate-lightest">{label}</div><div className="font-mono text-[10px] text-slate/50">{role}</div>{role === "embed" && <div className="text-[10px] text-slate/50">deployment-wide; not per-user</div>}</td>
+                    <td className={TD}><input className={INPUT + " w-full"} placeholder="(ML default)" value={d.base_url} onChange={(e) => setField(role, "base_url", e.target.value)} /></td>
+                    <td className={TD}><input className={INPUT + " w-full"} placeholder="(ML default)" value={d.model} onChange={(e) => setField(role, "model", e.target.value)} /></td>
+                    <td className={TD}><input type="password" className={INPUT + " w-full"} placeholder={db?.api_key_set ? "•••• set (blank = keep)" : "API key"} value={d.api_key} onChange={(e) => setField(role, "api_key", e.target.value)} /></td>
+                    <td className={TD}>{role === "llm" ? (
+                      <Dropdown
+                        value={d.reasoning_mode}
+                        onChange={(v) => setField(role, "reasoning_mode", v)}
+                        ariaLabel="Reasoning mode"
+                        fullWidth
+                        options={REASONING_MODES.map((m) => ({ value: m.value, label: m.label }))}
+                      />
+                    ) : <span className="text-slate/40">—</span>}</td>
+                    <td className={TD}><input type="checkbox" checked={d.enabled} onChange={(e) => setField(role, "enabled", e.target.checked)} /></td>
+                    <td className={TD}><div className="flex items-center gap-2"><button type="button" className={BTN} onClick={() => runTest(role, d)}>Test</button><ProviderTestStatus s={tests[role]} /></div></td>
+                    <td className={TD}><div className="flex items-center gap-2"><button type="button" className={BTN} disabled={!!busy || !dirty} onClick={() => run("Save", () => setProvider(role, { base_url: d.base_url || undefined, model: d.model || undefined, api_key: d.api_key || undefined, enabled: d.enabled, reasoning_mode: d.reasoning_mode }).then(async (res) => { setEdits((p) => { const n = { ...p }; delete n[role]; return n; }); refresh(); qc.invalidateQueries({ queryKey: ["whoami"] }); flashSaved(role); await maybeOfferReindex(role, res); }), "Provider saved.")}>Save</button>{saved[role] && <span className="text-xs text-green-400">Saved ✓</span>}</div></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </div>
   );
@@ -1779,30 +1869,32 @@ function AnnouncementsSection() {
         </div>
 
         {list.isLoading ? <p className="text-sm text-slate">Loading…</p> : (
-          <table className="w-full border-collapse text-sm">
-            <thead><tr>
-              <th className={TH}>Content</th><th className={TH}>Severity</th>
-              <th className={TH}>Dismissible</th><th className={TH}>Status</th><th className={TH}></th>
-            </tr></thead>
-            <tbody>
-              {(list.data ?? []).map((a) => (
-                <tr key={a.id}>
-                  <td className={TD} style={{ maxWidth: 420 }}><div className="whitespace-pre-wrap break-words">{a.content}</div></td>
-                  <td className={TD}><Badge tone={sevTone(a.severity)}>{a.severity}</Badge></td>
-                  <td className={TD}>{a.dismissible ? "yes" : "no"}</td>
-                  <td className={TD}>{a.active ? <Badge tone="green">active</Badge> : <Badge tone="slate">hidden</Badge>}</td>
-                  <td className={TD}>
-                    <div className="flex flex-wrap gap-2">
-                      <button className={BTN2} disabled={!!busy} onClick={() => startEdit(a)}>Edit</button>
-                      <button className={BTN2} disabled={!!busy} onClick={() => run("Toggle", () => updateAnnouncement(a.id, { active: !a.active }).then(refresh), a.active ? "Banner hidden." : "Banner shown.")}>{a.active ? "Hide" : "Show"}</button>
-                      <button className={BTN_DANGER} disabled={!!busy} onClick={async () => { if (await confirmDialog({ title: "Delete this banner?", danger: true })) run("Delete", () => deleteAnnouncement(a.id).then(() => { if (editId === a.id) resetForm(); refresh(); }), "Banner deleted."); }}>Delete</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {(list.data ?? []).length === 0 && <tr><td className={TD} colSpan={5}>No banners.</td></tr>}
-            </tbody>
-          </table>
+          <TableScroll>
+            <table className="w-full border-collapse text-sm">
+              <thead><tr>
+                <th className={TH}>Content</th><th className={TH}>Severity</th>
+                <th className={TH}>Dismissible</th><th className={TH}>Status</th><th className={TH}></th>
+              </tr></thead>
+              <tbody>
+                {(list.data ?? []).map((a) => (
+                  <tr key={a.id}>
+                    <td className={TD} style={{ maxWidth: 420 }}><div className="whitespace-pre-wrap break-words">{a.content}</div></td>
+                    <td className={TD}><Badge tone={sevTone(a.severity)}>{a.severity}</Badge></td>
+                    <td className={TD}>{a.dismissible ? "yes" : "no"}</td>
+                    <td className={TD}>{a.active ? <Badge tone="green">active</Badge> : <Badge tone="slate">hidden</Badge>}</td>
+                    <td className={TD}>
+                      <div className="flex flex-wrap gap-2">
+                        <button className={BTN2} disabled={!!busy} onClick={() => startEdit(a)}>Edit</button>
+                        <button className={BTN2} disabled={!!busy} onClick={() => run("Toggle", () => updateAnnouncement(a.id, { active: !a.active }).then(refresh), a.active ? "Banner hidden." : "Banner shown.")}>{a.active ? "Hide" : "Show"}</button>
+                        <button className={BTN_DANGER} disabled={!!busy} onClick={async () => { if (await confirmDialog({ title: "Delete this banner?", danger: true })) run("Delete", () => deleteAnnouncement(a.id).then(() => { if (editId === a.id) resetForm(); refresh(); }), "Banner deleted."); }}>Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {(list.data ?? []).length === 0 && <tr><td className={TD} colSpan={5}>No banners.</td></tr>}
+              </tbody>
+            </table>
+          </TableScroll>
         )}
       </div>
 
@@ -1858,19 +1950,21 @@ function SystemSection() {
       {flagged.length === 0 ? (
         <p className="text-sm text-slate/70">No flagged events.</p>
       ) : (
-        <table className="w-full border-collapse text-sm">
-          <thead><tr><th className={TH}>When</th><th className={TH}>Action</th><th className={TH}>Role</th><th className={TH}>Resource</th></tr></thead>
-          <tbody>
-            {flagged.map((e) => (
-              <tr key={e.seq}>
-                <td className={TD}>{new Date(e.occurred_at).toLocaleString()}</td>
-                <td className={TD}>{e.action_type}</td>
-                <td className={TD}>{e.actor_role}</td>
-                <td className={TD}>{e.resource_type ?? "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead><tr><th className={TH}>When</th><th className={TH}>Action</th><th className={TH}>Role</th><th className={TH}>Resource</th></tr></thead>
+            <tbody>
+              {flagged.map((e) => (
+                <tr key={e.seq}>
+                  <td className={TD}>{new Date(e.occurred_at).toLocaleString()}</td>
+                  <td className={TD}>{e.action_type}</td>
+                  <td className={TD}>{e.actor_role}</td>
+                  <td className={TD}>{e.resource_type ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
     </div>
   );
@@ -2029,6 +2123,1502 @@ function VoiceLiveSection() {
   );
 }
 
+// ── Telephone lines ─────────────────────────────────────────────────────────
+// A line binds a public number to one agent and one account. Whoever rings it gets
+// a session running as that account, so the two pickers here are the whole security
+// decision and the table shows how wide each line is (its agent's tool count).
+// Deliberately absent: the carrier's own credential, address and call ceiling, which
+// stay with the operator rather than becoming a second place to rotate a secret.
+const OUTCOME_LABELS: Record<string, string> = {
+  in_progress: "In progress",
+  completed: "Completed",
+  carrier_ended: "Ended by network",
+  dropped: "Dropped",
+  no_media: "No audio",
+  line_full: "Lines busy",
+  transferred: "Put through",
+  notice_failed: "Could not tell the caller",
+};
+const CALL_PAGE = 50;
+
+/// What checking a caller concluded. Only "clear" lets a call be put through: the other
+/// two mean the same thing, which is what makes the check fail closed.
+const CHECK_LABELS: Record<string, string> = {
+  clear: "Clear",
+  possible: "Needs a person",
+  unknown: "Could not check",
+};
+
+const fmtEpoch = (e: number) => new Date(e * 1000).toLocaleString();
+const fmtDuration = (s: number | null) => {
+  if (s === null) return "—";
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+};
+
+type LineDraft = { e164: string; agent_id: string; owner_user_id: string; provider: string; label: string; greeting: string; notice: string; transcript_days: string; log_days: string; record_calls: boolean; recording_days: string; enabled: boolean; deliver_group_chat_id: string; transfer_e164: string };
+const EMPTY_LINE: LineDraft = { e164: "", agent_id: "", owner_user_id: "", provider: "twilio", label: "", greeting: "", notice: "", transcript_days: "0", log_days: "0", record_calls: false, recording_days: "30", enabled: false, deliver_group_chat_id: "", transfer_e164: "" };
+
+/// What can answer a line, in the words an operator chooses between.
+const ANSWERED_BY = [
+  { value: "twilio", label: "A telephone carrier" },
+  { value: "audiosocket", label: "This practice's own telephone system" },
+];
+
+/// The standard notice, so the editor can show what a line will say before it has said it.
+///
+/// A copy of the wording the server speaks, kept here for the preview alone: what is
+/// actually said is composed on the server from the line's own row, and every line list
+/// carries those words back in `opening`.
+const STANDARD_NOTICE =
+  "You are speaking to an automated assistant. What you say is written down so that your enquiry " +
+  "can be dealt with, and a member of staff may read it. If you would rather speak to a person, " +
+  "please say so. How can I help you today?";
+
+/// The sentence a line that records adds, second, where somebody would say it.
+const RECORDED_SENTENCE = "This call is recorded.";
+
+/// What a caller will hear, joined the way the server joins it.
+const spokenOpening = (greeting: string, notice: string, recorded: boolean): string => {
+  const one = (t: string) => t.split(/\s+/).filter(Boolean).join(" ");
+  const hello = one(greeting);
+  let said = one(notice) || one(STANDARD_NOTICE);
+  if (recorded) {
+    const at = said.indexOf(". ");
+    said = at >= 0
+      ? `${said.slice(0, at + 2)}${RECORDED_SENTENCE} ${said.slice(at + 2)}`
+      : `${RECORDED_SENTENCE} ${said}`;
+  }
+  if (!hello) return said;
+  const ended = /[.!?,;:]$/.test(hello) ? hello : `${hello}.`;
+  return `${ended} ${said}`;
+};
+
+function TelephonySection() {
+  const nav = useNavigate();
+  const qc = useQueryClient();
+  const { busy, run } = useBusy();
+  const lines = usePhoneNumbers();
+  const agents = useAgents();
+  const users = useUsers();
+  const teams = useGroupChats();
+  const [editing, setEditing] = useState<string | "new" | null>(null);
+  const [draft, setDraft] = useState<LineDraft>(EMPTY_LINE);
+
+  const [fLine, setFLine] = useState("");
+  const [fOutcome, setFOutcome] = useState("");
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  const [rows, setRows] = useState<CallRecord[]>([]);
+  const [exhausted, setExhausted] = useState(false);
+  const calls = useTelephonyCalls({
+    numberId: fLine || undefined,
+    outcome: fOutcome || undefined,
+    before: cursor,
+    limit: CALL_PAGE,
+  });
+
+  // Pages accumulate: the log is read by keyset, so each answer is the slice after the
+  // last call already shown. Merged by id rather than concatenated, so a repeated
+  // render of the same page cannot show a call twice.
+  useEffect(() => {
+    const page = calls.data;
+    if (!page) return;
+    setRows((prev) => {
+      const base = cursor ? prev : [];
+      const seen = new Set(base.map((r) => r.id));
+      return [...base, ...page.filter((r) => !seen.has(r.id))];
+    });
+    setExhausted(page.length < CALL_PAGE);
+  }, [calls.data, cursor]);
+
+  const refilter = (fn: () => void) => {
+    fn();
+    setCursor(undefined);
+    setRows([]);
+    setExhausted(false);
+  };
+  const refreshCalls = () => {
+    refilter(() => {});
+    qc.invalidateQueries({ queryKey: ["admin-telephony-calls"] });
+  };
+  const refreshLines = () => qc.invalidateQueries({ queryKey: ["admin-telephony-numbers"] });
+
+  const startNew = () => { setDraft(EMPTY_LINE); setEditing("new"); };
+  const startEdit = (l: PhoneLine) => {
+    setDraft({
+      e164: l.e164,
+      agent_id: l.agent_id,
+      owner_user_id: l.owner_user_id,
+      provider: l.provider,
+      label: l.label ?? "",
+      greeting: l.greeting ?? "",
+      notice: l.notice ?? "",
+      transcript_days: String(l.transcript_days),
+      log_days: String(l.log_days),
+      record_calls: l.record_calls,
+      recording_days: String(l.recording_days || 30),
+      enabled: l.enabled,
+      deliver_group_chat_id: l.deliver_group_chat_id ?? "",
+      transfer_e164: l.transfer_e164 ?? "",
+    });
+    setEditing(l.id);
+  };
+  const setD = (k: keyof LineDraft, v: string | boolean) => setDraft((p) => ({ ...p, [k]: v }));
+
+  const save = () =>
+    run(
+      "Save",
+      async () => {
+        const body = {
+          e164: draft.e164.trim(),
+          agent_id: draft.agent_id,
+          owner_user_id: draft.owner_user_id,
+          provider: draft.provider,
+          label: draft.label.trim() || null,
+          greeting: draft.greeting.trim() || null,
+          notice: draft.notice.trim() || null,
+          transcript_days: Number(draft.transcript_days) || 0,
+          log_days: Number(draft.log_days) || 0,
+          record_calls: draft.record_calls,
+          recording_days: Number(draft.recording_days) || 0,
+          enabled: draft.enabled,
+          deliver_group_chat_id: draft.deliver_group_chat_id || null,
+          transfer_e164: draft.transfer_e164.trim() || null,
+        };
+        if (editing === "new") await createPhoneNumber(body);
+        else if (editing) await updatePhoneNumber(editing, body);
+        setEditing(null);
+        refreshLines();
+      },
+      editing === "new" ? "Line registered." : "Line saved.",
+    );
+
+  const toggle = (l: PhoneLine) =>
+    run(
+      l.enabled ? "Switch off" : "Switch on",
+      () => updatePhoneNumber(l.id, { enabled: !l.enabled }).then(refreshLines),
+      l.enabled ? "Line switched off." : "Line answering.",
+    );
+
+  const remove = async (l: PhoneLine) => {
+    const ok = await confirmDialog({
+      title: `Release ${l.e164}?`,
+      body: "The line stops answering and cannot be recovered. The calls it took stay in the log. To stop it answering reversibly, switch it off instead.",
+      danger: true,
+      confirmLabel: "Release",
+    });
+    if (!ok) return;
+    run("Release", () => deletePhoneNumber(l.id).then(() => { refreshLines(); refreshCalls(); }), "Line released.");
+  };
+
+  // Throwing away what was said on one call, for the moment somebody asks for their
+  // information to be removed and will not wait for the nightly sweep. The record of the
+  // call survives: that it happened, from what number and for how long is the practice's
+  // own record and is not what was asked about.
+  const dropTranscript = async (c: CallRecord) => {
+    const ok = await confirmDialog({
+      title: "Delete what was said on this call?",
+      body: "The conversation is deleted and cannot be recovered. The call stays in the log, marked as tidied away. Anything the caller asked to be passed on, and any appointment they made, is kept.",
+      danger: true,
+      confirmLabel: "Delete",
+    });
+    if (!ok) return;
+    run("Delete", () => deleteCallTranscript(c.id).then(refreshCalls), "Conversation deleted.");
+  };
+
+  const agentOpts = (agents.data ?? []).map((a) => ({
+    value: a.id,
+    label: `${a.name} · ${a.tools.length} ${a.tools.length === 1 ? "tool" : "tools"}`,
+  }));
+  const userOpts = (users.data ?? []).map((u) => ({ value: u.id, label: `${u.display_name} (${u.email})` }));
+  const teamOpts = [
+    { value: "", label: "Do not announce" },
+    ...(teams.data ?? [])
+      .filter((t) => t.kind !== "dm")
+      .map((t) => ({ value: t.id, label: t.name ?? "Untitled chat" })),
+  ];
+  const lineOpts = [
+    { value: "", label: "Every line" },
+    ...(lines.data ?? []).map((l) => ({ value: l.id, label: l.label ? `${l.e164} — ${l.label}` : l.e164 })),
+  ];
+  // The accounts a list could belong to: the ones that actually own a line, rather than
+  // every account on the deployment. A conflict list is a practice's own holding, so the
+  // only accounts worth offering are the ones answering a telephone.
+  const listOwners = Array.from(
+    new Map((lines.data ?? []).map((l) => [l.owner_user_id, l.owner_name])).entries(),
+  ).map(([value, label]) => ({ value, label }));
+  const outcomeOpts = [
+    { value: "", label: "Any outcome" },
+    ...CALL_OUTCOMES.map((o) => ({ value: o, label: OUTCOME_LABELS[o] ?? o })),
+  ];
+  const complete = draft.e164.trim() !== "" && draft.agent_id !== "" && draft.owner_user_id !== "";
+
+  return (
+    <div>
+      <H1>Telephone</H1>
+      <p className="mb-1 text-xs text-slate/70">
+        Each line binds a public telephone number to one agent and one account. Anybody who rings it
+        speaks to that agent, in a session that runs as that account and can reach what that account can
+        reach, so choose both carefully: the agent's tool count below is the width of the line. A new line
+        starts switched off. Every caller hears the line's greeting and its notice before anything they say
+        is acted on, and a line that cannot say them does not take the call.
+      </p>
+      <p className="mb-4 text-xs text-slate/70">
+        The account list is the one every signed-in person can see, so if somebody is missing from it, ask
+        a platform administrator to make the binding. The carrier account, public address and limit on
+        simultaneous calls are set by whoever operates this deployment and are not shown here.
+      </p>
+      <details className="mb-4 text-xs text-slate/70">
+        <summary className="cursor-pointer">Answering from your own telephone system</summary>
+        <p className="mt-2">
+          A line answered by your own system never sends the caller's voice anywhere but here. Your
+          telephone system asks this deployment what to do with the call, is given a one-off identifier
+          good for thirty seconds, and opens a connection with it. Whoever operates this deployment sets
+          the address to listen on and the shared secret; the two requests below carry that secret and
+          are only accepted from your own network.
+        </p>
+        <pre className="mt-2 overflow-x-auto rounded-lg border border-navy-lighter bg-navy/40 p-3 text-[11px]">
+{`exten => _X.,1,Set(CURLOPT(httpheader)=x-fosnie-telephony-key: YOUR-SECRET)
+ same => n,Set(ID=\${CURL(https://your-deployment/api/telephony/audiosocket/answer?from=\${CALLERID(num)}&to=\${EXTEN})})
+ same => n,GotoIf($["\${ID}" = ""]?hangup)
+ same => n,Answer()
+ same => n,Dial(AudioSocket/your-deployment:9092/\${ID})
+ same => n,Set(TO=\${CURL(https://your-deployment/api/telephony/audiosocket/continue?call=\${ID})})
+ same => n,GotoIf($["\${TO}" = ""]?hangup)
+ same => n,Dial(PJSIP/\${TO}@your-trunk)
+ same => n(hangup),Hangup()`}
+        </pre>
+        <p className="mt-2">
+          The last three lines are what lets the agent put a caller through to a person: once this side
+          of the call ends, your system asks whether anybody is to be rung, and dials them if so.
+        </p>
+      </details>
+
+      <ReadinessBlock />
+
+      <div className="mb-3 flex items-center gap-2">
+        <button className={BTN} disabled={!!busy || editing === "new"} onClick={startNew}>Add a line</button>
+      </div>
+
+      {editing !== null && (
+        <div className="mb-6 max-w-2xl space-y-3 rounded-xl border border-navy-lighter p-4">
+          <h3 className="font-serif text-lg text-slate-lightest">{editing === "new" ? "New line" : "Edit line"}</h3>
+          <label className="block text-sm text-slate-lightest">Number
+            <input className={INPUT + " mt-1 w-full"} placeholder="+441315550000" value={draft.e164} onChange={(e) => setD("e164", e.target.value)} />
+            <span className="mt-1 block text-[11px] text-slate/50">Full international form, including the country code.</span>
+          </label>
+          <label className="block text-sm text-slate-lightest">Agent
+            <div className="mt-1">
+              <Dropdown value={draft.agent_id} onChange={(v) => setD("agent_id", v)} ariaLabel="Agent answering this line" fullWidth options={agentOpts} />
+            </div>
+          </label>
+          <label className="block text-sm text-slate-lightest">Account
+            <div className="mt-1">
+              <Dropdown value={draft.owner_user_id} onChange={(v) => setD("owner_user_id", v)} ariaLabel="Account the calls run as" fullWidth options={userOpts} />
+            </div>
+          </label>
+          <label className="block text-sm text-slate-lightest">Answered by
+            <div className="mt-1">
+              <Dropdown value={draft.provider} onChange={(v) => setD("provider", v)} ariaLabel="What answers this line" fullWidth options={ANSWERED_BY} />
+            </div>
+            <span className="mt-1 block text-[11px] text-slate/50">
+              A carrier means the call is carried by a telephone company and the audio passes through
+              them. Your own telephone system means the audio comes straight here over your network and
+              reaches nobody else. Both need setting up by whoever operates this deployment before a
+              line will answer.
+            </span>
+          </label>
+          <label className="block text-sm text-slate-lightest">Label (optional)
+            <input className={INPUT + " mt-1 w-full"} placeholder="Reception" value={draft.label} onChange={(e) => setD("label", e.target.value)} />
+          </label>
+          <label className="block text-sm text-slate-lightest">Greeting (optional)
+            <input className={INPUT + " mt-1 w-full"} placeholder="Good morning, Smith and Company" value={draft.greeting} onChange={(e) => setD("greeting", e.target.value)} />
+            <span className="mt-1 block text-[11px] text-slate/50">Spoken first, before the notice. Leave off the question: the notice ends by asking how it can help.</span>
+          </label>
+          <label className="block text-sm text-slate-lightest">Notice (optional)
+            <textarea className={INPUT + " mt-1 w-full"} rows={3} placeholder="Leave empty for the standard notice" value={draft.notice} onChange={(e) => setD("notice", e.target.value)} />
+            <span className="mt-1 block text-[11px] text-slate/50">
+              Every caller is told this before anything they say is acted on, and a line that cannot say
+              it does not take the call. Leave it empty for the standard wording, which tells the caller
+              they are speaking to an automated assistant, that what they say is written down and may be
+              read by a member of staff, and that they can ask for a person. Nothing here records audio.
+            </span>
+          </label>
+          <div className="rounded-lg border border-navy-lighter bg-navy/40 p-3">
+            <span className="block text-[11px] uppercase tracking-wide text-slate/50">What the caller hears</span>
+            <p className="mt-1 text-sm text-slate-lightest">{spokenOpening(draft.greeting, draft.notice, draft.record_calls)}</p>
+          </div>
+          <div className="flex gap-3">
+            <label className="block text-sm text-slate-lightest">Keep conversations for
+              <div className="mt-1 flex items-center gap-2">
+                <input className={INPUT + " w-20"} inputMode="numeric" value={draft.transcript_days} onChange={(e) => setD("transcript_days", e.target.value.replace(/[^0-9]/g, ""))} />
+                <span className="text-xs text-slate/70">days</span>
+              </div>
+            </label>
+            <label className="block text-sm text-slate-lightest">Keep the record of a call for
+              <div className="mt-1 flex items-center gap-2">
+                <input className={INPUT + " w-20"} inputMode="numeric" value={draft.log_days} onChange={(e) => setD("log_days", e.target.value.replace(/[^0-9]/g, ""))} />
+                <span className="text-xs text-slate/70">days</span>
+              </div>
+            </label>
+          </div>
+          <p className="text-[11px] text-slate/50">
+            Nought keeps it indefinitely, which is what a new line does. Once a period is set, what was
+            said is deleted after it, and the record of the call, who rang and how long it lasted, goes
+            after its own. Messages callers left and appointments they made are the practice's own records
+            and are never deleted by either of these.
+          </p>
+
+          <div className="rounded-lg border border-navy-lighter p-3">
+            <label className="flex items-center gap-2 text-sm text-slate-lightest">
+              <input type="checkbox" checked={draft.record_calls} onChange={(e) => setD("record_calls", e.target.checked)} /> Keep a recording of the call
+            </label>
+            <p className="mt-1 text-[11px] text-slate/50">
+              Both sides of the conversation, kept as a sound file you can play back from the call log.
+              <strong className="text-slate-lightest"> Every caller is told the call is recorded</strong>, in
+              the sentence shown in the preview above: switching this on changes what your line says, which
+              is the whole difference between a recording and a covert one. About a megabyte a minute.
+            </p>
+            {draft.record_calls && (
+              <label className="mt-2 block text-sm text-slate-lightest">Keep recordings for
+                <div className="mt-1 flex items-center gap-2">
+                  <input className={INPUT + " w-20"} inputMode="numeric" value={draft.recording_days} onChange={(e) => setD("recording_days", e.target.value.replace(/[^0-9]/g, ""))} />
+                  <span className="text-xs text-slate/70">days</span>
+                </div>
+                <span className="mt-1 block text-[11px] text-slate/50">
+                  Required, and there is no keep for ever here: a voice recording is the most sensitive
+                  thing this line produces. Deleting what was said on a call deletes its recording too.
+                </span>
+              </label>
+            )}
+          </div>
+          <label className="block text-sm text-slate-lightest">Put callers through to (optional)
+            <input className={INPUT + " mt-1 w-full"} placeholder="+441315557788" value={draft.transfer_e164} onChange={(e) => setD("transfer_e164", e.target.value)} />
+            <span className="mt-1 block text-[11px] text-slate/50">A number the agent can hand the call to when the caller needs a person. Leave this empty and it cannot offer to: the agent is never given the ability rather than being given it and refused. The agent never chooses the number.</span>
+          </label>
+          <label className="block text-sm text-slate-lightest">Announce messages in (optional)
+            <div className="mt-1">
+              <Dropdown value={draft.deliver_group_chat_id} onChange={(v) => setD("deliver_group_chat_id", v)} ariaLabel="Team chat to announce messages in" fullWidth options={teamOpts} />
+            </div>
+            <span className="mt-1 block text-[11px] text-slate/50">A team chat the line's own account belongs to. Members are told who rang and what about, never what was said. Messages are recorded either way.</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-lightest">
+            <input type="checkbox" checked={draft.enabled} onChange={(e) => setD("enabled", e.target.checked)} /> Answering
+          </label>
+          <div className="flex gap-2">
+            <button className={BTN} disabled={!!busy || !complete} onClick={save}>Save</button>
+            <button className={BTN2} disabled={!!busy} onClick={() => setEditing(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {lines.isLoading && <p className="text-sm text-slate">Loading…</p>}
+      {!lines.isLoading && (lines.data ?? []).length === 0 && (
+        <p className="mb-6 text-sm text-slate">No lines yet. Add one and it will answer once you switch it on.</p>
+      )}
+      {/* The gap below belongs to the scrolling box rather than to the table: a
+          bottom margin inside it has the scrollbar between it and the heading
+          that follows, and the two run together. */}
+      {(lines.data ?? []).length > 0 && (
+        <TableScroll className="mb-10">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>Number</th>
+                <th className={TH}>Answered by</th>
+                <th className={TH}>Label</th>
+                <th className={TH}>Agent</th>
+                <th className={TH}>Account</th>
+                <th className={TH}>Said to callers</th>
+                <th className={TH}>Kept for</th>
+                <th className={TH}>Puts through to</th>
+                <th className={TH}>Screening</th>
+                <th className={TH}>Diary</th>
+                <th className={TH}>State</th>
+                <th className={TH}>Last call</th>
+                <th className={TH}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(lines.data ?? []).map((l) => (
+                <tr key={l.id}>
+                  <td className={TD + " mono"}>{l.e164}</td>
+                  <td className={TD}>
+                    {l.provider === "audiosocket"
+                      ? <Badge tone="green">own system</Badge>
+                      : <Badge tone="slate">carrier</Badge>}
+                  </td>
+                  <td className={TD}>{l.label ?? "—"}</td>
+                  <td className={TD}>
+                    {l.agent_name}
+                    <span className="mt-0.5 block text-[11px] text-slate/60">{l.agent_tool_count} {l.agent_tool_count === 1 ? "tool" : "tools"}</span>
+                  </td>
+                  <td className={TD}>{l.owner_name}</td>
+                  <td className={TD + " max-w-xs"}>
+                    <span className="block truncate" title={l.opening}>{l.opening}</span>
+                    {!l.notice && <span className="mt-0.5 block text-[11px] text-slate/60">standard notice</span>}
+                  </td>
+                  <td className={TD}>
+                    <span className="block text-[11px] text-slate/70">
+                      words: {l.transcript_days > 0 ? `${l.transcript_days} days` : "indefinitely"}
+                    </span>
+                    <span className="block text-[11px] text-slate/70">
+                      record: {l.log_days > 0 ? `${l.log_days} days` : "indefinitely"}
+                    </span>
+                    {l.record_calls && (
+                      <span className="mt-0.5 block"><Badge tone="red">recorded · {l.recording_days} days</Badge></span>
+                    )}
+                  </td>
+                  <td className={TD + " mono"}>{l.transfer_e164 ?? <span className="text-slate/60">nobody</span>}</td>
+                  <td className={TD}>
+                    {l.screening_names > 0
+                      ? <Badge tone="gold">{l.screening_names} names</Badge>
+                      : <span className="text-slate/60">off</span>}
+                  </td>
+                  <td className={TD}>
+                    {l.diary_slot_minutes
+                      ? <Badge tone="green">{l.diary_slot_minutes} min</Badge>
+                      : <span className="text-slate/60">off</span>}
+                  </td>
+                  <td className={TD}><Badge tone={l.enabled ? "green" : "slate"}>{l.enabled ? "Answering" : "Off"}</Badge></td>
+                  <td className={TD}>{l.last_call_epoch ? fmtEpoch(l.last_call_epoch) : "never"}</td>
+                  <td className={TD}>
+                    <div className="flex gap-2">
+                      <button className={BTN2} disabled={!!busy} onClick={() => startEdit(l)}>Edit</button>
+                      <button className={BTN2} disabled={!!busy} onClick={() => toggle(l)}>{l.enabled ? "Switch off" : "Switch on"}</button>
+                      <button className={BTN_DANGER} disabled={!!busy} onClick={() => remove(l)}>Release</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
+      )}
+
+      <h3 className="mb-2 font-serif text-lg text-slate-lightest">Call log</h3>
+      <p className="mb-3 text-xs text-slate/70">
+        Every call a line answered. Calls that were refused, because the number is unknown or the line is
+        switched off, are not calls and are recorded in the audit trail with the reason. The transcript
+        link opens the conversation, which is readable by whoever may read that account's conversations.
+      </p>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <Dropdown value={fLine} onChange={(v) => refilter(() => setFLine(v))} ariaLabel="Filter by line" options={lineOpts} />
+        <Dropdown value={fOutcome} onChange={(v) => refilter(() => setFOutcome(v))} ariaLabel="Filter by outcome" options={outcomeOpts} />
+      </div>
+      {calls.isLoading && rows.length === 0 && <p className="text-sm text-slate">Loading…</p>}
+      {!calls.isLoading && rows.length === 0 && <p className="text-sm text-slate">No calls yet.</p>}
+      {rows.length > 0 && (
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>Started</th>
+                <th className={TH}>Caller</th>
+                <th className={TH}>Line</th>
+                <th className={TH}>Agent</th>
+                <th className={TH}>Account</th>
+                <th className={TH}>Length</th>
+                <th className={TH}>Outcome</th>
+                <th className={TH}>Checked</th>
+                <th className={TH}>Told</th>
+                <th className={TH}>Recording</th>
+                <th className={TH}>Transcript</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((c) => (
+                <tr key={c.id}>
+                  <td className={TD}>{fmtEpoch(c.started_epoch)}</td>
+                  <td className={TD + " mono"}>{c.from_e164 || "withheld"}</td>
+                  <td className={TD + " mono"}>{c.to_e164}</td>
+                  <td className={TD}>{c.agent_name ?? "—"}</td>
+                  <td className={TD}>{c.owner_name}</td>
+                  <td className={TD}>{fmtDuration(c.seconds)}</td>
+                  <td className={TD}>
+                    <Badge tone={c.outcome === "completed" ? "green" : c.outcome === "in_progress" ? "gold" : "slate"}>
+                      {OUTCOME_LABELS[c.outcome] ?? c.outcome}
+                    </Badge>
+                  </td>
+                  <td className={TD}>
+                    {c.conflict_check
+                      ? <Badge tone={c.conflict_check === "clear" ? "green" : "red"}>{CHECK_LABELS[c.conflict_check] ?? c.conflict_check}</Badge>
+                      : <span className="text-slate/60">not checked</span>}
+                  </td>
+                  <td className={TD}>
+                    {c.notice_epoch
+                      ? <Badge tone="green">told</Badge>
+                      : <Badge tone="red">not told</Badge>}
+                  </td>
+                  <td className={TD}><RecordingCell call={c} onChange={refreshCalls} /></td>
+                  <td className={TD}>
+                    {c.chat_id ? (
+                      <div className="flex gap-2">
+                        <button className="text-gold hover:underline" onClick={() => nav(`/c/${c.chat_id}`)}>Open</button>
+                        <button className="text-slate/70 hover:underline" disabled={!!busy} onClick={() => dropTranscript(c)}>Delete</button>
+                      </div>
+                    ) : c.transcript_deleted_epoch ? (
+                      <span className="text-slate/60" title={fmtEpoch(c.transcript_deleted_epoch)}>deleted</span>
+                    ) : (
+                      <span className="text-slate/60">no transcript</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
+      )}
+      {rows.length > 0 && !exhausted && (
+        <button
+          className={BTN2 + " mt-3"}
+          disabled={calls.isFetching}
+          onClick={() => setCursor(rows[rows.length - 1].id)}
+        >
+          {calls.isFetching ? "Loading…" : "Load more"}
+        </button>
+      )}
+
+      <EnquiriesBlock lineOpts={lineOpts} />
+      <ConflictListBlock owners={listOwners} />
+      <DiaryBlock owners={listOwners} />
+      <NotificationsBlock owners={listOwners} />
+      <ComplianceBlock owners={listOwners} />
+    </div>
+  );
+}
+
+// Messages the lines took. Kept in its own component because the rule it renders is not
+// the table's: a row's words belong to the account whose line took them, and the server
+// sends null rather than text to anybody else. Null is shown as withheld and never as
+// blank, or a message somebody may not read would look like a message nobody wrote.
+function EnquiriesBlock({ lineOpts }: { lineOpts: { value: string; label: string }[] }) {
+  const qc = useQueryClient();
+  const nav = useNavigate();
+  const { busy, run } = useBusy();
+  const [fLine, setFLine] = useState("");
+  const [openOnly, setOpenOnly] = useState(true);
+  const q = useTelephonyEnquiries({ numberId: fLine || undefined, open: openOnly || undefined });
+
+  const mark = (e: Enquiry, handled: boolean) =>
+    run(
+      handled ? "Mark dealt with" : "Reopen",
+      () =>
+        setEnquiryHandled(e.id, handled).then(() => {
+          qc.invalidateQueries({ queryKey: ["admin-telephony-enquiries"] });
+          qc.invalidateQueries({ queryKey: ["enquiries"] });
+        }),
+      handled ? "Marked dealt with." : "Reopened.",
+    );
+
+  const rows = q.data ?? [];
+  return (
+    <div className="mt-8">
+      <h3 className="mb-2 font-serif text-lg text-slate-lightest">Messages taken</h3>
+      <p className="mb-3 text-xs text-slate/70">
+        What callers wanted, written down by the agent answering. What a caller said belongs to the
+        account whose line took it: unless that account is yours, or you administer this platform, you
+        see that a message was taken and not what it says. Only the account it was taken for can mark
+        it dealt with.
+      </p>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Dropdown value={fLine} onChange={setFLine} ariaLabel="Filter messages by line" options={lineOpts} />
+        <label className="flex items-center gap-2 text-sm text-slate-lightest">
+          <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} /> Not yet dealt with
+        </label>
+      </div>
+      {q.isLoading && <p className="text-sm text-slate">Loading…</p>}
+      {!q.isLoading && rows.length === 0 && (
+        <p className="text-sm text-slate">{openOnly ? "Nothing waiting." : "No messages yet."}</p>
+      )}
+      {rows.length > 0 && (
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>Taken</th>
+                <th className={TH}>Line</th>
+                <th className={TH}>Kind</th>
+                <th className={TH}>Caller</th>
+                <th className={TH}>What about</th>
+                <th className={TH}>State</th>
+                <th className={TH}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((e) => (
+                <tr key={e.id}>
+                  <td className={TD}>{fmtEpoch(e.created_epoch)}</td>
+                  <td className={TD + " mono"}>{e.to_e164}</td>
+                  <td className={TD}>
+                    <Badge tone={e.urgency === "urgent" ? "red" : "slate"}>
+                      {e.kind === "message" ? "Message" : e.kind === "handover" ? "Put through" : "Enquiry"}
+                      {e.urgency === "urgent" ? " · urgent" : ""}
+                    </Badge>
+                  </td>
+                  <td className={TD}>
+                    {e.caller_name ?? (e.caller_e164 === null ? <span className="text-slate/60">withheld</span> : null)}
+                    {e.caller_e164 && <span className="mt-0.5 block text-[11px] text-slate/60 mono">{e.caller_e164}</span>}
+                    {e.for_whom && <span className="mt-0.5 block text-[11px] text-slate/60">for {e.for_whom}</span>}
+                    {e.contact && <span className="mt-0.5 block text-[11px] text-slate/60">{e.contact}</span>}
+                  </td>
+                  <td className={TD}>
+                    {e.subject === null ? (
+                      <span className="text-slate/60">withheld</span>
+                    ) : (
+                      <>
+                        {e.subject}
+                        {e.body && <span className="mt-0.5 block text-[11px] text-slate/70">{e.body}</span>}
+                        {e.details && Object.keys(e.details).length > 0 && (
+                          <span className="mt-0.5 block text-[11px] text-slate/60">
+                            {Object.entries(e.details).map(([k, v]) => `${k}: ${v}`).join(" · ")}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </td>
+                  <td className={TD}>
+                    <Badge tone={e.handled ? "green" : "gold"}>{e.handled ? "Dealt with" : "Waiting"}</Badge>
+                  </td>
+                  <td className={TD}>
+                    <div className="flex gap-2">
+                      <button className={BTN2} disabled={!!busy} onClick={() => mark(e, !e.handled)}>
+                        {e.handled ? "Reopen" : "Mark dealt with"}
+                      </button>
+                      {e.chat_id && (
+                        <button className={BTN2} onClick={() => nav(`/c/${e.chat_id}`)}>Open call</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
+      )}
+    </div>
+  );
+}
+
+
+// The list a line checks callers against. Its own component because what it renders is a
+// practice's confidential holding rather than line wiring: the server refuses it to
+// anybody but the account it belongs to and a platform administrator, so this block shows
+// nothing at all rather than an empty list when the reader is neither.
+function ConflictListBlock({ owners }: { owners: { value: string; label: string }[] }) {
+  const qc = useQueryClient();
+  const { busy, run } = useBusy();
+  const [owner, setOwner] = useState("");
+  const [paste, setPaste] = useState("");
+  const [note, setNote] = useState("");
+  const chosen = owner || owners[0]?.value || "";
+  const names = useConflictNames(chosen || undefined);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["conflict-names"] });
+    qc.invalidateQueries({ queryKey: ["admin-telephony-numbers"] });
+  };
+
+  const add = () =>
+    run(
+      "Add",
+      async () => {
+        const res = await addConflictNames({
+          owner_user_id: chosen,
+          names: paste,
+          note: note.trim() || null,
+        });
+        setPaste("");
+        setNote("");
+        refresh();
+        toast(
+          res.added === 0
+            ? "Every one of those was already on the list."
+            : `Added ${res.added}${res.already_there ? `, ${res.already_there} already there` : ""}.`,
+        );
+      },
+    );
+
+  const remove = (id: string, name: string) =>
+    run("Remove", async () => {
+      if (!(await confirmDialog({ title: `Take ${name} off the list?`, confirmLabel: "Remove" }))) return;
+      await removeConflictName(id);
+      refresh();
+    });
+
+  if (owners.length === 0) return null;
+  const rows = names.data ?? [];
+  return (
+    <div className="mt-8">
+      <h3 className="mb-2 font-serif text-lg text-slate-lightest">Conflict list</h3>
+      <p className="mb-1 text-xs text-slate/70">
+        Names the line checks a caller against before offering them anything or putting them through
+        to anybody. A caller who matches has a message taken instead, and is told only that somebody
+        will be in touch: never that a check was made, and never what it found.
+      </p>
+      <p className="mb-3 text-xs text-slate/70">
+        While an account keeps a list, no call on its lines is put through until it has been checked
+        and found clear, so a caller who will not give a full name is not put through either. This
+        list is the account's own: whoever may register telephone numbers can see that it exists and
+        how many names are on it, and cannot read it.
+      </p>
+      <div className="mb-3 flex flex-wrap items-end gap-2">
+        {owners.length > 1 && (
+          <Dropdown value={chosen} onChange={setOwner} ariaLabel="Whose list" options={owners} />
+        )}
+        {owners.length === 1 && <span className="text-sm text-slate">{owners[0].label}</span>}
+        <Badge tone={rows.length > 0 ? "gold" : "slate"}>{rows.length} names</Badge>
+      </div>
+      <div className="mb-4 max-w-2xl space-y-2">
+        <label className="block text-sm text-slate-lightest">Add names, one per line
+          <textarea
+            className={INPUT + " mt-1 h-28 w-full font-mono text-xs"}
+            placeholder={"Marchetti Quarry Holdings\nJane Alice Fraser"}
+            value={paste}
+            onChange={(e) => setPaste(e.target.value)}
+          />
+          <span className="mt-1 block text-[11px] text-slate/50">
+            Spelling, punctuation, titles, company endings and word order are all ignored when
+            checking, so paste them as they come out of your own system. A name already on the list
+            is skipped.
+          </span>
+        </label>
+        <label className="block text-sm text-slate-lightest">Note (optional)
+          <input className={INPUT + " mt-1 w-full"} placeholder="Which matter" value={note} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        <button className={BTN} disabled={!!busy || !chosen || paste.trim() === ""} onClick={add}>Add to list</button>
+      </div>
+      {names.isLoading && <p className="text-sm text-slate">Loading…</p>}
+      {!names.isLoading && rows.length === 0 && (
+        <p className="text-sm text-slate">No names yet, so callers on these lines are not checked.</p>
+      )}
+      {rows.length > 0 && (
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>Name</th>
+                <th className={TH}>Note</th>
+                <th className={TH}>Added</th>
+                <th className={TH}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((n) => (
+                <tr key={n.id}>
+                  <td className={TD}>{n.name}</td>
+                  <td className={TD}>{n.note ?? "—"}</td>
+                  <td className={TD}>{fmtEpoch(n.created_epoch)}</td>
+                  <td className={TD}>
+                    <button className={BTN2} disabled={!!busy} onClick={() => remove(n.id, n.name)}>Remove</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
+      )}
+    </div>
+  );
+}
+
+
+// The practice's diary. Its own component because the times in it are shown in the
+// PRACTICE'S zone rather than the reader's: an administrator in another country reading
+// "9 o'clock" and meaning something else is the fault this whole area exists to avoid, and
+// nothing else in this application shows a time in a zone that is not the browser's.
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+/** Minutes from midnight as "09:30", for an input. */
+const asClock = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+/** And back, or null when it is not a time. */
+function asMinutes(v: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(v.trim());
+  if (!m) return null;
+  const [h, min] = [Number(m[1]), Number(m[2])];
+  if (h > 24 || min > 59) return null;
+  return h * 60 + min;
+}
+/** An instant, said in the practice's own zone. */
+function inZone(iso: string, timeZone: string | null): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  try {
+    return d.toLocaleString("en-GB", {
+      timeZone: timeZone ?? undefined,
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    // An unknown zone name should be impossible (the server validates it), and showing
+    // the reader's own time silently would be the one wrong answer here.
+    return `${d.toLocaleString("en-GB")} (zone unknown)`;
+  }
+}
+
+/** The zones this browser knows, for the picker. */
+function zoneOptions(current: string): { value: string; label: string }[] {
+  const supported = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] })
+    .supportedValuesOf;
+  const names = supported ? supported("timeZone") : [current || "UTC", "UTC"];
+  const set = Array.from(new Set([current, ...names].filter(Boolean)));
+  return set.map((z) => ({ value: z, label: z }));
+}
+
+function DiaryBlock({ owners }: { owners: { value: string; label: string }[] }) {
+  const qc = useQueryClient();
+  const { busy, run } = useBusy();
+  const [owner, setOwner] = useState("");
+  const chosen = owner || owners[0]?.value || "";
+  const diary = useDiary(chosen || undefined);
+  const appts = useAppointments(chosen || undefined);
+  const [draft, setDraft] = useState<DiaryBody | null>(null);
+  const [closure, setClosure] = useState("");
+  const [closureNote, setClosureNote] = useState("");
+
+  // The saved diary is the starting point; edits live in the draft until saved.
+  const saved = diary.data ?? null;
+  const d: DiaryBody = draft ?? {
+    timezone: saved?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
+    slot_minutes: saved?.slot_minutes ?? 30,
+    lead_minutes: saved?.lead_minutes ?? 120,
+    horizon_days: saved?.horizon_days ?? 30,
+    enabled: saved?.enabled ?? false,
+    hours: saved?.hours ?? [],
+  };
+  const edit = (patch: Partial<DiaryBody>) => setDraft({ ...d, ...patch });
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["diary"] });
+    qc.invalidateQueries({ queryKey: ["diary-appointments"] });
+    qc.invalidateQueries({ queryKey: ["admin-telephony-numbers"] });
+  };
+
+  const save = () =>
+    run("Save", async () => {
+      await setDiary({ ...d, owner_user_id: chosen });
+      setDraft(null);
+      refresh();
+    }, "Diary saved.");
+
+  const addHours = (weekday: number) =>
+    edit({ hours: [...d.hours, { weekday, opens_minute: 9 * 60, closes_minute: 17 * 60 }] });
+  const dropHours = (i: number) => edit({ hours: d.hours.filter((_, n) => n !== i) });
+  const setHours = (i: number, patch: Partial<DiaryOpening>) =>
+    edit({ hours: d.hours.map((h, n) => (n === i ? { ...h, ...patch } : h)) });
+
+  const addClosure = () =>
+    run("Add", async () => {
+      await addDiaryClosure({ owner_user_id: chosen, closed_on: closure, note: closureNote || null });
+      setClosure("");
+      setClosureNote("");
+      refresh();
+    });
+  const dropClosure = (date: string) =>
+    run("Remove", async () => {
+      await removeDiaryClosure(date, chosen);
+      refresh();
+    });
+  const cancel = async (a: Appointment) => {
+    const ok = await confirmDialog({
+      title: `Cancel ${a.caller_name}'s appointment?`,
+      body: "The time becomes free again and can be offered to somebody else. Nobody is told: ring them if they need to know.",
+      danger: true,
+      confirmLabel: "Cancel it",
+    });
+    if (!ok) return;
+    run("Cancel", () => cancelAppointment(a.id).then(refresh), "Cancelled.");
+  };
+
+  if (owners.length === 0) return null;
+  const rows = appts.data ?? [];
+  const dirty = draft !== null;
+  return (
+    <div className="mt-8">
+      <h3 className="mb-2 font-serif text-lg text-slate-lightest">Diary</h3>
+      <p className="mb-1 text-xs text-slate/70">
+        When this account is open, and therefore what times a caller can be offered and take. The
+        agent is never told the opening hours and never works a time out for itself: it asks what is
+        free and reads back what it is given, so nothing outside these hours can be booked.
+      </p>
+      <p className="mb-3 text-xs text-slate/70">
+        Every time here is shown in the diary's own zone, not yours. An appointment is always the
+        length set below, which is what makes it impossible for two callers to take one slot.
+      </p>
+
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {owners.length > 1 && (
+          <Dropdown value={chosen} onChange={(v) => { setOwner(v); setDraft(null); }} ariaLabel="Whose diary" options={owners} />
+        )}
+        {owners.length === 1 && <span className="text-sm text-slate">{owners[0].label}</span>}
+        <Badge tone={saved?.enabled ? "green" : "slate"}>{saved?.enabled ? "Taking bookings" : "Off"}</Badge>
+      </div>
+
+      {diary.isLoading && <p className="text-sm text-slate">Loading…</p>}
+      {!diary.isLoading && (
+        <div className="mb-6 max-w-2xl space-y-3 rounded-xl border border-navy-lighter p-4">
+          <label className="block text-sm text-slate-lightest">Time zone
+            <div className="mt-1">
+              <Dropdown value={d.timezone} onChange={(v) => edit({ timezone: v })} ariaLabel="The diary's time zone" fullWidth options={zoneOptions(d.timezone)} />
+            </div>
+            <span className="mt-1 block text-[11px] text-slate/50">The opening hours below are in this zone, so they stay right when the clocks change.</span>
+          </label>
+          <div className="flex flex-wrap gap-3">
+            <label className="block text-sm text-slate-lightest">Appointment length (minutes)
+              <input className={INPUT + " mt-1 w-32"} value={String(d.slot_minutes)} onChange={(e) => edit({ slot_minutes: Number(e.target.value) || 30 })} />
+            </label>
+            <label className="block text-sm text-slate-lightest">Soonest (minutes from now)
+              <input className={INPUT + " mt-1 w-32"} value={String(d.lead_minutes)} onChange={(e) => edit({ lead_minutes: Number(e.target.value) || 0 })} />
+            </label>
+            <label className="block text-sm text-slate-lightest">How far ahead (days)
+              <input className={INPUT + " mt-1 w-32"} value={String(d.horizon_days)} onChange={(e) => edit({ horizon_days: Number(e.target.value) || 1 })} />
+            </label>
+          </div>
+
+          <div>
+            <span className={LABEL}>Opening hours</span>
+            {WEEKDAYS.map((name, weekday) => (
+              <div key={weekday} className="mt-1 flex flex-wrap items-center gap-2">
+                <span className="w-24 text-sm text-slate">{name}</span>
+                {d.hours.map((h, i) =>
+                  h.weekday !== weekday ? null : (
+                    <span key={i} className="flex items-center gap-1">
+                      <input
+                        className={INPUT + " w-20"}
+                        value={asClock(h.opens_minute)}
+                        onChange={(e) => { const m = asMinutes(e.target.value); if (m !== null) setHours(i, { opens_minute: m }); }}
+                      />
+                      <span className="text-xs text-slate/60">to</span>
+                      <input
+                        className={INPUT + " w-20"}
+                        value={asClock(h.closes_minute)}
+                        onChange={(e) => { const m = asMinutes(e.target.value); if (m !== null) setHours(i, { closes_minute: m }); }}
+                      />
+                      <button className={BTN2} onClick={() => dropHours(i)}>Remove</button>
+                    </span>
+                  ),
+                )}
+                <button className={BTN2} onClick={() => addHours(weekday)}>Add</button>
+              </div>
+            ))}
+            <span className="mt-1 block text-[11px] text-slate/50">Two periods on a day is how a lunch break is written. A day with none is a day the account is shut.</span>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-slate-lightest">
+            <input type="checkbox" checked={d.enabled} onChange={(e) => edit({ enabled: e.target.checked })} /> Take bookings by telephone
+          </label>
+          <div className="flex gap-2">
+            <button className={BTN} disabled={!!busy || !dirty} onClick={save}>Save diary</button>
+            {dirty && <button className={BTN2} disabled={!!busy} onClick={() => setDraft(null)}>Discard</button>}
+          </div>
+        </div>
+      )}
+
+      <h4 className="mb-2 text-sm text-slate-lightest">Days shut</h4>
+      <div className="mb-2 flex flex-wrap items-end gap-2">
+        <label className="block text-sm text-slate-lightest">Date
+          <input className={INPUT + " mt-1 w-40"} placeholder="2026-12-25" value={closure} onChange={(e) => setClosure(e.target.value)} />
+        </label>
+        <label className="block text-sm text-slate-lightest">Note
+          <input className={INPUT + " mt-1 w-56"} placeholder="Christmas Day" value={closureNote} onChange={(e) => setClosureNote(e.target.value)} />
+        </label>
+        <button className={BTN2} disabled={!!busy || closure.trim() === ""} onClick={addClosure}>Add</button>
+      </div>
+      {(saved?.closures ?? []).length === 0 && <p className="mb-4 text-sm text-slate">No days shut, so only the opening hours above apply.</p>}
+      {(saved?.closures ?? []).length > 0 && (
+        <ul className="mb-4 flex flex-wrap gap-2">
+          {(saved?.closures ?? []).map((c) => (
+            <li key={c.closed_on} className="flex items-center gap-2 rounded-lg border border-navy-lighter px-2 py-1 text-xs text-slate-lightest">
+              <span className="mono">{c.closed_on}</span>
+              {c.note && <span className="text-slate/60">{c.note}</span>}
+              <button className="text-urgency-red" disabled={!!busy} onClick={() => dropClosure(c.closed_on)}>×</button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <h4 className="mb-2 text-sm text-slate-lightest">Coming in</h4>
+      {appts.isLoading && <p className="text-sm text-slate">Loading…</p>}
+      {!appts.isLoading && rows.length === 0 && <p className="text-sm text-slate">Nothing booked.</p>}
+      {rows.length > 0 && (
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>When</th>
+                <th className={TH}>Who</th>
+                <th className={TH}>What about</th>
+                <th className={TH}>Reference</th>
+                <th className={TH}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((a) => (
+                <tr key={a.id}>
+                  <td className={TD}>{inZone(a.starts_at, a.timezone)}</td>
+                  <td className={TD}>
+                    {a.caller_name}
+                    {a.caller_e164 && <span className="mt-0.5 block text-[11px] text-slate/60 mono">{a.caller_e164}</span>}
+                    {a.contact && <span className="mt-0.5 block text-[11px] text-slate/60">{a.contact}</span>}
+                  </td>
+                  <td className={TD}>{a.subject}</td>
+                  <td className={TD + " mono"}>{a.reference}</td>
+                  <td className={TD}>
+                    <button className={BTN_DANGER} disabled={!!busy} onClick={() => cancel(a)}>Cancel</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
+      )}
+    </div>
+  );
+}
+
+// Listening to a call, where its line kept the sound.
+//
+// Fetched rather than linked: the address needs the session behind it, and every listen is
+// recorded in the audit trail, so the player is opened deliberately rather than by a page
+// that happens to render.
+function RecordingCell({ call, onChange }: { call: CallRecord; onChange: () => void }) {
+  const { busy, run } = useBusy();
+  const [url, setUrl] = useState<string | null>(null);
+  // The object URL is this component's to release, and it holds a copy of somebody's voice.
+  useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
+
+  if (call.recording_seconds == null) {
+    return call.recording_failed
+      ? <span className="text-[11px] text-urgency-red" title="The line was set to record and the recording did not survive.">recording failed</span>
+      : <span className="text-slate/60">—</span>;
+  }
+  const mins = Math.floor(call.recording_seconds / 60);
+  const secs = call.recording_seconds % 60;
+  const size = call.recording_bytes ? `${(call.recording_bytes / (1024 * 1024)).toFixed(1)} MB` : "";
+
+  const listen = () => run("Listen", async () => { setUrl(await callRecordingUrl(call.id)); });
+  const remove = async () => {
+    const ok = await confirmDialog({
+      title: "Delete this recording?",
+      body: "The sound of the call is deleted and cannot be recovered. What was said stays in the conversation, and the call stays in the log.",
+      danger: true,
+      confirmLabel: "Delete",
+    });
+    if (!ok) return;
+    run("Delete", () => deleteCallRecording(call.id).then(() => { setUrl(null); onChange(); }), "Recording deleted.");
+  };
+
+  return (
+    <div>
+      {url ? (
+        <audio controls src={url} className="h-8 w-44" />
+      ) : (
+        <button className="text-gold hover:underline" disabled={!!busy} onClick={listen}>Listen</button>
+      )}
+      <span className="mt-0.5 block text-[11px] text-slate/60">
+        {mins}:{String(secs).padStart(2, "0")}{size ? ` · ${size}` : ""}
+        {" · "}
+        <button className="hover:underline" disabled={!!busy} onClick={remove}>delete</button>
+      </span>
+    </div>
+  );
+}
+
+// Whether a call will actually work, asked before somebody rings the number.
+//
+// The same findings the deployment's own settings screen shows. Here because the person
+// who registers a number is usually not the person who configured the carrier, and being
+// told what is wrong is what stops a line being blamed for a deployment's fault.
+function ReadinessBlock() {
+  const { busy, run } = useBusy();
+  const [checks, setChecks] = useState<TelephonyCheck[] | null>(null);
+  const look = () =>
+    run("Check", async () => {
+      setChecks(await runTelephonyCheck());
+    });
+  const wrong = (checks ?? []).filter((c) => !c.ok);
+
+  return (
+    <div className="mb-5 rounded-xl border border-navy-lighter p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="font-serif text-lg text-slate-lightest">Will a call work?</h3>
+          <p className="mt-1 text-xs text-slate/70">
+            Asks the questions a call asks, in the order it asks them, including a real test request to
+            the speech engine: a deployment that cannot speak answers a call and ends it, and the person
+            who finds out is otherwise a caller.
+          </p>
+        </div>
+        <button className={BTN2} disabled={!!busy} onClick={look}>{busy ? "Checking…" : "Check"}</button>
+      </div>
+      {checks && (
+        <div className="mt-3">
+          <p className="mb-2 text-xs text-slate/70">
+            {wrong.length === 0
+              ? "Everything a call needs is in place."
+              : `${wrong.length} of ${checks.length} need attention. The deployment settings behind these are set by whoever operates this instance.`}
+          </p>
+          <ul className="space-y-2">
+            {checks.map((c) => (
+              <li key={c.id} className="text-sm">
+                <span className={c.ok ? "text-emerald-400" : "text-urgency-red"}>{c.ok ? "✓" : "✗"}</span>{" "}
+                <span className="text-slate-lightest">{c.title}</span>
+                <span className="mt-0.5 block text-[11px] text-slate/60">{c.detail}</span>
+                {c.fix && <span className="mt-0.5 block text-[11px] text-urgency-red">{c.fix}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Where an account is told, outside this deployment, about what its lines took.
+//
+// The address is never shown back: it is a credential, and anybody holding it can post
+// into that channel. What a reader sees is the host and the events, which is enough to
+// know what is arranged without being enough to use it.
+const EVENT_LABELS: Record<string, string> = {
+  message_taken: "A message is taken",
+  appointment_booked: "An appointment is booked",
+  appointment_moved: "An appointment is moved",
+  appointment_cancelled: "An appointment is cancelled",
+};
+
+type TargetDraft = { label: string; kind: string; url: string; events: string[] };
+const EMPTY_TARGET: TargetDraft = { label: "", kind: "slack", url: "", events: ["message_taken"] };
+
+function NotificationsBlock({ owners }: { owners: { value: string; label: string }[] }) {
+  const qc = useQueryClient();
+  const { busy, run } = useBusy();
+  const [owner, setOwner] = useState("");
+  const chosen = owner || owners[0]?.value || "";
+  const q = useNotifyTargets(chosen || undefined, !!chosen);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState<TargetDraft>(EMPTY_TARGET);
+  const setD = (k: keyof TargetDraft, v: string | string[]) => setDraft((p) => ({ ...p, [k]: v }));
+  const refresh = () => qc.invalidateQueries({ queryKey: ["notify-targets"] });
+
+  const toggleEvent = (e: string) =>
+    setD("events", draft.events.includes(e) ? draft.events.filter((x) => x !== e) : [...draft.events, e]);
+
+  const save = () =>
+    run(
+      "Add",
+      async () => {
+        await createNotifyTarget({
+          owner_user_id: chosen,
+          label: draft.label.trim(),
+          kind: draft.kind,
+          url: draft.url.trim(),
+          events: draft.events,
+        });
+        setDraft(EMPTY_TARGET);
+        setAdding(false);
+        refresh();
+      },
+      "Target added.",
+    );
+
+  const toggle = (t: NotifyTarget) =>
+    run(
+      t.enabled ? "Switch off" : "Switch on",
+      () => updateNotifyTarget(t.id, { enabled: !t.enabled }).then(refresh),
+      t.enabled ? "Switched off." : "Switched on.",
+    );
+
+  const probe = (t: NotifyTarget) =>
+    run("Test", () => testNotifyTarget(t.id), "A test line was sent.");
+
+  const remove = async (t: NotifyTarget) => {
+    const ok = await confirmDialog({
+      title: `Stop telling ${t.label}?`,
+      body: "Nothing more is sent there. What was already taken is unaffected.",
+      danger: true,
+      confirmLabel: "Remove",
+    });
+    if (!ok) return;
+    run("Remove", () => deleteNotifyTarget(t.id).then(refresh), "Target removed.");
+  };
+
+  const rows = q.data ?? [];
+  return (
+    <div className="mt-8">
+      <h3 className="mb-2 font-serif text-lg text-slate-lightest">Telling somebody outside</h3>
+      <p className="mb-3 text-xs text-slate/70">
+        A message taken at four in the afternoon is no use if it is seen tomorrow. Post a line into a
+        chat channel instead: who rang and what it is about, and a way back into here for the rest.
+        What a caller actually said never leaves. Outward notifications have to be switched on for
+        this deployment before anything is sent.
+      </p>
+      {owners.length > 1 && (
+        <div className="mb-3">
+          <Dropdown value={chosen} onChange={setOwner} ariaLabel="Whose lines" options={owners} />
+        </div>
+      )}
+      <div className="mb-3">
+        <button className={BTN} disabled={!!busy || adding || !chosen} onClick={() => setAdding(true)}>
+          Add somewhere to tell
+        </button>
+      </div>
+
+      {adding && (
+        <div className="mb-4 max-w-xl space-y-3 rounded-xl border border-navy-lighter p-4">
+          <label className="block text-sm text-slate-lightest">Name
+            <input className={INPUT + " mt-1 w-full"} placeholder="Reception channel" value={draft.label} onChange={(e) => setD("label", e.target.value)} />
+          </label>
+          <label className="block text-sm text-slate-lightest">Kind
+            <div className="mt-1">
+              <Dropdown
+                value={draft.kind}
+                onChange={(v) => setD("kind", v)}
+                ariaLabel="What kind of service"
+                fullWidth
+                options={[
+                  { value: "slack", label: "Slack" },
+                  { value: "teams", label: "Teams" },
+                  { value: "webhook", label: "Anything that accepts a posted message" },
+                ]}
+              />
+            </div>
+          </label>
+          <label className="block text-sm text-slate-lightest">Address
+            <input className={INPUT + " mt-1 w-full"} placeholder="https://hooks.slack.com/services/…" value={draft.url} onChange={(e) => setD("url", e.target.value)} />
+            <span className="mt-1 block text-[11px] text-slate/50">
+              An incoming webhook address. It is stored encrypted and never shown again, because
+              anybody who has it can post into that channel. A plain http address is only accepted on
+              this deployment's own network.
+            </span>
+          </label>
+          <div className="text-sm text-slate-lightest">Tell it when
+            <div className="mt-1 space-y-1">
+              {NOTIFY_EVENTS.map((e) => (
+                <label key={e} className="flex items-center gap-2 text-sm text-slate-lightest">
+                  <input type="checkbox" checked={draft.events.includes(e)} onChange={() => toggleEvent(e)} />
+                  {EVENT_LABELS[e] ?? e}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button className={BTN} disabled={!!busy || !draft.label.trim() || !draft.url.trim()} onClick={save}>Add</button>
+            <button className={BTN2} disabled={!!busy} onClick={() => { setAdding(false); setDraft(EMPTY_TARGET); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {q.isLoading && <p className="text-sm text-slate">Loading…</p>}
+      {!q.isLoading && rows.length === 0 && (
+        <p className="text-sm text-slate">Nobody outside is told anything yet.</p>
+      )}
+      {rows.length > 0 && (
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr>
+                <th className={TH}>Name</th>
+                <th className={TH}>Kind</th>
+                <th className={TH}>Where</th>
+                <th className={TH}>Told when</th>
+                <th className={TH}>State</th>
+                <th className={TH}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((t) => (
+                <tr key={t.id}>
+                  <td className={TD}>{t.label}</td>
+                  <td className={TD}>{t.kind}</td>
+                  <td className={TD + " mono"}>{t.host}</td>
+                  <td className={TD}>
+                    {t.events.length === 0
+                      ? <span className="text-slate/60">nothing</span>
+                      : t.events.map((e) => EVENT_LABELS[e] ?? e).join(", ")}
+                  </td>
+                  <td className={TD}><Badge tone={t.enabled ? "green" : "slate"}>{t.enabled ? "On" : "Off"}</Badge></td>
+                  <td className={TD}>
+                    <div className="flex gap-2">
+                      <button className={BTN2} disabled={!!busy} onClick={() => probe(t)}>Test</button>
+                      <button className={BTN2} disabled={!!busy} onClick={() => toggle(t)}>{t.enabled ? "Switch off" : "Switch on"}</button>
+                      <button className={BTN_DANGER} disabled={!!busy} onClick={() => remove(t)}>Remove</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
+      )}
+    </div>
+  );
+}
+
+// What the lines do with what they are told, in one place.
+//
+// Assembled from the settings themselves every time it is read, so it cannot drift from
+// what the deployment actually does, which is the failing of every assessment written down
+// once in a document. Gated on owning the lines rather than on being able to wire one, like
+// the screening list and the diary.
+function ComplianceBlock({ owners }: { owners: { value: string; label: string }[] }) {
+  const [owner, setOwner] = useState("");
+  const chosen = owner || owners[0]?.value || "";
+  const q = useTelephonyCompliance(chosen || undefined, !!chosen);
+  const record = q.data ?? null;
+
+  // The whole record as plain text, so it can go into an assessment without being retyped.
+  const asText = (): string => {
+    if (!record) return "";
+    const at = new Date(record.as_at_epoch * 1000).toISOString();
+    const lines = record.lines
+      .map(
+        (l) =>
+          [
+            `${l.e164}${l.label ? ` (${l.label})` : ""}${l.enabled ? "" : " [not answering]"}`,
+            `  Said to every caller: ${l.spoken_to_callers}`,
+            `  Callers put through to: ${l.transfers_to ?? "nobody"}`,
+            `  Conversations kept: ${l.transcript_days > 0 ? `${l.transcript_days} days` : "indefinitely"}`,
+            `  Sound of the call kept: ${l.records_calls ? `${l.recording_days} days` : "not recorded"}`,
+            `  Call records kept: ${l.log_days > 0 ? `${l.log_days} days` : "indefinitely"}`,
+            `  Calls taken: ${l.calls}, of which told what they were speaking to: ${l.calls_with_notice}`,
+          ].join("\n"),
+      )
+      .join("\n");
+    const held = record.holdings
+      .map((h) => `${h.held} (${h.rows}): ${h.contents}\n  Kept: ${h.kept}`)
+      .join("\n");
+    return [
+      `Telephone processing record, as at ${at}`,
+      "",
+      "Lines",
+      lines || "  None registered.",
+      "",
+      "What is held",
+      held,
+      "",
+      record.no_audio_is_kept
+        ? "No audio is kept at any point: speech is recognised as it arrives and discarded."
+        : "The sound of calls is kept on the lines marked as recording, and callers on those lines are told so before they say anything.",
+      "What leaves this deployment:",
+      ...record.leaves_the_deployment.map((l) => `  ${l}`),
+    ].join("\n");
+  };
+
+  return (
+    <div className="mt-8">
+      <h3 className="mb-2 font-serif text-lg text-slate-lightest">What these lines do with what they are told</h3>
+      <p className="mb-3 text-xs text-slate/70">
+        Read from the settings as they stand, so it is true of this deployment today rather than of the
+        day somebody wrote it down. Useful as the starting point for an assessment of how the line
+        handles personal information. Like the screening list and the diary, it belongs to the account
+        whose lines these are.
+      </p>
+      {owners.length > 1 && (
+        <div className="mb-3">
+          <Dropdown value={chosen} onChange={setOwner} ariaLabel="Whose lines" options={owners} />
+        </div>
+      )}
+      {!chosen && <p className="text-sm text-slate">No lines yet.</p>}
+      {q.isLoading && <p className="text-sm text-slate">Loading…</p>}
+      {q.isError && <p className="text-sm text-slate">That account's record is not yours to read.</p>}
+      {record && (
+        <>
+          <TableScroll>
+            <table className="mb-4 w-full border-collapse text-sm">
+              <thead>
+                <tr>
+                  <th className={TH}>Line</th>
+                  <th className={TH}>Said to every caller</th>
+                  <th className={TH}>A person can be reached</th>
+                  <th className={TH}>Conversations kept</th>
+                  <th className={TH}>Call records kept</th>
+                  <th className={TH}>Sound kept</th>
+                  <th className={TH}>Calls told</th>
+                </tr>
+              </thead>
+              <tbody>
+                {record.lines.map((l) => (
+                  <tr key={l.id}>
+                    <td className={TD + " mono"}>
+                      {l.e164}
+                      {!l.enabled && <span className="mt-0.5 block text-[11px] text-slate/60">not answering</span>}
+                    </td>
+                    <td className={TD}>
+                      {l.spoken_to_callers}
+                      {l.notice_is_standard && <span className="mt-0.5 block text-[11px] text-slate/60">standard notice</span>}
+                    </td>
+                    <td className={TD + " mono"}>{l.transfers_to ?? <span className="font-sans text-slate/60">no</span>}</td>
+                    <td className={TD}>{l.transcript_days > 0 ? `${l.transcript_days} days` : "indefinitely"}</td>
+                    <td className={TD}>{l.log_days > 0 ? `${l.log_days} days` : "indefinitely"}</td>
+                    <td className={TD}>{l.records_calls ? `${l.recording_days} days` : "not recorded"}</td>
+                    <td className={TD}>
+                      {l.calls_with_notice === l.calls
+                        ? <Badge tone="green">{l.calls} of {l.calls}</Badge>
+                        : <Badge tone="red">{l.calls_with_notice} of {l.calls}</Badge>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
+
+          <TableScroll>
+            <table className="mb-4 w-full border-collapse text-sm">
+              <thead>
+                <tr>
+                  <th className={TH}>Held</th>
+                  <th className={TH}>What is in it</th>
+                  <th className={TH}>How long</th>
+                  <th className={TH}>How many</th>
+                </tr>
+              </thead>
+              <tbody>
+                {record.holdings.map((h) => (
+                  <tr key={h.held}>
+                    <td className={TD}>{h.held}</td>
+                    <td className={TD}>{h.contents}</td>
+                    <td className={TD}>{h.kept}</td>
+                    <td className={TD}>{h.rows}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableScroll>
+
+          <ul className="mb-3 list-disc pl-5 text-xs text-slate/70">
+            <li>
+              {record.no_audio_is_kept
+                ? "No audio is kept at any point: speech is recognised as it arrives and discarded."
+                : "The sound of calls is kept on the lines marked as recording, and callers on those lines are told so before they say anything. No audio at all is kept on the others."}
+            </li>
+            {record.leaves_the_deployment.map((l) => (
+              <li key={l}>{l}</li>
+            ))}
+            <li>
+              Callers are {record.screening_names > 0 ? `checked against ${record.screening_names} names on this account's list` : "not checked against any list"};
+              appointments {record.diary_enabled ? "can be arranged by telephone" : "cannot be arranged by telephone"}.
+            </li>
+          </ul>
+          <button
+            className={BTN2}
+            onClick={() => {
+              void navigator.clipboard
+                .writeText(asText())
+                .then(() => toast("Record copied."))
+                .catch(() => toast("Could not copy the record."));
+            }}
+          >
+            Copy as text
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Tools ───────────────────────────────────────────────────────────────────
 function ToolsSection() {
   const qc = useQueryClient();
@@ -2076,63 +3666,67 @@ function ToolsSection() {
       {tab === "custom" && !cat.isLoading && <CustomToolsPanel tools={cat.data?.custom ?? []} onChange={refresh} />}
 
       {tab === "native" && !cat.isLoading && (
-        <table className="w-full border-collapse text-sm">
-          <thead><tr><th className={TH}>Tool</th><th className={TH}>Badges</th><th className={TH}>State</th><th className={TH}></th></tr></thead>
-          <tbody>
-            {(cat.data?.native ?? []).map((t) => (
-              <Fragment key={t.name}>
-                <tr>
-                  <td className={TD}>{t.label} <span className="text-xs text-slate/60">({t.name})</span></td>
-                  <td className={TD}>
-                    <Badge tone={t.effect === "run" ? "gold" : "slate"}>{t.effect}</Badge>
-                    {t.egress && <span className="ml-1"><Badge tone="red">egress</Badge></span>}
-                    {t.capability && <span className="ml-1"><Badge>host cap</Badge></span>}
-                    {t.default && <span className="ml-1"><Badge>always on</Badge></span>}
-                    {t.has_override && <span className="ml-1"><Badge tone="gold">overridden</Badge></span>}
-                  </td>
-                  <td className={TD}>{t.enabled ? <Badge tone="green">enabled</Badge> : <Badge tone="red">off</Badge>}</td>
-                  <td className={TD}>
-                    <button className={BTN2} disabled={!!busy || !!t.default} onClick={() => toggle(t)}>{t.enabled ? "Disable" : "Enable"}</button>
-                    <button className={BTN2 + " ml-2"} disabled={!!busy} onClick={() => (editing === t.name ? setEditing(null) : startEdit(t))}>{editing === t.name ? "Close" : "Edit description"}</button>
-                    {t.has_override && <button className={BTN_DANGER + " ml-2"} disabled={!!busy} onClick={() => reset(t)}>Reset</button>}
-                  </td>
-                </tr>
-                {editing === t.name && (
+        <TableScroll>
+          <table className="w-full border-collapse text-sm">
+            <thead><tr><th className={TH}>Tool</th><th className={TH}>Badges</th><th className={TH}>State</th><th className={TH}></th></tr></thead>
+            <tbody>
+              {(cat.data?.native ?? []).map((t) => (
+                <Fragment key={t.name}>
                   <tr>
-                    <td className={TD} colSpan={4}>
-                      <label className={LABEL}>Description the LLM sees</label>
-                      <textarea className={INPUT + " w-full"} rows={4} value={draft} onChange={(e) => setDraft(e.target.value)} />
-                      <p className="mt-1 text-xs text-slate/60">Code default: {t.default_description}</p>
-                      <div className="mt-2">
-                        <button className={BTN} disabled={!!busy} onClick={() => saveDesc(t)}>Save</button>
-                        <button className={BTN2 + " ml-2"} disabled={!!busy} onClick={() => setEditing(null)}>Cancel</button>
-                      </div>
+                    <td className={TD}>{t.label} <span className="text-xs text-slate/60">({t.name})</span></td>
+                    <td className={TD}>
+                      <Badge tone={t.effect === "run" ? "gold" : "slate"}>{t.effect}</Badge>
+                      {t.egress && <span className="ml-1"><Badge tone="red">egress</Badge></span>}
+                      {t.capability && <span className="ml-1"><Badge>host cap</Badge></span>}
+                      {t.default && <span className="ml-1"><Badge>always on</Badge></span>}
+                      {t.has_override && <span className="ml-1"><Badge tone="gold">overridden</Badge></span>}
+                    </td>
+                    <td className={TD}>{t.enabled ? <Badge tone="green">enabled</Badge> : <Badge tone="red">off</Badge>}</td>
+                    <td className={TD}>
+                      <button className={BTN2} disabled={!!busy || !!t.default} onClick={() => toggle(t)}>{t.enabled ? "Disable" : "Enable"}</button>
+                      <button className={BTN2 + " ml-2"} disabled={!!busy} onClick={() => (editing === t.name ? setEditing(null) : startEdit(t))}>{editing === t.name ? "Close" : "Edit description"}</button>
+                      {t.has_override && <button className={BTN_DANGER + " ml-2"} disabled={!!busy} onClick={() => reset(t)}>Reset</button>}
                     </td>
                   </tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
+                  {editing === t.name && (
+                    <tr>
+                      <td className={TD} colSpan={4}>
+                        <label className={LABEL}>Description the LLM sees</label>
+                        <textarea className={INPUT + " w-full"} rows={4} value={draft} onChange={(e) => setDraft(e.target.value)} />
+                        <p className="mt-1 text-xs text-slate/60">Code default: {t.default_description}</p>
+                        <div className="mt-2">
+                          <button className={BTN} disabled={!!busy} onClick={() => saveDesc(t)}>Save</button>
+                          <button className={BTN2 + " ml-2"} disabled={!!busy} onClick={() => setEditing(null)}>Cancel</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
 
       {tab === "mcp" && !cat.isLoading && (
         <div>
           <p className="mb-2 text-xs text-slate/70">Active MCP servers (read-only). Register, approve and remove them in the <strong>MCP Servers</strong> tab.</p>
           {(cat.data?.mcp ?? []).length === 0 ? <p className="text-sm text-slate">No active MCP servers.</p> : (
-            <table className="w-full border-collapse text-sm">
-              <thead><tr><th className={TH}>Server</th><th className={TH}>Slug</th><th className={TH}>Tools</th><th className={TH}>Egress</th></tr></thead>
-              <tbody>
-                {(cat.data?.mcp ?? []).map((m) => (
-                  <tr key={m.slug}>
-                    <td className={TD}>{m.name || m.slug}</td>
-                    <td className={TD}>{m.slug}</td>
-                    <td className={TD}>{m.tool_count}</td>
-                    <td className={TD}>{m.requires_egress ? <Badge tone="gold">egress</Badge> : <Badge>local</Badge>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <TableScroll>
+              <table className="w-full border-collapse text-sm">
+                <thead><tr><th className={TH}>Server</th><th className={TH}>Slug</th><th className={TH}>Tools</th><th className={TH}>Egress</th></tr></thead>
+                <tbody>
+                  {(cat.data?.mcp ?? []).map((m) => (
+                    <tr key={m.slug}>
+                      <td className={TD}>{m.name || m.slug}</td>
+                      <td className={TD}>{m.slug}</td>
+                      <td className={TD}>{m.tool_count}</td>
+                      <td className={TD}>{m.requires_egress ? <Badge tone="gold">egress</Badge> : <Badge>local</Badge>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroll>
           )}
         </div>
       )}
@@ -2149,6 +3743,7 @@ const BLANK_CUSTOM: CustomToolInput = {
   config: { method: "GET", url: "", headers: {}, response: { mode: "raw" } },
   requires_egress: true,
   side_effecting: true,
+  allow_on_call: false,
   timeout_secs: 30,
 };
 
@@ -2161,6 +3756,7 @@ function CustomToolsPanel({ tools, onChange }: { tools: CustomToolEntry[]; onCha
   const [kind, setKind] = useState<"http" | "script">("http");
   const [requiresEgress, setRequiresEgress] = useState(true);
   const [sideEffecting, setSideEffecting] = useState(true);
+  const [allowOnCall, setAllowOnCall] = useState(false);
   const [timeout, setTimeoutSecs] = useState("30");
   const [schemaText, setSchemaText] = useState(JSON.stringify(BLANK_CUSTOM.params_schema, null, 2));
   const [configText, setConfigText] = useState(JSON.stringify(BLANK_CUSTOM.config, null, 2));
@@ -2182,6 +3778,7 @@ function CustomToolsPanel({ tools, onChange }: { tools: CustomToolEntry[]; onCha
     setEditId(t.id);
     setName(t.name); setDisplayName(t.display_name); setDescription(t.description); setKind(t.kind);
     setRequiresEgress(t.requires_egress); setSideEffecting(t.side_effecting);
+    setAllowOnCall(t.allow_on_call);
     setTimeoutSecs(t.timeout_secs != null ? String(t.timeout_secs) : "");
     setSchemaText(JSON.stringify(t.params_schema, null, 2));
     setConfigText(JSON.stringify(t.config, null, 2));
@@ -2209,6 +3806,7 @@ function CustomToolsPanel({ tools, onChange }: { tools: CustomToolEntry[]; onCha
         config,
         requires_egress: kind === "script" ? false : requiresEgress,
         side_effecting: sideEffecting,
+        allow_on_call: allowOnCall,
         timeout_secs: timeout.trim() ? Number(timeout) : null,
         ...(authValue && kind === "http" ? { auth_value: authValue } : {}),
       };
@@ -2244,35 +3842,37 @@ function CustomToolsPanel({ tools, onChange }: { tools: CustomToolEntry[]; onCha
       <button className={BTN} disabled={!!busy} onClick={startNew}>New custom tool</button>
 
       {tools.length === 0 ? <p className="mt-3 text-sm text-slate">No custom tools yet.</p> : (
-        <table className="mt-3 w-full border-collapse text-sm">
-          <thead><tr><th className={TH}>Name</th><th className={TH}>Kind</th><th className={TH}>State</th><th className={TH}>Version</th><th className={TH}></th></tr></thead>
-          <tbody>
-            {tools.map((t) => (
-              <Fragment key={t.id}>
-                <tr>
-                  <td className={TD}>{t.display_name || t.name} <span className="text-xs text-slate/60">({t.name})</span></td>
-                  <td className={TD}>{t.kind}{t.requires_egress && <span className="ml-1"><Badge tone="gold">egress</Badge></span>}{t.side_effecting && <span className="ml-1"><Badge>approval</Badge></span>}</td>
-                  <td className={TD}>{t.enabled && t.approved ? <Badge tone="green">live</Badge> : t.approved ? <Badge>approved, off</Badge> : <Badge tone="red">needs approval</Badge>}</td>
-                  <td className={TD}>v{t.version}{t.approved_version != null && t.approved_version !== t.version ? <span className="text-xs text-slate/60"> (approved v{t.approved_version})</span> : null}</td>
-                  <td className={TD}>
-                    <button className={BTN2} disabled={!!busy} onClick={() => (editId === t.id ? close() : startEdit(t))}>{editId === t.id ? "Close" : "Edit"}</button>
-                    {t.enabled ? (
-                      <button className={BTN2 + " ml-2"} disabled={!!busy} onClick={() => disable(t)}>Disable</button>
-                    ) : (
-                      <button className={BTN2 + " ml-2"} disabled={!!busy} onClick={() => enable(t)}>Approve &amp; enable</button>
-                    )}
-                    <button className={BTN_DANGER + " ml-2"} disabled={!!busy} onClick={() => remove(t)}>Delete</button>
-                  </td>
-                </tr>
-                {editId === t.id && (
-                  <tr><td className={TD} colSpan={5}>
-                    <TestRunBox names={paramNames(t)} args={testArgs} setArgs={setTestArgs} onRun={() => testRun(t)} result={testResult} busy={!!busy} />
-                  </td></tr>
-                )}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
+        <TableScroll className="mt-3">
+          <table className="w-full border-collapse text-sm">
+            <thead><tr><th className={TH}>Name</th><th className={TH}>Kind</th><th className={TH}>State</th><th className={TH}>Version</th><th className={TH}></th></tr></thead>
+            <tbody>
+              {tools.map((t) => (
+                <Fragment key={t.id}>
+                  <tr>
+                    <td className={TD}>{t.display_name || t.name} <span className="text-xs text-slate/60">({t.name})</span></td>
+                    <td className={TD}>{t.kind}{t.requires_egress && <span className="ml-1"><Badge tone="gold">egress</Badge></span>}{t.side_effecting && <span className="ml-1"><Badge>approval</Badge></span>}{t.allow_on_call && <span className="ml-1"><Badge tone="green">on calls</Badge></span>}</td>
+                    <td className={TD}>{t.enabled && t.approved ? <Badge tone="green">live</Badge> : t.approved ? <Badge>approved, off</Badge> : <Badge tone="red">needs approval</Badge>}</td>
+                    <td className={TD}>v{t.version}{t.approved_version != null && t.approved_version !== t.version ? <span className="text-xs text-slate/60"> (approved v{t.approved_version})</span> : null}</td>
+                    <td className={TD}>
+                      <button className={BTN2} disabled={!!busy} onClick={() => (editId === t.id ? close() : startEdit(t))}>{editId === t.id ? "Close" : "Edit"}</button>
+                      {t.enabled ? (
+                        <button className={BTN2 + " ml-2"} disabled={!!busy} onClick={() => disable(t)}>Disable</button>
+                      ) : (
+                        <button className={BTN2 + " ml-2"} disabled={!!busy} onClick={() => enable(t)}>Approve &amp; enable</button>
+                      )}
+                      <button className={BTN_DANGER + " ml-2"} disabled={!!busy} onClick={() => remove(t)}>Delete</button>
+                    </td>
+                  </tr>
+                  {editId === t.id && (
+                    <tr><td className={TD} colSpan={5}>
+                      <TestRunBox names={paramNames(t)} args={testArgs} setArgs={setTestArgs} onRun={() => testRun(t)} result={testResult} busy={!!busy} />
+                    </td></tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </TableScroll>
       )}
 
       {editId !== null && (
@@ -2299,6 +3899,7 @@ function CustomToolsPanel({ tools, onChange }: { tools: CustomToolEntry[]; onCha
           <div className="mt-2 flex flex-wrap gap-4">
             {kind === "http" && <label className="flex items-center gap-1 text-xs text-slate/80"><input type="checkbox" checked={requiresEgress} onChange={(e) => setRequiresEgress(e.target.checked)} /> requires egress (public host)</label>}
             <label className="flex items-center gap-1 text-xs text-slate/80"><input type="checkbox" checked={sideEffecting} onChange={(e) => setSideEffecting(e.target.checked)} /> side-effecting (needs approval per call){kind === "script" ? " — scripts always require approval" : ""}</label>
+            <label className="flex items-center gap-1 text-xs text-slate/80"><input type="checkbox" checked={allowOnCall} onChange={(e) => setAllowOnCall(e.target.checked)} /> may be used during a telephone call</label>
           </div>
           <div className="mt-2"><label className={LABEL}>Parameters (JSON Schema)</label><textarea className={INPUT + " w-full font-mono"} rows={5} value={schemaText} onChange={(e) => setSchemaText(e.target.value)} /></div>
           {kind === "script" ? (
@@ -2348,5 +3949,6 @@ registerAdminSection({ key: "tools", label: "Tools", component: ToolsSection, pe
 registerAdminSection({ key: "config", label: "Config", component: ConfigSection, permission: "config.manage" });
 registerAdminSection({ key: "providers", label: "Providers", component: ProvidersSection, permission: "providers.manage" });
 registerAdminSection({ key: "voice-live", label: "Live voice", component: VoiceLiveSection, capability: "voice_live", permission: "voice.manage" });
+registerAdminSection({ key: "telephony", label: "Telephone", component: TelephonySection, capability: "telephony", permission: "telephony.manage" });
 registerAdminSection({ key: "announcements", label: "Announcements", component: AnnouncementsSection, permission: "announcements.manage" });
 registerAdminSection({ key: "system", label: "System", component: SystemSection });

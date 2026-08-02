@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE appointments SET status = 'cancelled', cancelled_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ce1f2c2e0c5e9344a4d0e2685a72a0c9155bf9f56338dacc7790cf280b36bb39"
+}

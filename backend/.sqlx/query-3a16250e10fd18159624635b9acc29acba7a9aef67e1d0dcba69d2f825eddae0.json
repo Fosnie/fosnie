@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT starts_at FROM appointments WHERE owner_user_id = $1 AND status = 'booked' AND starts_at >= $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "starts_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "starts_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3a16250e10fd18159624635b9acc29acba7a9aef67e1d0dcba69d2f825eddae0"
+}

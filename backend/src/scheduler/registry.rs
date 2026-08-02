@@ -107,5 +107,8 @@ impl crate::ext::JobRegistrar for CoreJobs {
         // Daily sweep of aged API conversations. 03:45. A no-op unless a
         // retention period has been configured.
         reg.register_periodic_job("0 45 3 * * *", periodic_enqueue(TaskType::ApiChatCleanup, "daily"));
+        // Daily sweep of aged calls and their conversations. 04:15. A no-op unless a
+        // telephone line has been given a retention period of its own.
+        reg.register_periodic_job("0 15 4 * * *", periodic_enqueue(TaskType::TelephonyRetention, "daily"));
     }
 }

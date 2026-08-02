@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET transfer_to = $2 WHERE id = $1 AND ended_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7396a3a5d44166badd9d16f6d78362bb2c72a2db9015a1b92ef9d5b71858c0c2"
+}

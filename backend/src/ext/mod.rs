@@ -664,6 +664,7 @@ impl HostFeatureResolver {
         match feature {
             "voice" => state.boot.features.voice,
             "voice_live" => state.boot.features.voice_live,
+            "telephony" => state.boot.features.telephony,
             "groundedness" => state.boot.features.groundedness,
             "code_interpreter" => state.boot.features.code_interpreter,
             "messaging" => state.boot.features.messaging,
@@ -683,17 +684,26 @@ impl HostFeatureResolver {
     }
 
     /// The host ceiling with a runtime override applied. `messaging`,
-    /// `workflows`, `voice`, `voice_live`, `groundedness` and `public_api` are
+    /// `workflows`, `voice`, `voice_live`, `telephony`, `groundedness` and
+    /// `public_api` are
     /// admin-toggleable at runtime (`config_settings["features.<name>"]`, bool) like BYOK; an
     /// absent row falls back to the boot flag. Other features keep the boot-only
     /// ceiling unchanged. When a runtime row is present it is authoritative — it
     /// can turn a feature ON even when the boot flag defaults off (so a
     /// self-hoster enables voice/verifier from the admin UI, no `.env` edit), or
-    /// OFF as a kill-switch.
+    /// OFF as a kill-switch. `telephony` is the one where the kill-switch is the
+    /// point: a telephone line that is being abused costs money every minute, and
+    /// waiting for a restart to close it is not an option.
     async fn global_runtime(state: &AppState, feature: &str) -> bool {
         if matches!(
             feature,
-            "messaging" | "workflows" | "voice" | "voice_live" | "groundedness" | "public_api"
+            "messaging"
+                | "workflows"
+                | "voice"
+                | "voice_live"
+                | "telephony"
+                | "groundedness"
+                | "public_api"
         ) {
             if let Ok(Some(e)) =
                 crate::config::runtime::get(&state.pg, &format!("features.{feature}")).await

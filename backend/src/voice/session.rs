@@ -29,7 +29,7 @@
 //!    persists the partial) **and** a `tts_abort` (drops the TTS stream — no clip).
 //!    Both must fire: the Hub's cancel is TTS-unaware (`signal_barge_in`).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD as B64;
@@ -44,19 +44,20 @@ use crate::state::AppState;
 use crate::ws::protocol::ServerFrame;
 
 use super::aggregate::SentenceAggregator;
+use super::sink::{AudioClip, AudioDelivery, VoiceSink};
 use super::stt_stream::{self, SttEvent};
-use super::{spec_retrieval, tts_stream, turn, VoiceKnobs, VoiceState};
+use super::{spec_retrieval, tts_stream, turn, VoiceKnobs, VoiceProfile, VoiceState};
 
-/// RMS (normalised 0..1) above which a PCM frame counts as speech.
-const SPEECH_RMS: f64 = 0.012;
-/// Barge-in needs a LOUDER, SUSTAINED signal than plain capture: the assistant's
-/// own audio echoing into an open mic (imperfect AEC) is quieter than direct
-/// speech, and a single spike must never cut the reply. Require `BARGE_RMS` for at
-/// least `BARGE_MIN_MS` of continuous speech before interrupting.
-const BARGE_RMS: f64 = 0.035;
-const BARGE_MIN_MS: u64 = 320;
+/// How long to wait for a manual-commit engine to return its transcript after being told
+/// the utterance ended. A ceiling, not a target: past it the audio is transcribed in one
+/// go instead, so the turn still happens.
+const STT_COMMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Consult the turn-detection sidecar once trailing silence reaches this (debounce).
 const DETECT_AFTER_MS: u64 = 200;
+/// The rate at which the synthesisers produce raw samples. A transport asking for
+/// raw audio at any other rate cannot be served, because nothing on this path
+/// resamples the reply: whoever asked for samples is expected to do that themselves.
+const SAMPLE_DELIVERY_RATE: u32 = 24_000;
 /// Hard ceiling on a live turn that emits no frames at all. A stuck `run_turn`
 /// (e.g. a hung generate with no token timeout) must never strand the UI on
 /// "Thinking…": the drain loop resets this on every frame, so only a truly silent
@@ -73,6 +74,11 @@ struct TurnHandle {
     tts_abort: Arc<Notify>,
     /// Gate checked before each clause + chunk; cleared on barge-in.
     speaking: Arc<AtomicBool>,
+    /// This is not a reply but something the speaker has to be told, so it cannot be
+    /// talked over: the capture loop drops audio while it plays instead of interrupting.
+    /// Interruption is the difference between a conversation and a recorded message, so
+    /// it is switched off here and nowhere else.
+    notice: bool,
 }
 
 /// Fire BOTH cancels for an in-flight live turn. The classic barge-in bug is
@@ -134,6 +140,98 @@ fn into_prefetched(p: spec_retrieval::SpecResult) -> crate::chat::prefetch::Pref
     }
 }
 
+/// One turn's wall clock, from the moment the speaker stopped to whatever comes last.
+///
+/// Every stage is stamped from the same origin, so the figures compose: what a stage cost
+/// on its own is the difference between two of them. Each is stamped at most once, because
+/// these mark the *first* time something happened and a second token or a second clause is
+/// not news.
+///
+/// Shared rather than passed by value because the boundaries are on five different tasks:
+/// the loop taking in audio, the turn itself, the one draining its frames, the one
+/// speaking, and on a telephone the one reading what the carrier says back.
+pub struct TurnClock {
+    t0: std::time::Instant,
+    /// Which transport this turn is on, as a fixed string. The same figure means a
+    /// different thing on a line and in a tab, so the two are never mixed into one series.
+    transport: &'static str,
+    /// One bit per stage, so a stage records once however many tasks reach it.
+    stamped: AtomicU32,
+}
+
+/// The stages of a turn, in the order a speaker experiences them.
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+enum Stage {
+    /// Recognition settled, and the turn was handed on.
+    CommitOverhead,
+    /// The model's first token reached the voice loop.
+    FirstToken,
+    /// The first whole clause was queued to be spoken.
+    FirstClause,
+    /// The synthesiser accepted the first clause.
+    TtsOpen,
+    /// The first reply audio was handed to the transport.
+    FirstAudioOut,
+    /// The speaker began hearing it.
+    ReplyHeard,
+    /// The speaker finished hearing it.
+    ReplySpoken,
+}
+
+impl Stage {
+    /// The metric this stage records into. Seconds, like every other duration here, and
+    /// one fixed name per stage so no label can be built out of something measured.
+    fn metric(self) -> &'static str {
+        match self {
+            Stage::CommitOverhead => "voice_commit_overhead_seconds",
+            Stage::FirstToken => "voice_first_token_seconds",
+            Stage::FirstClause => "voice_first_clause_seconds",
+            Stage::TtsOpen => "voice_tts_open_seconds",
+            Stage::FirstAudioOut => "voice_turn_latency_seconds",
+            Stage::ReplyHeard => "voice_reply_heard_seconds",
+            Stage::ReplySpoken => "voice_reply_spoken_seconds",
+        }
+    }
+}
+
+impl TurnClock {
+    fn new(transport: &'static str) -> Self {
+        Self { t0: std::time::Instant::now(), transport, stamped: AtomicU32::new(0) }
+    }
+
+    /// Start a turn's clock for a given transport.
+    pub fn for_profile(profile: VoiceProfile) -> Self {
+        Self::new(profile.as_str())
+    }
+
+    /// The speaker began hearing the reply.
+    ///
+    /// Only a transport that can see its far end can say this, and the difference between
+    /// it and the moment the audio was handed over is that transport's own delay: the
+    /// pacing, the socket, and whatever the far end had buffered. It is the figure the
+    /// reply-latency budget is really about. It includes the leg back from the far end, so
+    /// it slightly over-states, which for a budget is the safe direction.
+    pub fn reply_heard(&self) {
+        self.stage_reached(Stage::ReplyHeard);
+    }
+
+    /// The speaker finished hearing it.
+    pub fn reply_spoken(&self) {
+        self.stage_reached(Stage::ReplySpoken);
+    }
+
+    /// Record how long this turn took to reach `stage`, the first time it does.
+    fn stage_reached(&self, stage: Stage) {
+        let bit = 1u32 << (stage as u32);
+        if self.stamped.fetch_or(bit, Ordering::SeqCst) & bit != 0 {
+            return;
+        }
+        metrics::histogram!(stage.metric(), "transport" => self.transport)
+            .record(self.t0.elapsed().as_secs_f64());
+    }
+}
+
 /// A clause queued for the TTS consumer, or a terminal marker.
 enum TtsCmd {
     Clause(String),
@@ -146,8 +244,9 @@ pub struct Session {
     socket_id: Uuid,
     ctx: AuthContext,
     state: AppState,
-    /// The real socket sender (relayed chat frames + voice frames go here).
-    tx: mpsc::Sender<ServerFrame>,
+    /// Where everything this session says goes: the voice events and the mirrored
+    /// chat-turn frames both. Which transport it is, this file does not know.
+    sink: Arc<dyn VoiceSink>,
     /// To the capture loop (decoded PCM frames).
     pcm_tx: mpsc::Sender<Vec<u8>>,
     knobs: VoiceKnobs,
@@ -156,6 +255,22 @@ pub struct Session {
     voice_cfg: super::VoiceLiveResolved,
     /// Browser echo-cancellation is on (gates energy-driven barge-in).
     aec: bool,
+    /// Which transport this session is tuned for. Also the label its figures carry, so
+    /// a telephone's latency can be read apart from a browser tab's.
+    profile: VoiceProfile,
+    /// Where the conversations this session opens came from.
+    ///
+    /// Kept apart from the profile above, which is about turn-taking dials and audio
+    /// shape. They happen to agree today, and tying them together would mean that tuning
+    /// a browser session like a telephone one, to try something out, quietly mislabelled
+    /// somebody's real conversations.
+    origin: crate::chat::origin::ChatOrigin,
+    /// The telephone call this session is carrying, when it is carrying one.
+    ///
+    /// Handed to every turn so a tool can tell that somebody is on the line and which
+    /// call it is. Set once, when the call is answered, and never afterwards: a session
+    /// carries one call for its whole life.
+    call_id: Option<Uuid>,
     /// The chat this session drives (adopted from `voice.stream.start` or created by
     /// the first turn — captured back from the relayed `chat.created`).
     chat_id: Mutex<Option<Uuid>>,
@@ -175,6 +290,12 @@ pub struct Session {
     /// scope could not be resolved. Latched on the first refusal so a session
     /// without a Library stops attempting speculation altogether.
     spec_kb_absent: AtomicBool,
+    /// The turn detector did not answer. Latched on the first failure, because a
+    /// detector that is not there cannot judge a turn complete, and requiring it to
+    /// would mean no turn ever ends: on a telephone that is a call that stays open,
+    /// silent and billed, until the caller gives up. Turn-taking falls back to the
+    /// silence threshold for the rest of this session, and the next one tries again.
+    detector_down: AtomicBool,
     /// Background tasks (capture loop + per-turn drain/TTS), aborted on teardown.
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -186,14 +307,17 @@ impl Session {
         state: AppState,
         ctx: AuthContext,
         socket_id: Uuid,
-        tx: mpsc::Sender<ServerFrame>,
+        sink: Arc<dyn VoiceSink>,
         chat_id: Option<Uuid>,
         project_id: Option<Uuid>,
         agent_id: Option<Uuid>,
         mode: Option<String>,
         aec: bool,
+        profile: VoiceProfile,
+        origin: crate::chat::origin::ChatOrigin,
+        call_id: Option<Uuid>,
     ) -> Arc<Self> {
-        let knobs = VoiceKnobs::load(&state.pg).await;
+        let knobs = VoiceKnobs::load_for(&state.pg, profile).await;
         let voice_cfg = super::VoiceLiveResolved::load(&state.pg, state.message_key, &state.boot.voice_live).await;
         let mode = mode.unwrap_or_else(|| if knobs.ptt_default { "ptt".into() } else { "vad".into() });
         tracing::debug!(%socket_id, %mode, aec, stt = %voice_cfg.stt_stream_kind, "live-voice session start");
@@ -203,11 +327,14 @@ impl Session {
             socket_id,
             ctx,
             state,
-            tx,
+            sink,
             pcm_tx,
             knobs,
             voice_cfg,
             aec,
+            profile,
+            origin,
+            call_id,
             chat_id: Mutex::new(chat_id),
             project_id,
             agent_id,
@@ -217,25 +344,46 @@ impl Session {
             spec: Mutex::new(spec_retrieval::SpecShared::default()),
             spec_retrieving: AtomicBool::new(false),
             spec_kb_absent: AtomicBool::new(false),
+            detector_down: AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
         });
-        session
-            .emit(ServerFrame::VoiceLiveState {
-                state: VoiceState::Listening.as_str().into(),
-                retrieving: false,
-            })
-            .await;
+        session.sink.state(VoiceState::Listening, false).await;
         let cap = tokio::spawn(capture_loop(session.clone(), pcm_rx));
         session.tasks.lock().unwrap().push(cap);
         session
     }
 
-    /// Decode + forward one captured audio frame to the capture loop. Ephemeral
-    /// (at-most-once): a full queue drops the frame rather than block the socket.
+    /// Decode + forward one captured audio frame to the capture loop.
     pub async fn on_audio_chunk(&self, audio_base64: String, _seq: u64) {
         if let Ok(pcm) = B64.decode(audio_base64.as_bytes()) {
-            let _ = self.pcm_tx.try_send(pcm);
+            self.on_pcm(pcm).await;
         }
+    }
+
+    /// Forward one captured frame of signed 16-bit little-endian mono samples at
+    /// [`Session::capture_rate`]. Ephemeral (at-most-once): a full queue drops the
+    /// frame rather than block the transport, because a telephone line and a
+    /// microphone both keep producing audio whatever this process is doing.
+    pub async fn on_pcm(&self, pcm: Vec<u8>) {
+        let _ = self.pcm_tx.try_send(pcm);
+    }
+
+    /// The conversation this session has been holding, once there is one.
+    ///
+    /// Created by the first thing the speaker says and captured from the turn that
+    /// creates it, so it is `None` until somebody has actually spoken.
+    pub fn chat_id(&self) -> Option<Uuid> {
+        *self.chat_id.lock().unwrap()
+    }
+
+    /// The sample rate the capture loop and the recognition engine work at.
+    ///
+    /// A transport whose source runs at another rate must convert before calling
+    /// [`Session::on_pcm`]. This is not a formality: turn detection measures speech
+    /// and silence from the byte count of each frame, so audio at the wrong rate
+    /// scales every one of those thresholds.
+    pub fn capture_rate(&self) -> u32 {
+        self.voice_cfg.stt_sample_rate.max(8_000)
     }
 
     /// User spoke over the assistant: cancel the in-flight reply (LLM + TTS) and
@@ -244,6 +392,10 @@ impl Session {
         let handle = { self.current_turn.lock().unwrap().take() };
         if let Some(h) = handle {
             signal_barge_in(&h);
+            // Stopping the synthesis stops new audio, but a transport with a playout
+            // queue of its own is still holding sentences the speaker has not reached.
+            // Those have to go too, or the assistant audibly talks over them.
+            self.sink.clear().await;
             metrics::counter!("voice_barge_in_total").increment(1);
             self.state.hub.cancel_turn(self.socket_id, h.turn_id); // parity (TTS-unaware)
             let mut ev = AuditEvent::action("voice.barge_in", self.ctx.role.as_str());
@@ -285,10 +437,87 @@ impl Session {
         }
     }
 
+    /// Stop listening, before anything has been said.
+    ///
+    /// [`announce`](Session::announce) latches this itself, but it may be run on its own
+    /// task so that whatever is reading the transport keeps reading while the notice plays.
+    /// Between spawning that task and its first instruction, the transport is already
+    /// delivering audio, and a speaker who was talking as the call connected would have that
+    /// fragment treated as the start of a question. So the latch is set here, synchronously,
+    /// by whoever is about to announce.
+    pub fn hold_for_notice(&self) {
+        *self.current_turn.lock().unwrap() = Some(TurnHandle {
+            turn_id: Uuid::now_v7(),
+            cancel: Arc::new(Notify::new()),
+            tts_abort: Arc::new(Notify::new()),
+            speaking: Arc::new(AtomicBool::new(true)),
+            notice: true,
+        });
+    }
+
+    /// Say something to the speaker before the conversation starts, and report whether
+    /// they heard it.
+    ///
+    /// No language model, no conversation, no history: the words are given, and the only
+    /// question is whether they reached the far end. That answer is the point of the return
+    /// value, because what asks for this is a telephone line that may not carry a caller who
+    /// has not been told what they are speaking to. `false` means nothing was synthesised, so
+    /// nothing was said, and whatever asked has to decide what to do about it.
+    ///
+    /// **Not interruptible.** A reply that cannot be talked over is a recorded message, but a
+    /// notice that can be talked over was never given, so this registers itself as one and
+    /// the capture loop drops what it hears until it has finished. On a telephone the return
+    /// also waits for the carrier to confirm it played the audio, so listening begins when the
+    /// caller has actually heard the words rather than when synthesis finished.
+    pub async fn announce(self: &Arc<Self>, text: String) -> bool {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return false;
+        }
+        let tts_abort = Arc::new(Notify::new());
+        let speaking = Arc::new(AtomicBool::new(true));
+        *self.current_turn.lock().unwrap() = Some(TurnHandle {
+            turn_id: Uuid::now_v7(),
+            cancel: Arc::new(Notify::new()),
+            tts_abort: tts_abort.clone(),
+            speaking: speaking.clone(),
+            notice: true,
+        });
+        self.set_state(VoiceState::Speaking).await;
+
+        // Sentence by sentence, through the same splitter a reply goes through, so the
+        // first words start playing while the rest is still being synthesised.
+        let clock = Arc::new(TurnClock::for_profile(self.profile));
+        self.sink.reply_clock(clock.clone());
+        let seq = AtomicU64::new(0);
+        let mut agg = SentenceAggregator::new();
+        let mut sentences = agg.push(&text);
+        sentences.extend(agg.flush());
+        let mut bytes = 0usize;
+        for sentence in sentences {
+            bytes += self.speak_clause(sentence, &tts_abort, &speaking, &seq, &clock).await;
+        }
+        // The tail, and then the wait for the far end to play it. Both halves matter on a
+        // line: without them the session decides it has stopped speaking while the notice
+        // is still being read out, and the caller's first words land in the middle of it.
+        self.sink.audio_end().await;
+        if bytes > 0 {
+            self.audit_synthesized(bytes).await;
+        }
+        self.finish_turn(VoiceState::Listening).await;
+        bytes > 0
+    }
+
     /// Fire one user turn: spawn `chat::run_turn` against a tap channel, plus the
     /// drain + TTS tasks. Reuses the chat-turn verbatim (persists like any chat).
-    pub async fn start_turn(self: &Arc<Self>, text: String) {
-        let t0 = std::time::Instant::now(); // for the final→first-audio latency metric
+    pub async fn start_turn(self: &Arc<Self>, text: String, clock: Arc<TurnClock>) {
+        // Everything between the transcript settling and this point is time the speaker
+        // spends waiting with nothing happening, so it belongs inside the figure rather
+        // than before it.
+        clock.stage_reached(Stage::CommitOverhead);
+        // A transport that can observe its far end records against this same clock, so
+        // what the speaker heard and what we sent are measured from one origin.
+        self.sink.reply_clock(clock.clone());
         let turn_id = Uuid::now_v7();
         let cancel = Arc::new(Notify::new());
         let tts_abort = Arc::new(Notify::new());
@@ -299,6 +528,7 @@ impl Session {
             cancel: cancel.clone(),
             tts_abort: tts_abort.clone(),
             speaking: speaking.clone(),
+            notice: false,
         });
         self.set_state(VoiceState::Thinking).await;
 
@@ -319,6 +549,11 @@ impl Session {
             let pid = self.project_id;
             let aid = self.agent_id;
             let socket_id = self.socket_id;
+            // Copied out before the spawn: the turn is opened on its own task, and the
+            // conversation it creates has to be stamped with where the call came from,
+            // and told which call it is being spoken during.
+            let origin = self.origin;
+            let call_id = self.call_id;
             let cancel2 = cancel.clone();
             let me = self.clone();
             let spec_timeout = std::time::Duration::from_secs(self.knobs.spec_timeout_secs);
@@ -355,7 +590,7 @@ impl Session {
                     "live-voice turn retrieval"
                 );
                 crate::chat::run_turn(
-                    &st, crate::chat::origin::TurnContext::web(&ctx), turn_id, chat_id, pid, aid, text, Vec::new(), Vec::new(), false, None, None, None, settled.prefetched, &tap_tx,
+                    &st, crate::chat::origin::TurnContext::new(&ctx, origin).with_call(call_id), turn_id, chat_id, pid, aid, text, Vec::new(), Vec::new(), false, None, None, None, settled.prefetched, &tap_tx,
                     cancel2,
                 )
                 .await;
@@ -366,12 +601,14 @@ impl Session {
         // 2) TTS consumer — speaks queued clauses in order, abortable by barge-in.
         let tts_task = {
             let me = self.clone();
-            tokio::spawn(async move { me.tts_loop(tts_rx, tts_abort, speaking, t0).await })
+            let clock = clock.clone();
+            tokio::spawn(async move { me.tts_loop(tts_rx, tts_abort, speaking, clock).await })
         };
         // 3) Tap drain — forwards every frame to the socket; feeds the aggregator.
         let drain_task = {
             let me = self.clone();
-            tokio::spawn(async move { me.drain_loop(tap_rx, tts_tx).await })
+            let drain_clock = clock.clone();
+            tokio::spawn(async move { me.drain_loop(tap_rx, tts_tx, drain_clock).await })
         };
         let mut t = self.tasks.lock().unwrap();
         t.push(tts_task);
@@ -380,7 +617,12 @@ impl Session {
 
     /// Drain the chat-turn tap: relay every frame to the SPA and chunk the token
     /// stream into clauses for TTS.
-    async fn drain_loop(self: Arc<Self>, mut tap_rx: mpsc::Receiver<ServerFrame>, tts_tx: mpsc::Sender<TtsCmd>) {
+    async fn drain_loop(
+        self: Arc<Self>,
+        mut tap_rx: mpsc::Receiver<ServerFrame>,
+        tts_tx: mpsc::Sender<TtsCmd>,
+        clock: Arc<TurnClock>,
+    ) {
         let mut agg = SentenceAggregator::new();
         loop {
             let frame = match tokio::time::timeout(
@@ -400,11 +642,9 @@ impl Session {
                     if let Some(h) = handle {
                         h.cancel.notify_waiters();
                         h.tts_abort.notify_waiters();
+                        self.sink.clear().await;
                     }
-                    self.emit(ServerFrame::VoiceError {
-                        message: "the assistant timed out".into(),
-                    })
-                    .await;
+                    self.sink.error("the assistant timed out").await;
                     let _ = tts_tx.send(TtsCmd::Stop).await;
                     break;
                 }
@@ -414,7 +654,13 @@ impl Session {
                     *self.chat_id.lock().unwrap() = Some(*chat_id);
                 }
                 ServerFrame::ChatToken { delta, .. } => {
+                    // Everything the turn did before producing a word is inside this
+                    // figure: assembling the prompt, retrieval, any tool the model asked
+                    // for. Measured here rather than inside the turn because this is where
+                    // the wait is felt, and the turn itself has no idea it is on a call.
+                    clock.stage_reached(Stage::FirstToken);
                     for clause in agg.push(delta) {
+                        clock.stage_reached(Stage::FirstClause);
                         if tts_tx.send(TtsCmd::Clause(clause)).await.is_err() {
                             break;
                         }
@@ -430,13 +676,15 @@ impl Session {
                     let _ = tts_tx.send(TtsCmd::Stop).await;
                 }
                 ServerFrame::ChatError { message, .. } => {
-                    self.emit(ServerFrame::VoiceError { message: message.clone() }).await;
+                    self.sink.error(message).await;
                     let _ = tts_tx.send(TtsCmd::Stop).await;
                 }
                 _ => {}
             }
-            // Relay EVERY chat frame to the SPA (transcript text, citations, …).
-            let _ = self.tx.send(frame).await;
+            // Mirror EVERY chat frame (transcript text, citations, …). Note the order:
+            // everything this loop needs from the frame has been taken above, so a
+            // transport with nobody watching can discard it without losing anything.
+            self.sink.relay(frame).await;
         }
     }
 
@@ -446,10 +694,9 @@ impl Session {
         mut rx: mpsc::Receiver<TtsCmd>,
         tts_abort: Arc<Notify>,
         speaking: Arc<AtomicBool>,
-        t0: std::time::Instant,
+        clock: Arc<TurnClock>,
     ) {
         let seq = AtomicU64::new(0);
-        let latency_done = AtomicBool::new(false);
         let mut spoke = false;
         let mut total_bytes = 0usize;
         while let Some(cmd) = rx.recv().await {
@@ -462,10 +709,10 @@ impl Session {
                         self.set_state(VoiceState::Speaking).await;
                         spoke = true;
                     }
-                    total_bytes += self.speak_clause(text, &tts_abort, &speaking, &seq, t0, &latency_done).await;
+                    total_bytes += self.speak_clause(text, &tts_abort, &speaking, &seq, &clock).await;
                 }
                 TtsCmd::End => {
-                    self.emit(ServerFrame::VoiceTtsEnd).await;
+                    self.sink.audio_end().await;
                     break;
                 }
                 TtsCmd::Stop => break,
@@ -477,9 +724,14 @@ impl Session {
         self.finish_turn(VoiceState::Listening).await;
     }
 
-    /// Synthesise one clause, streaming its audio chunks out as `voice.tts.chunk`.
-    /// Returns the bytes synthesised. A barge-in (`tts_abort` / cleared `speaking`)
-    /// stops it immediately and drops the stream (cuts audio cleanly).
+    /// Synthesise one clause and hand the audio to the transport in the shape it
+    /// asked for. Returns the bytes synthesised. A barge-in (`tts_abort` / cleared
+    /// `speaking`) stops it immediately and drops the stream, so synthesis stops.
+    ///
+    /// How much of the clause survives a barge-in differs by shape, and that is not a
+    /// detail: a clip is withheld until it is whole, so cutting one emits nothing at
+    /// all, whereas samples have already been handed over as they arrived and can only
+    /// be recalled through the transport's own `clear`.
     #[allow(clippy::too_many_arguments)]
     async fn speak_clause(
         &self,
@@ -487,19 +739,40 @@ impl Session {
         tts_abort: &Notify,
         speaking: &AtomicBool,
         seq: &AtomicU64,
-        t0: std::time::Instant,
-        latency_done: &AtomicBool,
+        clock: &TurnClock,
     ) -> usize {
         if !speaking.load(Ordering::SeqCst) {
             return 0;
         }
         let vc = &self.voice_cfg;
         let voice_opt = (!vc.tts_voice.is_empty()).then_some(vc.tts_voice.as_str());
-        let opened = if vc.tts_stream && !vc.tts_stream_url.is_empty() {
-            tts_stream::stream_clause(&self.ext_http, &vc.tts_stream_url, &vc.tts_model, &text, voice_opt, vc.tts_api_key.as_deref()).await
-        } else {
-            tts_stream::batch_clause(&self.state.http, &self.state.boot.ml.base_url, &text, voice_opt, crate::ml::provider_overrides(&self.state, self.ctx.user_id).await).await
+        let streaming = vc.tts_stream && !vc.tts_stream_url.is_empty();
+        let delivery = self.sink.wants();
+        let opened = match delivery {
+            AudioDelivery::Clip => {
+                if streaming {
+                    tts_stream::stream_clause(&self.ext_http, &vc.tts_stream_url, &vc.tts_model, &text, voice_opt, vc.tts_api_key.as_deref(), tts_stream::ClauseFormat::Mp3).await
+                } else {
+                    tts_stream::batch_clause(&self.state.http, &self.state.boot.ml.base_url, &text, voice_opt, crate::ml::provider_overrides(&self.state, self.ctx.user_id).await).await
+                }
+            }
+            AudioDelivery::Samples { rate } => {
+                // Two ways this transport cannot be served, and both are silent
+                // failures if waved through: raw samples at the wrong rate play at
+                // the wrong speed, and the batch route returns a container that
+                // nothing in this process can decode.
+                if rate != SAMPLE_DELIVERY_RATE {
+                    tracing::warn!(rate, "the transport wants a sample rate the synthesiser does not produce");
+                    return 0;
+                }
+                if !streaming {
+                    tracing::warn!("raw audio needs a streaming synthesiser; configure one or the line stays silent");
+                    return 0;
+                }
+                tts_stream::stream_clause(&self.ext_http, &vc.tts_stream_url, &vc.tts_model, &text, voice_opt, vc.tts_api_key.as_deref(), tts_stream::ClauseFormat::Pcm24k).await
+            }
         };
+        clock.stage_reached(Stage::TtsOpen);
         let mut ts = match opened {
             Ok(t) => t,
             Err(e) => {
@@ -508,11 +781,14 @@ impl Session {
             }
         };
         let mime = ts.mime.clone();
-        // Accumulate the WHOLE clause, then emit it as one frame. Each engine call
-        // returns a complete, self-contained clip (e.g. an OpenAI mp3 with its own
-        // header); the browser decodes a complete clip reliably, whereas separate
-        // per-network-chunk frames concatenated client-side break the mp3 decoder.
+        // For a clip: accumulate the WHOLE clause, then emit it as one frame. Each
+        // engine call returns a complete, self-contained clip (e.g. an OpenAI mp3
+        // with its own header); the browser decodes a complete clip reliably, whereas
+        // separate per-network-chunk frames concatenated client-side break the mp3
+        // decoder. For samples there is no container to keep intact, and holding them
+        // back would only add the whole clause to the delay before the first word.
         let mut buf: Vec<u8> = Vec::new();
+        let mut streamed = 0usize;
         let aborted = loop {
             tokio::select! {
                 chunk = ts.recv() => match chunk {
@@ -520,47 +796,48 @@ impl Session {
                         if !speaking.load(Ordering::SeqCst) {
                             break true; // barge-in mid-clause → drop the partial
                         }
-                        buf.extend_from_slice(&b);
+                        match delivery {
+                            AudioDelivery::Clip => buf.extend_from_slice(&b),
+                            AudioDelivery::Samples { .. } => {
+                                streamed += b.len();
+                                clock.stage_reached(Stage::FirstAudioOut);
+                                let s = seq.fetch_add(1, Ordering::SeqCst);
+                                self.sink.audio(AudioClip { bytes: b, mime: mime.clone(), seq: s }).await;
+                            }
+                        }
                     }
                     None => break false, // clause fully synthesised
                 },
                 _ = tts_abort.notified() => break true, // barge-in: drop `ts` → engine stops
             }
         };
+        if matches!(delivery, AudioDelivery::Samples { .. }) {
+            return streamed;
+        }
         if aborted || buf.is_empty() || !speaking.load(Ordering::SeqCst) {
             return 0; // a clean cut emits nothing (no clipped/garbled tail)
         }
-        // Voice-to-voice latency: final transcript → first audio out.
-        if !latency_done.swap(true, Ordering::SeqCst) {
-            metrics::histogram!("voice_turn_latency_ms").record(t0.elapsed().as_millis() as f64);
-        }
+        clock.stage_reached(Stage::FirstAudioOut);
         let s = seq.fetch_add(1, Ordering::SeqCst);
-        self.emit(ServerFrame::VoiceTtsChunk {
-            audio_base64: B64.encode(&buf),
-            mime,
-            seq: s,
-        })
-        .await;
-        buf.len()
-    }
-
-    async fn emit(&self, f: ServerFrame) {
-        let _ = self.tx.send(f).await;
+        // Count the bytes before handing them over, not after.
+        let synthesised = buf.len();
+        self.sink.audio(AudioClip { bytes: buf, mime, seq: s }).await;
+        synthesised
     }
 
     async fn emit_final(&self, text: &str) {
-        self.emit(ServerFrame::VoiceFinal { text: text.to_string() }).await;
+        self.sink.transcript(text).await;
     }
 
     async fn emit_error(&self, message: String) {
-        self.emit(ServerFrame::VoiceError { message }).await;
+        self.sink.error(&message).await;
         self.set_state(VoiceState::Listening).await;
     }
 
     async fn set_state(&self, s: VoiceState) {
         *self.vstate.lock().unwrap() = s;
         let retrieving = self.spec_retrieving.load(Ordering::SeqCst);
-        self.emit(ServerFrame::VoiceLiveState { state: s.as_str().into(), retrieving }).await;
+        self.sink.state(s, retrieving).await;
     }
 
     /// Announce that a speculative search started or stopped.
@@ -574,7 +851,7 @@ impl Session {
             return;
         }
         let s = self.current_state();
-        self.emit(ServerFrame::VoiceLiveState { state: s.as_str().into(), retrieving: on }).await;
+        self.sink.state(s, on).await;
     }
 
     fn current_state(&self) -> VoiceState {
@@ -997,7 +1274,10 @@ enum Wake {
 async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>) {
     let cfg = session.voice_cfg.clone();
     let sr = cfg.stt_sample_rate.max(8000);
-    let detector_present = session.knobs.turn_detection && !cfg.turn_detector_url.is_empty();
+    // Whether a detector is available at all, before any failure. Whether one is
+    // actually u.consulted is decided per frame, because a detector can stop answering
+    // part-way through a session and the turn-taking has to notice.
+    let detector_configured = session.knobs.turn_detection && !cfg.turn_detector_url.is_empty();
 
     // Open the streaming-STT engine per the configured kind; on any failure the batch
     // fallback is used (zero-config and graceful-degradation paths both land here).
@@ -1024,17 +1304,9 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
         _ => None,
     };
 
-    let mut utterance: Vec<u8> = Vec::new();
-    let mut final_text = String::new();
-    let mut speech_ms: u64 = 0;
-    let mut silence_ms: u64 = 0;
+    let mut u = Utterance::default();
     let mut barge_ms: u64 = 0; // sustained talk-over while the assistant speaks
-    let mut had_speech = false;
-    let mut consulted = false;
-    let mut endpoint_pending = false;
-    let mut turn_complete = false;
-    // Turn-completeness confidence from the semantic detector, if one is consulted.
-    let mut turn_prob: f32 = 0.0;
+    // Turn-completeness confidence from the semantic detector, if one is u.consulted.
 
     // Speculative retrieval: search the knowledge base from the partial transcript
     // while the speaker is still talking. Owned here as a plain local because only
@@ -1069,35 +1341,73 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
                 SttEvent::Partial { text } => {
                     if !text.trim().is_empty() {
                         spec.observe(&text, partial_mode);
-                        session.emit(ServerFrame::VoicePartial { text }).await;
+                        session.sink.partial(&text).await;
                     }
-                    had_speech = true;
-                    silence_ms = 0;
+                    u.had_speech = true;
+                    u.silence_ms = 0;
                 }
                 SttEvent::Final { text } => {
                     let t = text.trim();
                     if !t.is_empty() {
-                        if !final_text.is_empty() {
-                            final_text.push(' ');
+                        if !u.text.is_empty() {
+                            u.text.push(' ');
                         }
-                        final_text.push_str(t);
+                        u.text.push_str(t);
                     }
-                    endpoint_pending = true;
+                    u.endpoint_pending = true;
                 }
                 SttEvent::Error { message } => tracing::warn!(%message, "streaming STT error"),
             },
             Wake::Pcm(Some(pcm)) => {
                 let rms = rms_i16(&pcm);
-                let speaking_now = rms >= SPEECH_RMS;
+                let speaking_now = rms >= session.knobs.speech_rms;
+                // The loudness of every frame, published as a distribution. This is the
+                // instrument the two loudness gates are meant to be set from: the gates
+                // themselves were chosen for a browser microphone, and on a telephone line
+                // nobody has yet measured where speech sits relative to the noise. A
+                // loudness envelope, not content, and carrying nothing about the call.
+                metrics::histogram!(
+                    "voice_frame_rms",
+                    "transport" => session.profile.as_str(),
+                    "phase" => "capture"
+                )
+                .record(rms);
 
                 // While the assistant is replying, the only thing audio can do is
                 // trigger barge-in — but only on SUSTAINED, louder-than-echo speech,
                 // so the assistant's own audio / a noise spike can't cut the reply.
-                let turn_active = session.current_turn.lock().unwrap().is_some();
+                let (turn_active, is_notice) = {
+                    let g = session.current_turn.lock().unwrap();
+                    (g.is_some(), g.as_ref().is_some_and(|h| h.notice))
+                };
+                // Something the speaker has to be told, rather than an answer to something
+                // they asked. Their audio goes nowhere at all while it plays: not to the
+                // recogniser, so it cannot become a question answered underneath the
+                // notice, and not to the barge-in test, so it cannot cut the notice short.
+                if is_notice {
+                    continue;
+                }
                 if turn_active {
                     let aec_ok = session.aec || !session.knobs.aec_required;
                     if aec_ok && session.current_state() == VoiceState::Speaking {
-                        if update_barge(&mut barge_ms, rms >= BARGE_RMS, frame_ms(pcm.len(), sr)) {
+                        // The same envelope while the assistant is speaking, which is the
+                        // one that decides whether talking over it is heard. Kept apart
+                        // from the capture figure because the two look quite different: one
+                        // is a speaker in a quiet gap, the other is a speaker competing
+                        // with a reply.
+                        metrics::histogram!(
+                            "voice_frame_rms",
+                            "transport" => session.profile.as_str(),
+                            "phase" => "talkover"
+                        )
+                        .record(rms);
+                        let loud = rms >= session.knobs.barge_rms;
+                        if update_barge(
+                            &mut barge_ms,
+                            loud,
+                            frame_ms(pcm.len(), sr),
+                            session.knobs.barge_min_ms,
+                        ) {
                             session.barge_in().await; // clears current_turn; capture this frame next
                             spec.reset();
                         } else {
@@ -1110,30 +1420,61 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
                     barge_ms = 0;
                 }
 
-                // Capture the user's utterance + advance the silence timer. Accumulate
+                // Capture the user's u.audio + advance the silence timer. Accumulate
                 // real speech (frames above the RMS gate) so a blip can't fire a turn.
                 if speaking_now {
-                    silence_ms = 0;
-                    had_speech = true;
-                    speech_ms = speech_ms.saturating_add(frame_ms(pcm.len(), sr));
-                } else if had_speech {
-                    silence_ms = silence_ms.saturating_add(frame_ms(pcm.len(), sr));
+                    u.silence_ms = 0;
+                    u.had_speech = true;
+                    u.last_speech_at = Some(std::time::Instant::now());
+                    u.speech_ms = u.speech_ms.saturating_add(frame_ms(pcm.len(), sr));
+                } else if u.had_speech {
+                    u.silence_ms = u.silence_ms.saturating_add(frame_ms(pcm.len(), sr));
                 }
-                utterance.extend_from_slice(&pcm);
+                u.audio.extend_from_slice(&pcm);
                 if let Some(s) = stt.as_ref() {
                     s.send_pcm(pcm).await;
                 }
 
+                let detector_present =
+                    detector_configured && !session.detector_down.load(Ordering::SeqCst);
+
                 // Semantic turn detector (debounced to when silence begins).
-                if detector_present && had_speech && silence_ms >= DETECT_AFTER_MS && !consulted {
-                    consulted = true;
-                    if let Ok(sig) =
-                        turn::detect(&session.ext_http, &cfg.turn_detector_url, recent_window(&utterance, sr), sr).await
-                    {
-                        turn_complete = sig.turn_complete;
-                        turn_prob = sig.prob;
-                        if sig.endpoint {
-                            endpoint_pending = true;
+                if detector_present && u.had_speech && u.silence_ms >= DETECT_AFTER_MS && !u.consulted {
+                    u.consulted = true;
+                    let asked = std::time::Instant::now();
+                    let answer = turn::detect(&session.ext_http, &cfg.turn_detector_url, recent_window(&u.audio, sr), sr).await;
+                    // The consult is awaited here, on the loop that takes in audio, so
+                    // its cost is time nobody is being listened to. Measured for that
+                    // reason as much as for the latency budget.
+                    metrics::histogram!("voice_turn_detect_seconds", "transport" => session.profile.as_str())
+                        .record(asked.elapsed().as_secs_f64());
+                    match answer {
+                        Ok(sig) => {
+                            metrics::counter!(
+                                "voice_turn_detect_total",
+                                "outcome" => if sig.turn_complete { "complete" } else { "hold" }
+                            )
+                            .increment(1);
+                            u.turn_complete = sig.turn_complete;
+                            u.turn_prob = sig.prob;
+                            if sig.endpoint {
+                                u.endpoint_pending = true;
+                            }
+                        }
+                        Err(e) => {
+                            // Latched rather than retried. A detector that did not answer
+                            // cannot judge a turn complete, and continuing to require it
+                            // would mean no turn ever ends. Turn-taking falls back to the
+                            // silence threshold for the rest of this session; the next
+                            // one asks again, which for a telephone is the next call.
+                            metrics::counter!("voice_turn_detect_total", "outcome" => "error")
+                                .increment(1);
+                            if !session.detector_down.swap(true, Ordering::SeqCst) {
+                                tracing::warn!(
+                                    error = %e,
+                                    "the turn detector did not answer; this session will end turns on silence alone"
+                                );
+                            }
                         }
                     }
                 }
@@ -1142,10 +1483,10 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
                 // is probably ending and the transcript is worth searching on, while
                 // the hard one below actually ends it. The semantic detector, when
                 // there is one, can reach the soft threshold sooner than silence does.
-                if had_speech {
+                if u.had_speech {
                     let now_ms = spec_clock.elapsed().as_millis() as u64;
-                    let soft_endpoint = silence_ms >= soft_silence_ms
-                        || (spec_cfg.eager_prob < 1.0 && turn_prob >= spec_cfg.eager_prob);
+                    let soft_endpoint = u.silence_ms >= soft_silence_ms
+                        || (spec_cfg.eager_prob < 1.0 && u.turn_prob >= spec_cfg.eager_prob);
                     // A session with nothing to search never speculates again — the
                     // first refusal to resolve a scope settles it for the socket.
                     let kb_present = !session.spec_kb_absent.load(Ordering::SeqCst);
@@ -1163,45 +1504,61 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
                     }
                 }
 
-                if had_speech
+                let last_speech_at = u.last_speech_at;
+                let hold_ceiling_ms = turn::hold_ceiling_ms(session.knobs.silence_threshold_ms);
+                if u.had_speech
                     && turn::should_fire_turn(
-                        endpoint_pending,
-                        silence_ms,
+                        u.endpoint_pending,
+                        u.silence_ms,
                         session.knobs.silence_threshold_ms,
+                        hold_ceiling_ms,
                         detector_present,
-                        turn_complete,
+                        u.turn_complete,
                     )
                 {
+                    if detector_present && !u.turn_complete && u.silence_ms >= hold_ceiling_ms {
+                        // The detector held this turn all the way to the ceiling, so the
+                        // silence ended it instead. Not a normal way for a turn to end:
+                        // either the sidecar is answering but never agreeing, or it is
+                        // being asked about speech it cannot judge.
+                        tracing::warn!(
+                            u.silence_ms,
+                            hold_ceiling_ms,
+                            u.turn_prob,
+                            "the turn detector never judged this turn complete; ending it on silence"
+                        );
+                        metrics::counter!("voice_turn_forced_total").increment(1);
+                    }
                     // A blip below the speech floor is noise — discard WITHOUT calling
                     // STT, so a near-silent clip can't be hallucinated into a transcript.
-                    if speech_ms < session.knobs.min_speech_ms {
-                        reset(&mut utterance, &mut final_text, &mut speech_ms, &mut silence_ms, &mut had_speech, &mut consulted, &mut endpoint_pending, &mut turn_complete, &mut turn_prob, &mut spec);
+                    if u.speech_ms < session.knobs.min_speech_ms {
+                        u.reset(&mut spec);
                         continue;
                     }
                     // Manual-commit engines (OpenAI realtime, `turn_detection:null`)
-                    // transcribe only after we signal end-of-utterance. Commit, then
+                    // transcribe only after we signal end-of-u.audio. Commit, then
                     // wait briefly for the completed transcript (emitting any partials);
-                    // on timeout/close fall through to the batch path on `utterance`.
+                    // on timeout/close fall through to the batch path on `u.audio`.
                     if stt.as_ref().is_some_and(|s| s.manual_commit()) {
                         let mut closed = false;
                         if let Some(s) = stt.as_mut() {
                             s.commit().await;
-                            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+                            let deadline = tokio::time::Instant::now() + STT_COMMIT_WAIT;
                             loop {
                                 match tokio::time::timeout_at(deadline, s.recv()).await {
                                     Ok(Some(SttEvent::Final { text })) => {
                                         let t = text.trim();
                                         if !t.is_empty() {
-                                            if !final_text.is_empty() {
-                                                final_text.push(' ');
+                                            if !u.text.is_empty() {
+                                                u.text.push(' ');
                                             }
-                                            final_text.push_str(t);
+                                            u.text.push_str(t);
                                         }
                                         break;
                                     }
                                     Ok(Some(SttEvent::Partial { text })) => {
                                         if !text.trim().is_empty() {
-                                            session.emit(ServerFrame::VoicePartial { text }).await;
+                                            session.sink.partial(&text).await;
                                         }
                                     }
                                     Ok(Some(SttEvent::Error { message })) => {
@@ -1219,14 +1576,14 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
                             stt = None;
                         }
                     }
-                    let dur_ms = frame_ms(utterance.len(), sr);
-                    let text = if !final_text.trim().is_empty() {
-                        final_text.trim().to_string()
+                    let dur_ms = frame_ms(u.audio.len(), sr);
+                    let text = if !u.text.trim().is_empty() {
+                        u.text.trim().to_string()
                     } else {
                         match crate::ml::transcribe(
                             &session.state.http,
                             &session.state.boot.ml.base_url,
-                            &stt_stream::pcm_to_wav(&utterance, sr),
+                            &stt_stream::pcm_to_wav(&u.audio, sr),
                             "audio/wav",
                             crate::ml::provider_overrides(&session.state, session.ctx.user_id).await,
                         )
@@ -1235,7 +1592,7 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
                             Ok(t) => t.trim().to_string(),
                             Err(e) => {
                                 session.emit_error(format!("transcription failed: {e}")).await;
-                                reset(&mut utterance, &mut final_text, &mut speech_ms, &mut silence_ms, &mut had_speech, &mut consulted, &mut endpoint_pending, &mut turn_complete, &mut turn_prob, &mut spec);
+                                u.reset(&mut spec);
                                 continue;
                             }
                         }
@@ -1243,13 +1600,24 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
                     // Strip residual ASR control tags (streaming path) and require real
                     // spoken content — never start a turn on `<asr_text>`/punctuation junk.
                     let text = sanitize_transcript(&text);
-                    reset(&mut utterance, &mut final_text, &mut speech_ms, &mut silence_ms, &mut had_speech, &mut consulted, &mut endpoint_pending, &mut turn_complete, &mut turn_prob, &mut spec);
+                    // Started here, not in `start_turn`: announcing the transcript and
+                    // recording it both happen first, and the second of those writes to
+                    // the database. A caller waits through all of it.
+                    let clock = Arc::new(TurnClock::new(session.profile.as_str()));
+                    if let Some(stopped) = last_speech_at {
+                        metrics::histogram!(
+                            "voice_endpoint_seconds",
+                            "transport" => session.profile.as_str()
+                        )
+                        .record(stopped.elapsed().as_secs_f64());
+                    }
+                    u.reset(&mut spec);
                     if !is_speech_like(&text) {
                         continue;
                     }
                     session.emit_final(&text).await;
                     session.audit_transcribed(dur_ms, text.chars().count()).await;
-                    session.start_turn(text).await;
+                    session.start_turn(text, clock).await;
                 }
             }
         }
@@ -1259,14 +1627,14 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
 /// Accumulate sustained talk-over and decide whether to interrupt the assistant.
 /// `loud` is a frame above the (higher) barge RMS gate; a quiet frame resets the
 /// run so an echo/noise blip never reaches the threshold. Fires (and resets) once
-/// `BARGE_MIN_MS` of continuous loud speech has accrued.
-fn update_barge(barge_ms: &mut u64, loud: bool, frame_ms: u64) -> bool {
+/// `min_ms` of continuous loud speech has accrued.
+fn update_barge(barge_ms: &mut u64, loud: bool, frame_ms: u64, min_ms: u64) -> bool {
     if loud {
         *barge_ms = barge_ms.saturating_add(frame_ms);
     } else {
         *barge_ms = 0;
     }
-    if *barge_ms >= BARGE_MIN_MS {
+    if *barge_ms >= min_ms {
         *barge_ms = 0;
         true
     } else {
@@ -1275,30 +1643,50 @@ fn update_barge(barge_ms: &mut u64, loud: bool, frame_ms: u64) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reset(
-    utterance: &mut Vec<u8>,
-    final_text: &mut String,
-    speech_ms: &mut u64,
-    silence_ms: &mut u64,
-    had_speech: &mut bool,
-    consulted: &mut bool,
-    endpoint_pending: &mut bool,
-    turn_complete: &mut bool,
-    turn_prob: &mut f32,
-    spec: &mut spec_retrieval::SpecState,
-) {
-    utterance.clear();
-    final_text.clear();
-    *speech_ms = 0;
-    *silence_ms = 0;
-    *had_speech = false;
-    *consulted = false;
-    *endpoint_pending = false;
-    *turn_complete = false;
-    *turn_prob = 0.0;
-    // The speculator is per-utterance: a stable prefix, a shot count and a debounce
-    // clock from the last thing said must never carry into the next one.
-    spec.reset();
+/// What the capture loop knows about the utterance being spoken right now.
+///
+/// Gathered into one thing because it all has one lifetime: it comes into being when
+/// somebody starts speaking and every piece of it must be gone before the next person
+/// does. Clearing nine separate locals in three separate places is how a stale
+/// completeness verdict or a leftover shot count leaks from one utterance into the next.
+#[derive(Default)]
+struct Utterance {
+    /// The audio itself, kept for the batch transcription path.
+    audio: Vec<u8>,
+    /// What a streaming engine has settled on so far.
+    text: String,
+    /// Audio above the loudness gate, counted in milliseconds *of audio* rather than of
+    /// wall clock, which is what makes turn-taking independent of how fast it arrived.
+    speech_ms: u64,
+    /// Trailing quiet since the last speech, likewise.
+    silence_ms: u64,
+    had_speech: bool,
+    /// When speech was last heard, by the wall clock this time.
+    ///
+    /// The one piece of timing here that is not measured in audio, because it is the
+    /// origin of the figure a speaker actually experiences: how long after they stop
+    /// talking the reply begins. Everything the turn-taking decides is measured in audio;
+    /// everything reported as latency is measured from here.
+    last_speech_at: Option<std::time::Instant>,
+    /// The turn detector has been asked about this utterance. Asked once, because the
+    /// question is about the whole of it.
+    consulted: bool,
+    /// Recognition or the detector reported that the utterance ended acoustically.
+    endpoint_pending: bool,
+    /// The detector judged that the speaker finished their thought.
+    turn_complete: bool,
+    /// Its confidence in that judgement.
+    turn_prob: f32,
+}
+
+impl Utterance {
+    /// Forget everything about the utterance just ended or discarded.
+    fn reset(&mut self, spec: &mut spec_retrieval::SpecState) {
+        *self = Utterance::default();
+        // The speculator is per-utterance too: a stable prefix, a shot count and a
+        // debounce clock from the last thing said must never carry into the next one.
+        spec.reset();
+    }
 }
 
 /// Defensive strip of ASR control tokens a streaming engine might emit (the batch path
@@ -1342,6 +1730,7 @@ mod tests {
             cancel: Arc::new(Notify::new()),
             tts_abort: Arc::new(Notify::new()),
             speaking: Arc::new(AtomicBool::new(true)),
+            notice: false,
         };
         let llm = Arc::new(AtomicBool::new(true));
         let tts = Arc::new(AtomicBool::new(true));
@@ -1562,13 +1951,22 @@ mod tests {
     /// A session with nothing configured, for exercising the parts of the commit
     /// decision that are pure session state: no database, no network, no sockets.
     fn bare_session() -> Arc<Session> {
+        // The far end of the transport is dropped here, exactly as a session whose
+        // client has gone: emitting is a no-op and nothing observes it.
+        bare_session_recording().0
+    }
+
+    /// The same session, but keeping the receiving end of its transport so a test can
+    /// read back the exact bytes it put out.
+    fn bare_session_recording() -> (Arc<Session>, mpsc::Receiver<ServerFrame>) {
         use sqlx::postgres::PgPoolOptions;
         let pg = PgPoolOptions::new().connect_lazy("postgres://localhost/unused").expect("lazy pool");
         let redis = crate::cache::create_pool("redis://localhost:6379").expect("redis pool");
         let state = AppState::new(pg, redis, Arc::new(crate::config::BootConfig::default()));
-        let (tx, _rx) = mpsc::channel(8);
+        let (tx, rx) = mpsc::channel(32);
         let (pcm_tx, _pcm_rx) = mpsc::channel(8);
-        Arc::new(Session {
+        let sink = Arc::new(crate::voice::WebSocketSink::new(tx));
+        let session = Arc::new(Session {
             socket_id: Uuid::now_v7(),
             ctx: AuthContext {
                 user_id: Some(Uuid::now_v7()),
@@ -1579,7 +1977,7 @@ mod tests {
                 mfa_enroll_only: false,
             },
             state,
-            tx,
+            sink,
             pcm_tx,
             knobs: VoiceKnobs::default(),
             voice_cfg: crate::voice::VoiceLiveResolved {
@@ -1598,6 +1996,9 @@ mod tests {
                 turn_detector_url: String::new(),
             },
             aec: true,
+            profile: VoiceProfile::Browser,
+            origin: crate::chat::origin::ChatOrigin::Web,
+            call_id: None,
             chat_id: Mutex::new(None),
             project_id: None,
             agent_id: None,
@@ -1607,8 +2008,80 @@ mod tests {
             spec: Mutex::new(spec_retrieval::SpecShared::default()),
             spec_retrieving: AtomicBool::new(false),
             spec_kb_absent: AtomicBool::new(false),
+            detector_down: AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
-        })
+        });
+        (session, rx)
+    }
+
+    /// Drain everything queued and render it as the bytes the socket would carry.
+    fn drain(rx: &mut mpsc::Receiver<ServerFrame>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(f) = rx.try_recv() {
+            out.push(f.to_json());
+        }
+        out
+    }
+
+    /// The frames a live-voice session emits, pinned as bytes and in order.
+    ///
+    /// The session announces itself entirely through this stream: a frame that goes
+    /// missing, arrives twice, or arrives in the other order is a visible fault in
+    /// the caller's client and nothing else in the suite would notice. So the
+    /// sequence is characterised here, independently of how it reaches the wire.
+    #[tokio::test]
+    async fn the_emitted_frame_sequence_is_fixed() {
+        let (s, mut rx) = bare_session_recording();
+
+        s.set_state(VoiceState::Thinking).await;
+        assert_eq!(drain(&mut rx), vec![r#"{"version":1,"type":"voice.state","state":"thinking"}"#]);
+
+        // A speculative search rides on the state frame, and only when the flag
+        // actually changed: a repeat must be silent, or every partial transcript
+        // costs a redundant frame and a redundant render.
+        s.set_retrieving(true).await;
+        assert_eq!(
+            drain(&mut rx),
+            vec![r#"{"version":1,"type":"voice.state","state":"thinking","retrieving":true}"#]
+        );
+        s.set_retrieving(true).await;
+        assert!(drain(&mut rx).is_empty(), "a repeated flag emits nothing");
+        s.set_retrieving(false).await;
+        assert_eq!(
+            drain(&mut rx),
+            vec![r#"{"version":1,"type":"voice.state","state":"thinking"}"#],
+            "and off again drops the field rather than sending it as false"
+        );
+
+        s.emit_final("how much rain fell?").await;
+        assert_eq!(
+            drain(&mut rx),
+            vec![r#"{"version":1,"type":"voice.final","text":"how much rain fell?"}"#]
+        );
+
+        // An error is TWO frames in one order: the message, then the return to
+        // listening. Folding them together would leave the client showing an error
+        // it can never leave.
+        s.emit_error("the engine is unavailable".into()).await;
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                r#"{"version":1,"type":"voice.error","message":"the engine is unavailable"}"#,
+                r#"{"version":1,"type":"voice.state","state":"listening"}"#,
+            ]
+        );
+
+        // Nobody was speaking, so there is nothing to interrupt: the return to
+        // listening is still announced, unconditionally and exactly once.
+        s.barge_in().await;
+        assert_eq!(
+            drain(&mut rx),
+            vec![r#"{"version":1,"type":"voice.state","state":"listening"}"#],
+            "a barge-in with no turn in flight still announces listening, and only that"
+        );
+
+        s.finish_turn(VoiceState::Listening).await;
+        assert_eq!(drain(&mut rx), vec![r#"{"version":1,"type":"voice.state","state":"listening"}"#]);
     }
 
     /// A search stopped while committing a turn belongs to THAT turn's figures. The
@@ -1645,6 +2118,51 @@ mod tests {
         assert_eq!(next.fires, 0);
     }
 
+    /// A stage records the first time it is reached and never again. Several tasks reach
+    /// some of these, and a stage recorded twice would put a later moment into a series
+    /// that is supposed to hold the first one.
+    #[test]
+    fn a_stage_is_recorded_once_however_often_it_is_reached() {
+        let clock = TurnClock::new("phone");
+        let bit = 1u32 << (Stage::FirstToken as u32);
+        clock.stage_reached(Stage::FirstToken);
+        assert_eq!(clock.stamped.load(Ordering::SeqCst) & bit, bit);
+        // A second call must not record again. Values cannot be read back from a
+        // process-global recorder without racing every other test, so the latch itself is
+        // what is asserted.
+        clock.stage_reached(Stage::FirstToken);
+        assert_eq!(clock.stamped.load(Ordering::SeqCst) & bit, bit);
+    }
+
+    /// Every stage has its own bit, or two of them would silence each other.
+    #[test]
+    fn every_stage_has_its_own_bit_and_its_own_metric() {
+        let stages = [
+            Stage::CommitOverhead,
+            Stage::FirstToken,
+            Stage::FirstClause,
+            Stage::TtsOpen,
+            Stage::FirstAudioOut,
+            Stage::ReplyHeard,
+            Stage::ReplySpoken,
+        ];
+        let clock = TurnClock::new("browser");
+        for stage in stages {
+            clock.stage_reached(stage);
+        }
+        let expected: u32 = stages.iter().map(|s| 1u32 << (*s as u32)).sum();
+        assert_eq!(clock.stamped.load(Ordering::SeqCst), expected, "two stages share a bit");
+        assert!((*stages.last().unwrap() as u32) < 32, "a stage past the 32nd needs a wider word");
+
+        let mut names: Vec<&str> = stages.iter().map(|s| s.metric()).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "two stages record into one metric");
+        // Durations, in the unit everything else in the system uses.
+        assert!(names.iter().all(|n| n.ends_with("_seconds")), "{names:?}");
+    }
+
     #[test]
     fn sanitize_strips_asr_control_tags() {
         assert_eq!(sanitize_transcript("<asr_text>"), "");
@@ -1657,25 +2175,49 @@ mod tests {
     #[test]
     fn barge_needs_sustained_loud_speech() {
         let frame = 20u64; // 20 ms frames
+        let min_ms = VoiceKnobs::default().barge_min_ms;
         // A single loud frame must NOT interrupt (echo/noise spike).
         let mut b = 0u64;
-        assert!(!update_barge(&mut b, true, frame));
+        assert!(!update_barge(&mut b, true, frame, min_ms));
         // A quiet frame mid-run resets, so brief blips never accumulate to threshold.
         for _ in 0..5 {
-            assert!(!update_barge(&mut b, true, frame));
+            assert!(!update_barge(&mut b, true, frame, min_ms));
         }
-        assert!(!update_barge(&mut b, false, frame));
+        assert!(!update_barge(&mut b, false, frame, min_ms));
         assert_eq!(b, 0);
-        // Sustained loud speech past BARGE_MIN_MS fires exactly once, then resets.
+        // Sustained loud speech past the threshold fires exactly once, then resets.
         let mut fired = false;
-        for _ in 0..((BARGE_MIN_MS / frame) + 1) {
-            if update_barge(&mut b, true, frame) {
+        for _ in 0..((min_ms / frame) + 1) {
+            if update_barge(&mut b, true, frame, min_ms) {
                 fired = true;
                 break;
             }
         }
         assert!(fired, "sustained talk-over must interrupt");
         assert_eq!(b, 0, "fires and resets");
+    }
+
+    /// A line notices being talked over sooner than a tab does, because the delay a
+    /// caller hears is this plus everything buffered downstream of us.
+    #[test]
+    fn a_line_interrupts_sooner_than_a_tab() {
+        let frame = 20u64;
+        let phone = VoiceKnobs::phone().barge_min_ms;
+        let browser = VoiceKnobs::default().barge_min_ms;
+        assert!(phone < browser);
+
+        // Enough talk-over for a line, not yet enough for a tab.
+        let mut on_a_line = 0u64;
+        let mut in_a_tab = 0u64;
+        let mut fired_on_the_line = false;
+        for _ in 0..(phone / frame) {
+            fired_on_the_line |= update_barge(&mut on_a_line, true, frame, phone);
+            assert!(
+                !update_barge(&mut in_a_tab, true, frame, browser),
+                "a tab must not interrupt this early"
+            );
+        }
+        assert!(fired_on_the_line, "a line must interrupt by now");
     }
 
     #[test]

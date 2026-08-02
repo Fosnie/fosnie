@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT owner_user_id, kind FROM notify_targets WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "kind"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9556f2d2f37fcc169225106875e9f6d7a10af80b751ac991d41c08cc8b26a449"
+}

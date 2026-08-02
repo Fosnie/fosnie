@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO appointments (id, owner_user_id, starts_at, ends_at, reference, caller_name, caller_e164, contact, subject, call_id, chat_id) SELECT $1, c.owner_user_id, $2, $3, $4, $5, c.from_e164, $6, $7, c.id, $8 FROM calls c WHERE c.id = $9 ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4bece09939892726cdfcbe3e41f638338d7e181f9f5ab26f9667ea147d2d9316"
+}

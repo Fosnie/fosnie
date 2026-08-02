@@ -1,0 +1,253 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.id, p.e164, p.provider, p.owner_user_id, p.agent_id,\n                  p.label, p.greeting, p.notice, p.transcript_days, p.log_days,\n                  p.record_calls, p.recording_days,\n                  p.enabled, p.deliver_group_chat_id, p.transfer_e164,\n                  u.display_name AS owner_name,\n                  a.name AS agent_name,\n                  (SELECT count(*) FROM agent_tools t WHERE t.agent_id = p.agent_id) AS \"agent_tool_count!\",\n                  (SELECT count(*) FROM conflict_names n\n                     WHERE n.owner_user_id = p.owner_user_id) AS \"screening_names!\",\n                  (SELECT d.slot_minutes FROM diaries d\n                     WHERE d.owner_user_id = p.owner_user_id AND d.enabled)\n                        AS diary_slot_minutes,\n                  extract(epoch from p.created_at)::bigint AS \"created_epoch!\",\n                  (SELECT extract(epoch from c.started_at)::bigint FROM calls c\n                     WHERE c.phone_number_id = p.id\n                     ORDER BY c.started_at DESC LIMIT 1) AS last_call_epoch\n           FROM phone_numbers p\n           JOIN users u ON u.id = p.owner_user_id\n           JOIN agents a ON a.id = p.agent_id\n           ORDER BY p.e164",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "e164"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "greeting",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "greeting"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "notice",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "notice"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "transcript_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "transcript_days"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "log_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "log_days"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "record_calls",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "record_calls"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "recording_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "recording_days"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "deliver_group_chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "deliver_group_chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "transfer_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "transfer_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "owner_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "agent_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agents",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "agent_tool_count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 18,
+        "name": "screening_names!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 19,
+        "name": "diary_slot_minutes",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 20,
+        "name": "created_epoch!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 21,
+        "name": "last_call_epoch",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "bdd955e5b9b473b1078c4ea2cc1002dfbb3abc81e3ac39ed340e898a4928ce90"
+}

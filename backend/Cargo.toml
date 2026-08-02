@@ -35,6 +35,12 @@ async-trait = "0.1"
 axum = { version = "0.8.9", features = ["ws", "macros"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The time-zone database, for the appointment diary. A diary keeps opening hours in the
+# practice's own local time, and turning "nine in the morning on the fourth of August"
+# into an instant needs to know when the clocks change there; a fixed offset cannot.
+# Already in the tree transitively (through the cron scheduler), so declaring it
+# downloads nothing and pins no new version.
+chrono-tz = "0.10"
 clap = { version = "4", features = ["derive"] }
 cron = "0.15"
 axum-keycloak-auth = "=0.8.3"
@@ -59,6 +65,17 @@ serde_json = "1.0.150"
 serde_with = "3"
 aes-gcm = "0.10"
 sha2 = "0.11.0"
+# Verifying the request signature a telephony carrier puts on its webhooks. The
+# scheme is HMAC-SHA1, which is the carrier's choice and not ours. Both crates are
+# already in the tree transitively, so declaring them downloads nothing — but the
+# GENERATION matters: these are the `digest 0.11` releases, matching `sha2` above.
+# The `hmac 0.12`/`sha1 0.10` pair is `digest 0.10` and will not typecheck together
+# with these.
+hmac = "0.13"
+sha1 = "0.11"
+# Parsing the form body of a carrier webhook by hand. The signature is computed over
+# the decoded pairs, so the body cannot be handed to a typed extractor first.
+form_urlencoded = "1.2"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "time", "json", "macros", "migrate"] }
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["serde", "formatting"] }
@@ -106,6 +123,15 @@ test-mocks = ["dep:rcgen", "dep:axum-server"]
 [dev-dependencies]
 async-trait = "0.1"
 tokio-tungstenite = "0.24"
+# The telephony pacer releases one audio frame every 20 ms, and that spacing is the
+# whole point of it. Asserting it against the wall clock would be both slow and
+# flaky, so the tests pause and advance a clock of their own: `test-util` is the
+# feature that allows it, and it is wanted in tests only.
+tokio = { version = "1.52.3", features = ["full", "test-util"] }
+# A directory of its own for the tests that write a call recording, removed when the
+# test ends. Already resolved in the lock tree through other crates, so declaring it
+# here downloads nothing and adds no version.
+tempfile = "3"
 
 # Build profiles (Core is now its own standalone crate/repo root — no workspace).
 # Keep target/debug from ballooning (~69GB on Windows): trim debuginfo.

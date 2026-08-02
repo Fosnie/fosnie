@@ -20,6 +20,7 @@
 
 pub mod custom;
 pub mod desktop;
+pub mod phone;
 
 pub use desktop::{DesktopReply, DesktopToolCtx};
 
@@ -60,6 +61,18 @@ pub const ALL: &[&str] = &[
     desktop::FS_WRITE,
     desktop::FS_DELETE,
     desktop::TERMINAL_RUN,
+    // Write down what somebody ringing a telephone line wanted, put them through to a
+    // person, or finish the call. Offered only on a turn that is carrying a call, and
+    // the transfer only on a line with somewhere to transfer to; see `tools::phone`.
+    phone::TAKE_MESSAGE,
+    phone::CAPTURE_LEAD,
+    phone::TRANSFER_CALL,
+    phone::END_CALL,
+    phone::SCREEN_CONFLICT,
+    phone::CHECK_AVAILABILITY,
+    phone::BOOK_APPOINTMENT,
+    phone::MOVE_APPOINTMENT,
+    phone::CANCEL_APPOINTMENT,
 ];
 
 /// Baseline tools every Agent gets without enabling them (injected in `load_agent`).
@@ -125,6 +138,10 @@ pub fn capability(name: &str) -> Option<&'static str> {
     match name {
         "code_interpreter" => Some("code_interpreter"),
         n if desktop::is_desktop_tool(n) => Some("desktop_execution"),
+        // A deployment that answers no telephone has nothing for these to write about,
+        // and the switch is turnable at runtime so a line under abuse can be stopped
+        // without a restart: a line that has been stopped must also stop recording.
+        n if phone::is_phone_tool(n) => Some("telephony"),
         _ => None,
     }
 }
@@ -135,6 +152,7 @@ pub fn host_enabled(name: &str, features: &FeaturesConfig) -> bool {
     match capability(name) {
         Some("code_interpreter") => features.code_interpreter,
         Some("desktop_execution") => features.desktop_execution,
+        Some("telephony") => features.telephony,
         Some(_) => false,
         None => true,
     }
@@ -153,6 +171,9 @@ pub fn tool_type(name: &str) -> ToolType {
         "search_library" => ToolType::Rag,
         "code_interpreter" => ToolType::Code,
         n if desktop::is_desktop_tool(n) => ToolType::Desktop,
+        // One row each, and running on the clock of somebody holding a telephone: the
+        // cheap timeout is the right one, because a slow write is worse than a failed one.
+        n if phone::is_phone_tool(n) => ToolType::System,
         // Defensive default for tools not in ALL; ALL is fully covered by the test.
         _ => ToolType::System,
     }
@@ -190,6 +211,13 @@ pub fn effect(name: &str) -> ToolEffect {
         // running anything in it, is not.
         desktop::FS_LIST | desktop::FS_READ => ToolEffect::ReadOnly,
         desktop::FS_WRITE | desktop::FS_DELETE | desktop::TERMINAL_RUN => ToolEffect::RequiresRun,
+        // Writing down what a caller wanted is the caller's own moderatable data, in the
+        // same class as a remembered fact: it auto-runs and the person whose line it is
+        // resolves it afterwards by dealing with it. Not `RequiresRun`, which exists to
+        // open a run so somebody at a browser can revoke it — nobody is at a browser, the
+        // way to stop a call is to end the call, and the extra round trips would be spent
+        // in front of a caller listening to silence.
+        n if phone::is_phone_tool(n) => ToolEffect::Proposal,
         // Unknown ⇒ safest classification. Unreachable in practice: an unknown
         // name is refused by `authorize_native_call` before it can dispatch, so
         // this is defence-in-depth only. (It deliberately disagrees with
@@ -201,6 +229,10 @@ pub fn effect(name: &str) -> ToolEffect {
 /// Does the tool cross the zero-egress perimeter (the lethal-trifecta third leg)?
 /// `web_search` and any future DMS / send-email connector do; everything internal
 /// does not. An egress tool is ALWAYS gated regardless of its [`effect`].
+///
+/// Taking a telephone message does not: a row in Postgres and a notice in an internal
+/// team chat. The day a message is delivered by text or by e-mail instead, that tool
+/// belongs here, and it takes [`needs_agent_run`] with it.
 pub fn egress(name: &str) -> bool {
     matches!(name, "web_search")
 }
@@ -524,6 +556,15 @@ pub fn catalog() -> Vec<CatalogEntry> {
         (desktop::FS_WRITE, "Write to a connected folder", "write a file, shown as a change to agree to", false),
         (desktop::FS_DELETE, "Delete in a connected folder", "delete a file, asked every time", false),
         (desktop::TERMINAL_RUN, "Run a command", "run a command in the connected folder", false),
+        (phone::TAKE_MESSAGE, "Take a message", "write down what a caller wants passed on", false),
+        (phone::CAPTURE_LEAD, "Capture an enquiry", "record a new enquiry and what it is about", false),
+        (phone::TRANSFER_CALL, "Put a caller through", "hand the call to the person the line transfers to", false),
+        (phone::END_CALL, "Finish a call", "end the call once the caller is done", false),
+        (phone::SCREEN_CONFLICT, "Check a caller", "check a caller against this account's own list of names", false),
+        (phone::CHECK_AVAILABILITY, "Offer times", "say when this account's diary is free", false),
+        (phone::BOOK_APPOINTMENT, "Book a time", "take one of the free times in the diary", false),
+        (phone::MOVE_APPOINTMENT, "Move an appointment", "move one the caller can identify", false),
+        (phone::CANCEL_APPOINTMENT, "Cancel an appointment", "cancel one the caller can identify", false),
     ];
     META.iter()
         .map(|(name, label, hint, dormant)| CatalogEntry {
@@ -746,6 +787,9 @@ fn def(name: &str) -> Option<Value> {
         // The folder tools keep their schemas beside the rules that check what
         // comes back through them.
         n if desktop::is_desktop_tool(n) => return desktop::def(n),
+        // As do the telephone ones, next to the rules that shape what a caller said into
+        // something storable.
+        n if phone::is_phone_tool(n) => return phone::def(n),
         _ => return None,
     };
     Some(v)
@@ -956,6 +1000,7 @@ pub async fn dispatch(
     web_budget: Option<&WebBudget>,
     rag_ctx: Option<&RagToolCtx>,
     desktop_ctx: Option<&DesktopToolCtx>,
+    call_ctx: Option<&phone::CallToolCtx>,
     ci_files: &[crate::code_interpreter::InputFile],
     custom: &HashMap<String, custom::CustomToolRow>,
     call: &AuthorizedTool,
@@ -974,6 +1019,90 @@ pub async fn dispatch(
         "current_time" => Ok(time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "unknown".into())),
+
+        // Writing down what somebody on a telephone wanted. Nothing here asks anybody's
+        // permission first: a call is not unattended, so the approval path would be the
+        // waiting one, and the caller would hear nothing at all while a card sat in a
+        // browser. The ceiling inside `record` is what stands in its place.
+        n if phone::is_phone_tool(n) => {
+            let Some(cc) = call_ctx else {
+                // Not reachable by an ordinary route: a turn with no call never offers
+                // these, and a name that was not offered is refused before dispatch.
+                // Kept because a single missed thread of the call would otherwise show up
+                // as a receptionist quietly writing nothing down.
+                return Ok("error: there is no telephone call here, so there is nobody \
+                           to take a message from."
+                    .into());
+            };
+            // Finishing the call writes nothing down: there is nothing to write.
+            if n == phone::END_CALL {
+                return Ok(crate::telephony::enquiry::end_call(state, cc).await);
+            }
+            // Nor does checking a caller: it reads a list, records what it concluded on
+            // the call, and answers with the conclusion.
+            if n == phone::SCREEN_CONFLICT {
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let org = args.get("organisation").and_then(|v| v.as_str()).unwrap_or("");
+                return Ok(crate::telephony::enquiry::screen(state, ctx, cc, name, org).await);
+            }
+            // Nor do the four that work the diary: they read the opening hours, and write
+            // an appointment rather than a record of what somebody wanted.
+            if phone::needs_diary(n) {
+                let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                let opt = |k: &str| args.get(k).and_then(|v| v.as_str());
+                use crate::telephony::booking;
+                return Ok(match n {
+                    phone::CHECK_AVAILABILITY => {
+                        booking::availability(state, cc, opt("from_date"), opt("part_of_day")).await
+                    }
+                    phone::BOOK_APPOINTMENT => {
+                        booking::book(
+                            state,
+                            ctx,
+                            cc,
+                            chat_id,
+                            text("slot"),
+                            text("name"),
+                            opt("contact"),
+                            text("subject"),
+                        )
+                        .await
+                    }
+                    phone::MOVE_APPOINTMENT => {
+                        booking::move_to(
+                            state,
+                            ctx,
+                            cc,
+                            chat_id,
+                            text("reference"),
+                            text("name"),
+                            text("slot"),
+                        )
+                        .await
+                    }
+                    _ => {
+                        booking::cancel(state, ctx, cc, chat_id, text("reference"), text("name"))
+                            .await
+                    }
+                });
+            }
+            let shaped = match phone::shape(n, args) {
+                Ok(s) => s,
+                Err(refusal) => return Ok(refusal),
+            };
+            match crate::telephony::enquiry::record(state, ctx, cc, chat_id, &shaped).await {
+                Ok(_) if n == phone::TRANSFER_CALL => {
+                    Ok(crate::telephony::enquiry::transfer(state, cc).await)
+                }
+                Ok(id) => Ok(format!(
+                    "Written down for {}. Reference {}. Tell the caller it has been passed on. \
+                     Do not promise when anybody will ring back, and do not record this again.",
+                    cc.owner_name,
+                    phone::reference(id),
+                )),
+                Err(refusal) => Ok(refusal),
+            }
+        }
 
         "track_steps" => {
             // Stateless: the model passes the full checklist each call; we forward
@@ -1923,8 +2052,8 @@ mod tests {
 
     #[test]
     fn code_interpreter_is_capability_gated() {
-        let off = FeaturesConfig { code_interpreter: false, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
-        let on = FeaturesConfig { code_interpreter: true, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
+        let off = FeaturesConfig { telephony: false, code_interpreter: false, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
+        let on = FeaturesConfig { telephony: false, code_interpreter: true, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: false, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false };
         assert!(!host_enabled("code_interpreter", &off));
         assert!(host_enabled("code_interpreter", &on));
         // Ordinary tools are always host-enabled.

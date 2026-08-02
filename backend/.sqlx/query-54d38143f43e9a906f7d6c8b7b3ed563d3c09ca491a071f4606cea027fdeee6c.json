@@ -1,0 +1,107 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, owner_user_id, label, kind, url_enc, events, enabled,\n                  extract(epoch from created_at)::bigint AS \"created_epoch!\"\n             FROM notify_targets WHERE owner_user_id = $1 ORDER BY label",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "url_enc",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "url_enc"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "events",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "events"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "notify_targets",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_epoch!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "54d38143f43e9a906f7d6c8b7b3ed563d3c09ca491a071f4606cea027fdeee6c"
+}

@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE phone_numbers SET e164 = $2, owner_user_id = $3, agent_id = $4, label = COALESCE($5, label), greeting = COALESCE($6, greeting), enabled = COALESCE($7, enabled), deliver_group_chat_id = $8, transfer_e164 = $9, notice = $10, transcript_days = $11, log_days = $12, record_calls = $13, recording_days = $14, updated_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Bool",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8b6127e3518e993a937bfa6e77966c903d411200621c58be732b15fe20165ae1"
+}

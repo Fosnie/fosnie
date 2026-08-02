@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT slug, transport, url, auth_type, requires_egress, call_policy FROM mcp_servers WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "slug",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "slug"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "transport",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "transport"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "auth_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "auth_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "requires_egress",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "requires_egress"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "call_policy",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "call_policy"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8eabd064b415eda5d9ef34daeeb9637d93b833bb95e682daf8f852b515800e15"
+}

@@ -1,0 +1,229 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.phone_number_id, c.to_e164, c.from_e164, c.owner_user_id,\n                  c.agent_id, c.chat_id, c.outcome, c.conflict_check,\n                  (c.recording_path IS NOT NULL) AS \"has_recording!\",\n                  c.recording_seconds, c.recording_bytes, c.recording_failed,\n                  extract(epoch from c.notice_at)::bigint AS notice_epoch,\n                  extract(epoch from c.transcript_deleted_at)::bigint AS transcript_deleted_epoch,\n                  u.display_name AS owner_name,\n                  a.name AS \"agent_name?\",\n                  extract(epoch from c.started_at)::bigint AS \"started_epoch!\",\n                  extract(epoch from c.ended_at)::bigint AS ended_epoch,\n                  extract(epoch from (c.ended_at - c.started_at))::bigint AS seconds\n           FROM calls c\n           JOIN users u ON u.id = c.owner_user_id\n           LEFT JOIN agents a ON a.id = c.agent_id\n           WHERE ($1::uuid IS NULL OR c.phone_number_id = $1)\n             AND ($2::text IS NULL OR c.outcome = $2)\n             AND ($3::uuid IS NULL OR (c.started_at, c.id) <\n                  (SELECT b.started_at, b.id FROM calls b WHERE b.id = $3))\n           ORDER BY c.started_at DESC, c.id DESC\n           LIMIT $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "phone_number_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "phone_number_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "to_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "to_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "from_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "from_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "outcome",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "outcome"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "conflict_check",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "conflict_check"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "has_recording!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "recording_seconds",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "recording_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "recording_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "recording_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "recording_failed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "recording_failed"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "notice_epoch",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "transcript_deleted_epoch",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "owner_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "agent_name?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agents",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "started_epoch!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 18,
+        "name": "ended_epoch",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 19,
+        "name": "seconds",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      null,
+      true,
+      true,
+      false,
+      null,
+      null,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "571d3caef3eadc14c6ac1b61d0574f86a78bea7990fb24e1da5dced0da7d9f97"
+}

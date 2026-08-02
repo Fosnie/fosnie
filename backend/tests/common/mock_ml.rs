@@ -49,12 +49,16 @@ pub struct MlCalls {
     pub model_info: AtomicUsize,
     pub memory_search: AtomicUsize,
     pub chat_step: AtomicUsize,
+    pub transcribe: AtomicUsize,
+    pub speech: AtomicUsize,
     /// `/retrieve` calls currently being served. A search whose caller went away
     /// takes its handler down with it, so this returning to zero is how a test sees
     /// that an abort really reached the upstream request rather than merely
     /// stopping someone from waiting on it.
     pub retrieve_active: AtomicUsize,
     pub other: AtomicUsize,
+    /// The scripted tool call has been asked for, so later steps answer normally.
+    pub tool_call_made: std::sync::atomic::AtomicBool,
     /// The tool names offered to the model on each `/generate`, in call order.
     /// Which tools a turn put in front of the model is not visible in any frame it
     /// emits, and it is exactly what some gating rules are about.
@@ -64,6 +68,12 @@ pub struct MlCalls {
     /// Every `/generate` request body, in call order — the composed system prompt
     /// travels in its messages.
     pub generate_bodies: Mutex<Vec<Value>>,
+    /// Every `/transcribe` body, in call order. Raw audio, so a test can read the
+    /// header off it and see what rate and shape the audio actually arrived in.
+    pub transcribe_audio: Mutex<Vec<Vec<u8>>>,
+    /// Every `/v1/audio/speech` request body, in call order. Carries which format the
+    /// caller asked to be synthesised into.
+    pub speech_bodies: Mutex<Vec<Value>>,
 }
 
 /// One captured `/retrieve` call: what was searched for, and within what scope.
@@ -92,6 +102,60 @@ impl MlCalls {
     }
     pub fn generates(&self) -> usize {
         self.generate.load(Ordering::SeqCst)
+    }
+    pub fn transcribes(&self) -> usize {
+        self.transcribe.load(Ordering::SeqCst)
+    }
+    pub fn speeches(&self) -> usize {
+        self.speech.load(Ordering::SeqCst)
+    }
+    /// The audio handed to each `/transcribe`, in call order.
+    pub fn transcribed_audio(&self) -> Vec<Vec<u8>> {
+        self.transcribe_audio.lock().unwrap().clone()
+    }
+    /// Every tool result the model was shown, in the order the turn put them in front of
+    /// it.
+    ///
+    /// Tool results are not rows in any table: they live in the conversation the turn
+    /// builds and are handed to the model on the next step. So what a tool "returned" is
+    /// only observable here, which is exactly where a test should read it from.
+    pub fn tool_replies(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for body in self.generate_bodies.lock().unwrap().iter() {
+            let Some(messages) = body.get("messages").and_then(|m| m.as_array()) else { continue };
+            for m in messages {
+                if m.get("role").and_then(|r| r.as_str()) == Some("tool") {
+                    if let Some(c) = m.get("content").and_then(|c| c.as_str()) {
+                        if !out.contains(&c.to_string()) {
+                            out.push(c.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The words handed to each synthesis, in call order.
+    ///
+    /// What was said aloud is not visible in any frame or any row, and there are things
+    /// a line must say before it does anything else, so this is how a test reads them.
+    pub fn spoken_texts(&self) -> Vec<String> {
+        self.speech_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| b["input"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+    /// The `response_format` asked for on each synthesis, in call order.
+    pub fn speech_formats(&self) -> Vec<String> {
+        self.speech_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| b["response_format"].as_str().unwrap_or_default().to_string())
+            .collect()
     }
     pub fn retrieves_in_flight(&self) -> usize {
         self.retrieve_active.load(Ordering::SeqCst)
@@ -160,6 +224,10 @@ pub struct MlScript {
     /// reliably in the "still running" state and act on it, instead of racing a
     /// sleep against a search that may already have finished.
     pub retrieve_latch: Option<Arc<Notify>>,
+    /// What `/transcribe` says it heard.
+    pub transcript: String,
+    /// How many samples of reply audio `/v1/audio/speech` synthesises per clause.
+    pub speech_samples: usize,
 }
 
 impl Default for MlScript {
@@ -171,6 +239,9 @@ impl Default for MlScript {
             generate_tokens: vec!["Answer.".into()],
             generate_tool_call: None,
             retrieve_latch: None,
+            transcript: "How much rain fell?".into(),
+            // 2400 samples at 24 kHz is 100 ms, which is five telephone frames.
+            speech_samples: 2400,
         }
     }
 }
@@ -203,6 +274,11 @@ pub async fn spawn(script: MlScript) -> MockMl {
         .route("/embed", post(embed))
         .route("/model-info", get(model_info))
         .route("/memory/search", post(memory_search))
+        // Speech, in and out. Recognition goes through the platform's own service;
+        // synthesis is reached directly, which is why one is a bare path and the other
+        // looks like an engine's.
+        .route("/transcribe", post(transcribe))
+        .route("/v1/audio/speech", post(speech))
         .fallback(fallback)
         .with_state(inner);
 
@@ -218,6 +294,51 @@ pub async fn spawn(script: MlScript) -> MockMl {
 fn ndjson(lines: Vec<Value>) -> Response {
     let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
     ([(axum::http::header::CONTENT_TYPE, "application/x-ndjson")], body).into_response()
+}
+
+/// Recognition. The body is raw audio, kept whole so a test can read its header and
+/// see the rate and shape the audio actually arrived in.
+async fn transcribe(State(s): State<Inner>, body: axum::body::Bytes) -> Response {
+    s.calls.transcribe.fetch_add(1, Ordering::SeqCst);
+    s.calls.transcribe_audio.lock().unwrap().push(body.to_vec());
+    Json(json!({ "text": s.script.transcript })).into_response()
+}
+
+/// Synthesis, in whatever the caller asked for.
+///
+/// Raw samples are returned in several chunks, and the first is deliberately an **odd**
+/// number of bytes. A real engine's chunks fall wherever the network puts them, so one
+/// can end half way through a sample; anything that reads them as whole samples from the
+/// wrong byte turns the rest of the call into static, and this is what makes that
+/// happen on every run rather than occasionally in production.
+async fn speech(State(s): State<Inner>, Json(body): Json<Value>) -> Response {
+    use std::f32::consts::PI;
+    s.calls.speech.fetch_add(1, Ordering::SeqCst);
+    let format = body["response_format"].as_str().unwrap_or_default().to_string();
+    s.calls.speech_bodies.lock().unwrap().push(body);
+    if format != "pcm" {
+        // Only raw samples are scripted. Anything else would need a real encoder, and a
+        // silent wrong answer here would look like a bug in the code under test.
+        return (axum::http::StatusCode::BAD_REQUEST, format!("mock synthesises pcm, not {format}"))
+            .into_response();
+    }
+    let bytes: Vec<u8> = (0..s.script.speech_samples)
+        .flat_map(|n| {
+            let v = (8000.0 * (2.0 * PI * 440.0 * n as f32 / 24_000.0).sin()) as i16;
+            v.to_le_bytes()
+        })
+        .collect();
+    // An odd first chunk, then the rest.
+    let split = 961.min(bytes.len());
+    let stream = futures_util::stream::iter(vec![
+        Ok::<_, std::io::Error>(bytes[..split].to_vec()),
+        Ok(bytes[split..].to_vec()),
+    ]);
+    (
+        [(axum::http::header::CONTENT_TYPE, "audio/pcm")],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response()
 }
 
 async fn retrieve(State(s): State<Inner>, Json(body): Json<Value>) -> Response {
@@ -265,10 +386,18 @@ fn offered_names(body: &Value) -> Vec<String> {
 /// The tool-decision step: a non-streamed round where the model either calls tools
 /// or declines to. This is where a turn's tool set is actually offered.
 async fn chat_step(State(s): State<Inner>, Json(body): Json<Value>) -> Json<Value> {
-    let nth = s.calls.chat_step.fetch_add(1, Ordering::SeqCst);
-    s.calls.offered_tools.lock().unwrap().push(offered_names(&body));
-    if nth == 0 {
-        if let Some((name, args)) = &s.script.generate_tool_call {
+    s.calls.chat_step.fetch_add(1, Ordering::SeqCst);
+    let offered = offered_names(&body);
+    s.calls.offered_tools.lock().unwrap().push(offered.clone());
+    // Asked for on the first step that actually puts the tool in front of the model,
+    // rather than on the first step of any kind. A turn reaches this route more than
+    // once, and the earlier visits are the scaffolding decisions a turn makes before it
+    // has a toolset at all: counting those would have the scripted call land on a step
+    // that was never offered the tool, which is indistinguishable from a model declining
+    // to use it.
+    if let Some((name, args)) = &s.script.generate_tool_call {
+        let is_offered = offered.iter().any(|t| t == name);
+        if is_offered && !s.calls.tool_call_made.swap(true, Ordering::SeqCst) {
             return Json(json!({
                 "content": "",
                 "tool_calls": [{ "id": "call_1", "name": name, "arguments": args }],

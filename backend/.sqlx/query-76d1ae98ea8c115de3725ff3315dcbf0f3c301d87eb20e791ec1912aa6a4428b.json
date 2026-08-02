@@ -1,0 +1,145 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.id, a.starts_at, a.ends_at, a.status, a.reference, a.caller_name,\n                  a.caller_e164, a.contact, a.subject, a.chat_id,\n                  (SELECT d.timezone FROM diaries d WHERE d.owner_user_id = a.owner_user_id)\n                        AS timezone\n             FROM appointments a\n            WHERE a.owner_user_id = $1\n              AND (NOT $2::bool OR a.status = 'booked')\n            ORDER BY a.starts_at\n            LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "starts_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "starts_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "ends_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "ends_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "reference",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "reference"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "caller_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "caller_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "caller_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "caller_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "contact",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "contact"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "subject",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "subject"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "appointments",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "timezone",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "76d1ae98ea8c115de3725ff3315dcbf0f3c301d87eb20e791ec1912aa6a4428b"
+}

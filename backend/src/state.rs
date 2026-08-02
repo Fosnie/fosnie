@@ -263,6 +263,10 @@ pub struct AppState {
     /// Live-voice sessions, keyed by socket id.
     pub voice: VoiceSessions,
     pub dictation: DictationSessions,
+    /// Telephone calls in progress, keyed by the carrier's identifier for each. Also
+    /// the ceiling on how many run at once, which is held here rather than in the cache
+    /// so that it keeps holding when the cache is unreachable.
+    pub telephony: crate::telephony::TelephonyCalls,
     /// Live MCP connections (one per approved server), keyed by slug (FEATURE B1).
     pub mcp: crate::mcp::McpManager,
     /// Parsed at-rest DM encryption key (None = encryption disabled).
@@ -424,6 +428,7 @@ impl AppStateBuilder {
             desktop_calls: DesktopCalls::default(),
             voice: VoiceSessions::default(),
             dictation: DictationSessions::default(),
+            telephony: crate::telephony::TelephonyCalls::default(),
             mcp: crate::mcp::McpManager::new(),
             message_key,
             audit_tx,

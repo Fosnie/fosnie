@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET chat_id = NULL, recording_path = NULL, recording_bytes = NULL, recording_seconds = NULL, transcript_deleted_at = COALESCE(transcript_deleted_at, now()) WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "db91fc9087560b74da227419a97271dfcd3f835ca2fb804d84b66c3dcdf0a536"
+}

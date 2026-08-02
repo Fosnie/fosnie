@@ -45,6 +45,43 @@ groups:
         annotations:
           summary: "LLM time-to-first-token p95 >5s (10m) — inference saturated?"
 
+      # --- Voice + telephony ----------------------------------------------------
+      # What the CALLER heard, not what was handed to the line: the two differ by the
+      # pacing, the socket and whatever the carrier had buffered, and only the first is a
+      # promise anybody made.
+      - alert: PaiVoiceReplySlow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(voice_reply_heard_seconds_bucket{transport="phone"}[10m]))) > 0.8
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Callers wait >0.8s p95 for a reply to start (10m)"
+      # A turn that had to be ended by the silence timer because the turn detector never
+      # agreed the speaker had finished. The fallback worked, which is why this is a warning
+      # and not an outage, but a detector that has stopped agreeing is a fault.
+      - alert: PaiVoiceTurnForced
+        expr: increase(voice_turn_forced_total[15m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Turn detector is not agreeing that speakers have finished — turns are ending on silence"
+      - alert: PaiVoiceTurnDetectErrors
+        expr: increase(voice_turn_detect_total{outcome="error"}[10m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Turn-detection sidecar is refusing requests — sessions fall back to the silence threshold"
+      # Not a failure: the carrier does not report when it has played our audio, so the
+      # figures for what the caller actually heard are absent and the reply-latency alert
+      # above has nothing to fire on.
+      - alert: PaiTelephonyMarksUnsupported
+        expr: increase(telephony_mark_timeout_total[1h]) > 0
+        for: 15m
+        labels: { severity: info }
+        annotations:
+          summary: "Carrier does not confirm playback — caller-side reply latency is unmeasurable"
+
       # --- Durable task queue ---------------------------------------------------
       - alert: PaiTaskDeadLetter
         expr: task_queue_depth{status="dead_letter"} > 0

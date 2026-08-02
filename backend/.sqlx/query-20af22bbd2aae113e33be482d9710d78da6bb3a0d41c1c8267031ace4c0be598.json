@@ -1,0 +1,136 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT e164, owner_user_id, agent_id, deliver_group_chat_id, transfer_e164, notice, transcript_days, log_days, record_calls, recording_days FROM phone_numbers WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "e164"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "deliver_group_chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "deliver_group_chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "transfer_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "transfer_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "notice",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "notice"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "transcript_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "transcript_days"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "log_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "log_days"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "record_calls",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "record_calls"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "recording_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "recording_days"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "20af22bbd2aae113e33be482d9710d78da6bb3a0d41c1c8267031ace4c0be598"
+}

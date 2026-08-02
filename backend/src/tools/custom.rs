@@ -53,6 +53,11 @@ pub struct CustomToolRow {
     pub auth_value_enc: Option<String>,
     pub requires_egress: bool,
     pub side_effecting: bool,
+    /// May this tool be used while somebody is on the telephone, where nobody is watching
+    /// to approve it? Off by default: a caller on a line is an anonymous member of the
+    /// public, and letting one drive a change outside this deployment is a decision an
+    /// operator makes deliberately, per tool.
+    pub allow_on_call: bool,
     pub version: i32,
     pub timeout_secs: Option<i32>,
 }
@@ -85,7 +90,8 @@ pub async fn load_enabled_custom(
     }
     let rows = sqlx::query!(
         r#"SELECT id, name, display_name, description, kind, params_schema, config,
-                  auth_value_enc, requires_egress, side_effecting, version, timeout_secs
+                  auth_value_enc, requires_egress, side_effecting, allow_on_call,
+                  version, timeout_secs
              FROM custom_tools
             WHERE enabled AND approved_version = version AND name = ANY($1)
             ORDER BY name"#,
@@ -109,6 +115,7 @@ pub async fn load_enabled_custom(
             auth_value_enc: r.auth_value_enc,
             requires_egress: r.requires_egress,
             side_effecting: r.side_effecting,
+            allow_on_call: r.allow_on_call,
             version: r.version,
             timeout_secs: r.timeout_secs,
         };
@@ -123,7 +130,8 @@ pub async fn load_enabled_custom(
 pub async fn load_by_id(pg: &sqlx::PgPool, id: Uuid) -> Option<CustomToolRow> {
     let r = sqlx::query!(
         r#"SELECT id, name, display_name, description, kind, params_schema, config,
-                  auth_value_enc, requires_egress, side_effecting, version, timeout_secs
+                  auth_value_enc, requires_egress, side_effecting, allow_on_call,
+                  version, timeout_secs
              FROM custom_tools WHERE id = $1"#,
         id
     )
@@ -142,6 +150,7 @@ pub async fn load_by_id(pg: &sqlx::PgPool, id: Uuid) -> Option<CustomToolRow> {
         auth_value_enc: r.auth_value_enc,
         requires_egress: r.requires_egress,
         side_effecting: r.side_effecting,
+        allow_on_call: r.allow_on_call,
         version: r.version,
         timeout_secs: r.timeout_secs,
     })
@@ -520,6 +529,7 @@ mod tests {
             auth_value_enc: None,
             requires_egress: true,
             side_effecting: false,
+            allow_on_call: false,
             version: 1,
             timeout_secs: None,
         };

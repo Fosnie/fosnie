@@ -1,0 +1,120 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.id, p.owner_user_id, p.agent_id, p.enabled, p.transfer_e164,\n                  p.greeting, p.notice, p.record_calls,\n                  (a.archived_at IS NOT NULL) AS \"agent_archived!\"\n           FROM phone_numbers p\n           JOIN agents a ON a.id = p.agent_id\n           WHERE p.provider = $1 AND p.e164 = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "transfer_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "transfer_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "greeting",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "greeting"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "notice",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "notice"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "record_calls",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "record_calls"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "agent_archived!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "473277b7ff712ada604e483f2f46fd3d85e6e262eca5c015c428d1ced2852471"
+}

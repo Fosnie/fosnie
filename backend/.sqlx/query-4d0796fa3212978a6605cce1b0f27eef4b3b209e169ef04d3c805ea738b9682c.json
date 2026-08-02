@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO calls\n             (id, phone_number_id, provider, provider_call_id, to_e164, from_e164,\n              owner_user_id, agent_id)\n           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n           ON CONFLICT (provider, provider_call_id)\n             DO UPDATE SET started_at = calls.started_at\n           RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4d0796fa3212978a6605cce1b0f27eef4b3b209e169ef04d3c805ea738b9682c"
+}

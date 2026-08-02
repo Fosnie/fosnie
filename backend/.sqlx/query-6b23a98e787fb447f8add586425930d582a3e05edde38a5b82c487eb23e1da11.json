@@ -26,7 +26,9 @@
                 "audit_checkpoint",
                 "mcp_health",
                 "reindex_embeddings",
-                "api_chat_cleanup"
+                "api_chat_cleanup",
+                "telephony_retention",
+                "notify_deliver"
               ]
             }
           }

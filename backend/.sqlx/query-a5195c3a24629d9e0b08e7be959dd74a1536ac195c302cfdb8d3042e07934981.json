@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET recording_path = NULL, recording_bytes = NULL, recording_seconds = NULL WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a5195c3a24629d9e0b08e7be959dd74a1536ac195c302cfdb8d3042e07934981"
+}

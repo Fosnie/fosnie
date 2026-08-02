@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET outcome = 'dropped', ended_at = now() WHERE ended_at IS NULL AND started_at < now() - interval '15 minutes'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "010b53e6f2ca062e59d5980fa9e7122b4ae1b7aa2be465ac88bec29a01146b4a"
+}

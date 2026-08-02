@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kind, urgency, details FROM enquiries WHERE call_id = $1 AND kind = 'lead'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "urgency",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "urgency"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "details",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "details"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "26c8ede39c07f0719d786309912905877a43e9498ddb09e01de6a378a52c096c"
+}

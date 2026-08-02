@@ -1,0 +1,183 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT e.id, e.kind, e.urgency, e.call_id, e.chat_id, e.phone_number_id,\n                  e.owner_user_id,\n                  (e.handled_at IS NOT NULL) AS \"handled!\",\n                  COALESCE(c.to_e164, '') AS \"to_e164!\",\n                  extract(epoch from e.created_at)::bigint AS \"created_epoch!\",\n                  extract(epoch from e.handled_at)::bigint AS handled_epoch,\n                  -- The body class. One predicate, per row, so a reader who owns one of\n                  -- several lines sees their own words and not anybody else's in the\n                  -- same page, and the withheld ones are never read out of the table.\n                  CASE WHEN $1::bool OR e.owner_user_id = $2 THEN e.subject     END AS subject,\n                  CASE WHEN $1::bool OR e.owner_user_id = $2 THEN e.body        END AS body,\n                  CASE WHEN $1::bool OR e.owner_user_id = $2 THEN e.caller_e164 END AS caller_e164,\n                  CASE WHEN $1::bool OR e.owner_user_id = $2 THEN e.caller_name END AS caller_name,\n                  CASE WHEN $1::bool OR e.owner_user_id = $2 THEN e.contact     END AS contact,\n                  CASE WHEN $1::bool OR e.owner_user_id = $2 THEN e.for_whom    END AS for_whom,\n                  CASE WHEN $1::bool OR e.owner_user_id = $2 THEN e.details     END AS details\n             FROM enquiries e\n             LEFT JOIN calls c ON c.id = e.call_id\n            WHERE (NOT $3::bool OR e.owner_user_id = $2)\n              AND ($4::bool IS NOT TRUE OR e.handled_at IS NULL)\n              AND ($5::uuid IS NULL OR c.phone_number_id = $5)\n              AND ($6::uuid IS NULL OR (e.created_at, e.id) <\n                   (SELECT b.created_at, b.id FROM enquiries b WHERE b.id = $6))\n            ORDER BY e.created_at DESC, e.id DESC\n            LIMIT $7",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "urgency",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "urgency"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "call_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "call_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "phone_number_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "phone_number_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "handled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "to_e164!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_epoch!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "handled_epoch",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "subject",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "body",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "caller_e164",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "caller_name",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "contact",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
+        "name": "for_whom",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "details",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Uuid",
+        "Bool",
+        "Bool",
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "cdafe1814506881625b21ff9383001f23b3ec172fd8f0ad1a9f65382bddb8de1"
+}

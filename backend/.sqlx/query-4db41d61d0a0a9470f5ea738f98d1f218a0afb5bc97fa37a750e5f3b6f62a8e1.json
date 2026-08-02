@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET appointment_attempts = appointment_attempts + 1 WHERE id = $1 RETURNING appointment_attempts",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "appointment_attempts",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "appointment_attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4db41d61d0a0a9470f5ea738f98d1f218a0afb5bc97fa37a750e5f3b6f62a8e1"
+}

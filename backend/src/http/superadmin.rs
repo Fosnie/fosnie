@@ -128,6 +128,15 @@ const KNOBS: &[Knob] = &[
     Knob { key: "voice.aec_required", label: "Require echo cancellation", desc: "Live voice: require browser acoustic echo cancellation before honouring barge-in (so the assistant's own audio can't self-interrupt). Off → barge-in falls back to push-to-talk release.", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
     Knob { key: "voice.turn_detection", label: "Semantic turn detection", desc: "Live voice: consult the turn-detection sidecar (Silero VAD + Smart-Turn) so a mid-thought pause holds instead of ending the turn. Off (or sidecar absent) → the silence threshold alone decides.", value_type: ConfigValueType::Bool, default: "false", min: None, max: None },
     Knob { key: "voice.min_speech_ms", label: "Voice minimum speech (ms)", desc: "Live voice: minimum speech in an utterance before it can end a turn. Below this it is treated as a blip and discarded WITHOUT transcription, so a near-silent clip can't be hallucinated into text. Low enough to keep short words.", value_type: ConfigValueType::Int, default: "200", min: Some(0), max: Some(2000) },
+    Knob { key: "voice.speech_rms", label: "Speech loudness gate", desc: "Live voice: normalised loudness (0–1) at or above which a frame of audio counts as speech at all. Below it, audio is silence for the purposes of ending a turn. Raise it if background noise keeps a turn from ending; lower it if quiet speakers are cut off. 0–1; the range is not enforced on write (a fractional knob) — values outside it are clamped when the setting is read.", value_type: ConfigValueType::Float, default: "0.012", min: None, max: None },
+    Knob { key: "voice.barge_rms", label: "Talk-over loudness gate", desc: "Live voice: normalised loudness at or above which a frame counts as the speaker talking over the reply. Deliberately higher than the speech gate, because the assistant's own audio coming back into an open microphone is quieter than direct speech and must never interrupt itself. Both this and the speech gate were set for a browser microphone; on a telephone line they are placeholders awaiting measurement, and the loudness distributions published alongside them are what to set them from. 0–1; clamped on read.", value_type: ConfigValueType::Float, default: "0.035", min: None, max: None },
+    Knob { key: "voice.barge_min_ms", label: "Talk-over before interrupting (ms)", desc: "Live voice: how much continuous talk-over interrupts the reply. A quiet frame resets the run, so a cough or a noise spike never reaches it. Lower = quicker to yield, at the risk of stopping mid-sentence on a noise burst.", value_type: ConfigValueType::Int, default: "320", min: Some(100), max: Some(2000) },
+    Knob { key: "voice.phone.silence_threshold_ms", label: "Telephone: turn silence (ms)", desc: "As the shared turn-silence dial, but for calls arriving on a telephone line. Set only if a line should differ from the browser; left unset, a call follows the shared value. Shorter suits a telephone, where a long pause with nothing on screen reads as a dropped call.", value_type: ConfigValueType::Int, default: "900", min: Some(200), max: Some(2000) },
+    Knob { key: "voice.phone.min_speech_ms", label: "Telephone: minimum speech (ms)", desc: "As the shared minimum-speech dial, but for a telephone line, which carries continuous background noise that a microphone in a quiet room does not. Left unset, a call follows the shared value.", value_type: ConfigValueType::Int, default: "250", min: Some(0), max: Some(2000) },
+    Knob { key: "voice.phone.turn_detection", label: "Telephone: semantic turn detection", desc: "As the shared semantic-turn-detection switch, but for a telephone line, where it matters more: without a screen there is nothing to tell a caller that a pause is being waited out. Needs the sidecar reachable; if it stops answering, calls fall back to the silence threshold rather than waiting for ever.", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
+    Knob { key: "voice.phone.speech_rms", label: "Telephone: speech loudness gate", desc: "As the shared speech gate, but for a telephone line. Left unset, a call follows the shared value. 0–1; clamped on read.", value_type: ConfigValueType::Float, default: "0.012", min: None, max: None },
+    Knob { key: "voice.phone.barge_rms", label: "Telephone: talk-over loudness gate", desc: "As the shared talk-over gate, but for a telephone line, which is narrowband and level-planned quite differently from a browser microphone. This is the dial to set from the published loudness distributions. Left unset, a call follows the shared value. 0–1; clamped on read.", value_type: ConfigValueType::Float, default: "0.035", min: None, max: None },
+    Knob { key: "voice.phone.barge_min_ms", label: "Telephone: talk-over before interrupting (ms)", desc: "As the shared talk-over duration, but for a telephone line. Shorter by default, because what a caller hears is this plus whatever audio is still queued between here and their handset.", value_type: ConfigValueType::Int, default: "240", min: Some(100), max: Some(2000) },
     Knob { key: "voice.spec_enabled", label: "Speculative library search", desc: "Live voice: start searching the knowledge base from the partial transcript, while the speaker is still talking, so the result is ready when their turn ends and its cost falls outside the reply budget. At the end of the turn the speculative query is compared with what was actually said: a match is used, anything else is discarded and the turn searches exactly as it would have. Needs a streaming speech-to-text engine (with batch or manual-commit transcription there are no partial transcripts to speculate on, and this simply never fires).", value_type: ConfigValueType::Bool, default: "true", min: None, max: None },
     Knob { key: "voice.spec_min_words", label: "Speculative search: word floor", desc: "Live voice: minimum words in the settled part of the transcript before a speculative search is worth making — stops a search on 'so, um, about the'.", value_type: ConfigValueType::Int, default: "5", min: Some(2), max: Some(20) },
     Knob { key: "voice.spec_min_new_words", label: "Speculative search: new-word floor", desc: "Live voice: how many words the transcript must have grown by since the last speculative search before another is made. Higher = fewer, better-spaced searches.", value_type: ConfigValueType::Int, default: "4", min: Some(1), max: Some(20) },
@@ -300,6 +309,51 @@ mod knob_tests {
         let dc = by_key("research.deepen_concurrency").unwrap();
         assert_eq!(dc.value_type, ConfigValueType::Int);
         assert_eq!((dc.min, dc.max), (Some(1), Some(16)));
+    }
+
+    /// Every dial a telephone line can be tuned with is offered, and everything offered
+    /// is a dial that is really consulted.
+    ///
+    /// The two lists are written in different files and neither can see the other, so
+    /// without this a setting an operator can change and that changes nothing is one
+    /// rename away.
+    #[test]
+    fn every_telephone_dial_is_offered_and_every_offer_is_a_dial() {
+        for dial in crate::voice::VoiceKnobs::PHONE_DIALS {
+            let shared = format!("voice.{dial}");
+            let line = format!("voice.phone.{dial}");
+            assert!(
+                KNOBS.iter().any(|k| k.key == shared),
+                "{shared} is consulted but cannot be set"
+            );
+            assert!(
+                KNOBS.iter().any(|k| k.key == line),
+                "{line} is consulted but cannot be set"
+            );
+        }
+        for knob in KNOBS.iter() {
+            if let Some(dial) = knob.key.strip_prefix("voice.phone.") {
+                assert!(
+                    crate::voice::VoiceKnobs::PHONE_DIALS.contains(&dial),
+                    "{} can be set but nothing reads it",
+                    knob.key
+                );
+            }
+        }
+    }
+
+    /// A dial and its telephone twin must agree about what kind of value they hold, or
+    /// one of the two is rejected on write for a reason nobody can see from the panel.
+    #[test]
+    fn a_telephone_dial_holds_the_same_kind_of_value_as_the_shared_one() {
+        for dial in crate::voice::VoiceKnobs::PHONE_DIALS {
+            let shared = KNOBS.iter().find(|k| k.key == format!("voice.{dial}")).expect("shared");
+            let line =
+                KNOBS.iter().find(|k| k.key == format!("voice.phone.{dial}")).expect("line");
+            assert_eq!(shared.value_type, line.value_type, "{dial}");
+            assert_eq!(shared.min, line.min, "{dial}");
+            assert_eq!(shared.max, line.max, "{dial}");
+        }
     }
 
     #[test]
@@ -623,6 +677,39 @@ pub async fn purge_user(
             OR chat_id IN (SELECT id FROM chats WHERE owner_user_id = $1) \
             OR project_id IN (SELECT id FROM projects WHERE owner_user_id = $1) \
             OR team_id IN (SELECT id FROM projects WHERE owner_user_id = $1)"),
+        // enquiries → calls/chats/agents/users. Before `calls` below, whose rows these
+        // point at. What one erasure must not take is somebody else's: a record taken on
+        // another person's line, which this person happened to mark as dealt with, keeps
+        // its own owner and simply loses the name of who dealt with it.
+        ("enquiries", "DELETE FROM enquiries WHERE owner_user_id = $1"),
+        // conflict_names → users only, so no ordering is forced. Spelled out anyway, for
+        // the same reason as the rest: this is a list of other people's names, held by
+        // this person, and an erasure that left it behind would leave exactly the sort of
+        // record the erasure exists to remove.
+        ("conflict_names", "DELETE FROM conflict_names WHERE owner_user_id = $1"),
+        // appointments → calls/chats/users. Before `calls` below, whose rows they point at.
+        // An appointment made on this person's line belongs to them; one they merely booked
+        // from the interface for somebody else's practice keeps its own owner and only
+        // loses the note of who entered it.
+        ("appointments", "DELETE FROM appointments WHERE owner_user_id = $1"),
+        // diaries → users, and the opening hours and closed days cascade from it. Spelled
+        // out rather than left to the cascade, like everything else in this list.
+        ("diaries", "DELETE FROM diaries WHERE owner_user_id = $1"),
+        // calls → chats/agents/users: the conversation reference clears itself, but the
+        // owner reference does not, and a call is this person's record of who rang them.
+        // Before `chats` so the transcript and the call that produced it go together.
+        ("calls", "DELETE FROM calls WHERE owner_user_id = $1"),
+        // phone_numbers → agents/users, neither cascading. This has to come before
+        // `agents` below: a line pointing at an agent created by this person would
+        // otherwise make the agents delete fail its foreign key, and the whole erasure
+        // with it. Cascading from `agents` instead was rejected — erasing one person
+        // would then silently delete somebody else's telephone line.
+        ("phone_numbers", "DELETE FROM phone_numbers WHERE owner_user_id = $1 \
+            OR agent_id IN (SELECT id FROM agents WHERE created_by = $1)"),
+        // notify_targets → users, and the reference does not cascade. Where somebody was
+        // told about their calls is a fact about them, so it goes with them; the queued
+        // deliveries that point at it are payload rather than rows and simply find nothing.
+        ("notify_targets", "DELETE FROM notify_targets WHERE owner_user_id = $1"),
         ("message_reactions", "DELETE FROM message_reactions WHERE user_id = $1"),
         ("group_chat_messages_authored", "DELETE FROM group_chat_messages WHERE sender_user_id = $1"),
         ("group_chat_members", "DELETE FROM group_chat_members WHERE user_id = $1"),

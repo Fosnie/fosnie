@@ -114,6 +114,43 @@ fn the_server_writes_exactly_the_snapshotted_bytes() {
             ServerFrame::VoiceAudio { audio_base64: "AAAA".into(), mime: "audio/wav".into() }
                 .to_json(),
         ),
+        // The live-voice set. These are the frames the voice session puts on the
+        // socket, so they are pinned on the side that writes them: the session
+        // emits through a transport abstraction now, and a sink that reworded a
+        // tag or dropped a field would otherwise fail only in the browser.
+        (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/voice_state.json"),
+            ServerFrame::VoiceLiveState { state: "listening".into(), retrieving: false }.to_json(),
+        ),
+        (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/voice_state_retrieving.json"),
+            ServerFrame::VoiceLiveState { state: "listening".into(), retrieving: true }.to_json(),
+        ),
+        (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/voice_partial.json"),
+            ServerFrame::VoicePartial { text: "how much rain".into() }.to_json(),
+        ),
+        (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/voice_final.json"),
+            ServerFrame::VoiceFinal { text: "how much rain fell?".into() }.to_json(),
+        ),
+        (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/voice_tts_chunk.json"),
+            ServerFrame::VoiceTtsChunk {
+                audio_base64: "AAEC".into(),
+                mime: "audio/mpeg".into(),
+                seq: 7,
+            }
+            .to_json(),
+        ),
+        (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/voice_tts_end.json"),
+            ServerFrame::VoiceTtsEnd.to_json(),
+        ),
+        (
+            include_str!("../../crates/fosnie-protocol/tests/fixtures/voice_error.json"),
+            ServerFrame::VoiceError { message: "the assistant timed out".into() }.to_json(),
+        ),
     ];
 
     for (expected, actual) in cases {

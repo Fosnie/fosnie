@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT call_policy FROM mcp_servers WHERE slug = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "call_policy",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mcp_servers",
+            "name": "call_policy"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "99bae333d12c973d8cedde4e0895ad283bc31330353465dc8752d5f19868891d"
+}

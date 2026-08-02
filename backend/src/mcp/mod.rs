@@ -557,6 +557,22 @@ pub async fn is_side_effecting(state: &AppState, slug: &str, tool: &str) -> bool
         .unwrap_or(true)
 }
 
+/// May this server's side-effecting tools be used while somebody is on the telephone?
+///
+/// Refused unless the row says otherwise, and refused outright for a server that cannot be
+/// read: on a call there is nobody to approve anything, so "we could not tell" has to mean
+/// no. Per server rather than per tool because a server is what an operator wires up and
+/// decides to trust for that purpose.
+pub async fn allowed_on_call(state: &AppState, slug: &str) -> bool {
+    sqlx::query_scalar!("SELECT call_policy FROM mcp_servers WHERE slug = $1", slug)
+        .fetch_optional(&state.pg)
+        .await
+        .ok()
+        .flatten()
+        .map(|p| crate::telephony::policy::allowed_on_call(&p))
+        .unwrap_or(false)
+}
+
 /// Dispatch a namespaced MCP tool call: authorise (one seam) → call via the manager →
 /// normalise → audit. Errors come back as `"error: …"` so the model can recover, exactly
 /// like native tools. `grants` are the calling agent's, threaded from the turn. `durable`
