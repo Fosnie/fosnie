@@ -1,0 +1,184 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kind, urgency, subject, body, caller_e164, caller_name, contact, for_whom,\n                  call_id, chat_id, phone_number_id, owner_user_id, agent_id, details\n             FROM enquiries WHERE call_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "urgency",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "urgency"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "subject",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "subject"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "body",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "caller_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "caller_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "caller_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "caller_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "contact",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "contact"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "for_whom",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "for_whom"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "call_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "call_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "phone_number_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "phone_number_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "details",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "enquiries",
+            "name": "details"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "a9b8b4b75aa5546248b13ea70a94175c61f8faadbf0104f8580c0ce7ebfd1a54"
+}

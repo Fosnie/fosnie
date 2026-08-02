@@ -71,7 +71,26 @@ pub async fn run(
 
     // Background runtime (second tokio runtime on its own thread).
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let bg = scheduler::spawn(state.clone(), boot.scheduler.clone(), shutdown_rx);
+    let bg = scheduler::spawn(state.clone(), boot.scheduler.clone(), shutdown_rx.clone());
+
+    // A line answered by the practice's own telephone system listens on a port of its
+    // own. Bound only where an operator said to bind it: a deployment answering through a
+    // carrier, which is every deployment until somebody says otherwise, opens nothing.
+    {
+        let cfg = crate::telephony::TelephonyResolved::load(
+            &state.pg,
+            state.message_key,
+            &boot.telephony,
+            &boot.server.public_url,
+        )
+        .await;
+        let listen = cfg.audiosocket_listen.trim().to_string();
+        if !listen.is_empty() && crate::features::enabled_for_user(&state, None, "telephony").await {
+            let st = state.clone();
+            let rx = shutdown_rx.clone();
+            tokio::spawn(async move { crate::telephony::audiosocket::listen(st, listen, rx).await });
+        }
+    }
 
     // Auth wiring. The Keycloak validation layer uses lazy discovery (does not
     // fail at boot), so break-glass + Bearer validation remain available even

@@ -71,6 +71,9 @@ pub struct CustomToolOut {
     pub config: serde_json::Value,
     pub requires_egress: bool,
     pub side_effecting: bool,
+    /// May this tool be used while a caller is on the telephone, where nobody is watching
+    /// to approve it? Off by default.
+    pub allow_on_call: bool,
     pub enabled: bool,
     pub version: i32,
     pub approved_version: Option<i32>,
@@ -91,8 +94,8 @@ pub struct Catalog {
 async fn list_custom(pg: &sqlx::PgPool) -> Vec<CustomToolOut> {
     let rows = sqlx::query!(
         r#"SELECT id, name, display_name, description, kind, params_schema, config,
-                  auth_value_enc, requires_egress, side_effecting, enabled, version,
-                  approved_version, timeout_secs
+                  auth_value_enc, requires_egress, side_effecting, allow_on_call, enabled,
+                  version, approved_version, timeout_secs
              FROM custom_tools ORDER BY name"#
     )
     .fetch_all(pg)
@@ -110,6 +113,7 @@ async fn list_custom(pg: &sqlx::PgPool) -> Vec<CustomToolOut> {
             config: r.config,
             requires_egress: r.requires_egress,
             side_effecting: r.side_effecting,
+            allow_on_call: r.allow_on_call,
             enabled: r.enabled,
             version: r.version,
             approved_version: r.approved_version,
@@ -305,6 +309,10 @@ pub struct CustomToolIn {
     pub requires_egress: bool,
     #[serde(default = "default_true")]
     pub side_effecting: bool,
+    /// Off unless asked for: a caller on a telephone line is an anonymous member of the
+    /// public, and there is nobody watching to approve what they set off.
+    #[serde(default)]
+    pub allow_on_call: bool,
     #[serde(default)]
     pub timeout_secs: Option<i32>,
 }
@@ -324,6 +332,7 @@ fn snapshot_of(b: &CustomToolIn) -> serde_json::Value {
         "name": b.name, "display_name": b.display_name, "description": b.description,
         "kind": b.kind, "params_schema": b.params_schema, "config": b.config,
         "requires_egress": b.requires_egress, "side_effecting": b.side_effecting,
+        "allow_on_call": b.allow_on_call,
         "timeout_secs": b.timeout_secs, "has_secret": b.auth_value.as_deref().is_some_and(|s| !s.is_empty()),
     })
 }
@@ -402,8 +411,9 @@ pub async fn create_custom(
     sqlx::query!(
         r#"INSERT INTO custom_tools
              (id, name, display_name, description, kind, params_schema, config, auth_value_enc,
-              requires_egress, side_effecting, enabled, approved_version, version, timeout_secs, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,NULL,1,$11,$12)"#,
+              requires_egress, side_effecting, allow_on_call, enabled, approved_version,
+              version, timeout_secs, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,false,NULL,1,$12,$13)"#,
         id,
         body.name.trim(),
         body.display_name,
@@ -414,6 +424,7 @@ pub async fn create_custom(
         auth_value_enc,
         body.requires_egress,
         body.side_effecting,
+        body.allow_on_call,
         body.timeout_secs,
         ctx.user_id,
     )
@@ -454,11 +465,12 @@ pub async fn update_custom(
             sqlx::query!(
                 r#"UPDATE custom_tools SET name=$2, display_name=$3, description=$4, kind=$5,
                      params_schema=$6, config=$7, requires_egress=$8, side_effecting=$9,
+                     allow_on_call=$12,
                      timeout_secs=$10, version=$11, approved_version=NULL, enabled=false, updated_at=now()
                    WHERE id=$1"#,
                 id, body.name.trim(), body.display_name, body.description, body.kind,
                 body.params_schema, body.config, body.requires_egress, body.side_effecting,
-                body.timeout_secs, new_version,
+                body.timeout_secs, new_version, body.allow_on_call,
             )
             .execute(&state.pg)
             .await?;
@@ -468,12 +480,12 @@ pub async fn update_custom(
             sqlx::query!(
                 r#"UPDATE custom_tools SET name=$2, display_name=$3, description=$4, kind=$5,
                      params_schema=$6, config=$7, auth_value_enc=$8, requires_egress=$9,
-                     side_effecting=$10, timeout_secs=$11, version=$12, approved_version=NULL,
-                     enabled=false, updated_at=now()
+                     side_effecting=$10, allow_on_call=$13, timeout_secs=$11, version=$12,
+                     approved_version=NULL, enabled=false, updated_at=now()
                    WHERE id=$1"#,
                 id, body.name.trim(), body.display_name, body.description, body.kind,
                 body.params_schema, body.config, enc, body.requires_egress, body.side_effecting,
-                body.timeout_secs, new_version,
+                body.timeout_secs, new_version, body.allow_on_call,
             )
             .execute(&state.pg)
             .await?;

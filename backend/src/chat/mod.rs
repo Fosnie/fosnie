@@ -647,6 +647,10 @@ async fn run_turn_inner(
             }
             _ => d,
         });
+    // The telephone call this turn is being spoken during, if it is. Resolved once, and
+    // checked against the account the turn runs as, so a call belonging to somebody else
+    // resolves to nothing at all rather than to a record filed against them.
+    let call_ctx = crate::tools::phone::load_ctx(&state.pg, turn.call_id, ctx.user_id).await;
     // Whether this run may write in its folder without a card each time. Only a
     // device automation whose owner opted in, and only on the unattended path;
     // every interactive turn stays fully gated. Deletion is never covered (that
@@ -723,6 +727,34 @@ async fn run_turn_inner(
                     .as_ref()
                     .map(|d| crate::tools::desktop::tier_allows(d.workspace.tier, t).is_ok())
                     .unwrap_or(false)
+        })
+        // Likewise a telephone tool without a telephone call. This is the whole of the
+        // refusal rather than a first layer of it: dropping the name here drops it from
+        // the authorised set too, so a turn that is not a call neither shows the model
+        // something it cannot do nor would let it through if it asked anyway.
+        .filter(|t| !crate::tools::phone::is_phone_tool(t) || call_ctx.is_some())
+        // And putting a caller through needs somewhere to put them. A line with no
+        // number to transfer to does not offer the ability at all, rather than offering
+        // it and then apologising: an agent that has told somebody it is connecting them
+        // has already said the wrong thing by the time anything could refuse.
+        .filter(|t| {
+            t.as_str() != crate::tools::phone::TRANSFER_CALL
+                || call_ctx.as_ref().map(|c| c.transfer_e164.is_some()).unwrap_or(false)
+        })
+        // And checking a caller needs something to check against. An agent offered the
+        // check by an account that keeps no list would be told "nothing on record" by a
+        // check that looked at nothing, which is worse than not having checked: it reads
+        // as clearance.
+        .filter(|t| {
+            t.as_str() != crate::tools::phone::SCREEN_CONFLICT
+                || call_ctx.as_ref().map(|c| c.screening_required).unwrap_or(false)
+        })
+        // And offering a time needs a diary with hours in it. An agent offering times from
+        // a diary nobody has filled in would be inventing them, which is the one thing a
+        // caller must never be told about an appointment.
+        .filter(|t| {
+            !crate::tools::phone::needs_diary(t)
+                || call_ctx.as_ref().map(|c| c.diary_enabled).unwrap_or(false)
         })
         .filter(|t| tool_overrides.get(t.as_str()).map(|o| o.enabled).unwrap_or(true))
         .cloned()
@@ -935,7 +967,7 @@ async fn run_turn_inner(
 
     if !tool_defs.is_empty() {
         let outcome = run_tool_loop(
-            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary, unattended, pre_approved_writes,
+            state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), call_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary, unattended, pre_approved_writes,
         )
         .await?;
         interrupted = outcome.interrupted;
@@ -1152,7 +1184,7 @@ async fn run_turn_inner(
                     {
                         // Cancel-aware: the tool dispatch is not itself cancel-wrapped, so race it here.
                         crate::tools::NativeDecision::Allowed(w) => tokio::select! {
-                            r = crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), &[], &custom_tools, &w, &tc.arguments) =>
+                            r = crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, None, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), call_ctx.as_ref(), &[], &custom_tools, &w, &tc.arguments) =>
                                 r.unwrap_or_else(|e| format!("error: {e}")),
                             _ = cancel.notified() => { interrupted = true; "error: cancelled".to_string() }
                         },
@@ -2143,6 +2175,7 @@ async fn run_tool_loop(
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     rag_ctx: Option<&crate::tools::RagToolCtx>,
     desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
+    call_ctx: Option<&crate::tools::phone::CallToolCtx>,
     messages: &mut Vec<Value>,
     activity: &mut Activity,
     reasoning: Option<&crate::reasoning::ReasoningSpec>,
@@ -2286,6 +2319,10 @@ async fn run_tool_loop(
         // metadata to `run_one_call` — same gates, timeout, audit, result envelope.
         let mut auto: Vec<&ml::ToolCall> = Vec::new();
         let mut gated: Vec<&ml::ToolCall> = Vec::new();
+        // Calls that will not happen at all: a tool that changes something outside this
+        // deployment, asked for while somebody is on the telephone, on a server or a
+        // definition nobody has marked for that.
+        let mut refused: Vec<&ml::ToolCall> = Vec::new();
         let mut by_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         // An administrator can insist on a card for every command, even where the
         // machine's boundary would otherwise let a contained one run unasked. Read
@@ -2379,18 +2416,99 @@ async fn run_tool_loop(
                 .get(&tc.name)
                 .map(|r| r.kind == "script" || r.side_effecting)
                 .unwrap_or(false);
-            let hitl = run_id.is_some() && (desktop_gated || mcp_gated || custom_gated);
-            if hitl {
-                gated.push(tc);
+            let changes_something = desktop_gated || mcp_gated || custom_gated;
+
+            // On a telephone call the decision was made in advance, by configuration.
+            // Nothing waits for a person: there is no card in front of the caller, nobody
+            // is watching one on their behalf, and the wait is minutes of silence on a
+            // live line. See `telephony::policy` for why that is the whole of the rule.
+            let on_call = call_ctx.is_some();
+            let marked_for_calls = if on_call && changes_something {
+                if crate::mcp::is_namespaced(&tc.name) {
+                    match crate::mcp::split(&tc.name) {
+                        Some((slug, _)) => crate::mcp::allowed_on_call(state, slug).await,
+                        None => false,
+                    }
+                } else {
+                    custom_tools.get(&tc.name).map(|r| r.allow_on_call).unwrap_or(false)
+                }
             } else {
-                auto.push(tc);
+                false
+            };
+            match crate::telephony::policy::decide(on_call, changes_something, marked_for_calls) {
+                crate::telephony::policy::Decision::Refuse => refused.push(tc),
+                crate::telephony::policy::Decision::Approve if run_id.is_some() => gated.push(tc),
+                // No run means no gate, which is how this behaved before any of the above.
+                crate::telephony::policy::Decision::Approve => auto.push(tc),
+                crate::telephony::policy::Decision::Run => {
+                    // A change outside this deployment, made during a call, on somebody
+                    // else's say-so from months earlier. Worth its own line in the trail:
+                    // it is the one thing here that a standing decision lets an anonymous
+                    // caller cause, so it should never have to be inferred from silence.
+                    if on_call && changes_something {
+                        let mut ev = crate::audit::AuditEvent::action(
+                            "telephony.tool.allowed",
+                            ctx.role.as_str(),
+                        );
+                        ev.actor_user_id = ctx.user_id;
+                        ev.resource_type = Some("telephony".into());
+                        ev.payload = Some(json!({ "chat_id": chat_id, "tool": tc.name }));
+                        let _ = crate::audit::append(&state.pg, &ev).await;
+                    }
+                    auto.push(tc)
+                }
             }
         }
+
+        // The refusals, before anything is dispatched: the caller is told, in words the
+        // agent reads out, and the trail says which tool it was even though the caller
+        // never hears its name.
+        for tc in &refused {
+            let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
+            let mut ev = crate::audit::AuditEvent::action("telephony.tool.refused", ctx.role.as_str());
+            ev.actor_user_id = ctx.user_id;
+            ev.resource_type = Some("telephony".into());
+            ev.outcome = crate::audit::AuditOutcome::Failure;
+            ev.outcome_reason = Some("not marked for use during a call".into());
+            // The name, never the arguments: those are the caller's own words.
+            ev.payload = Some(json!({ "chat_id": chat_id, "tool": tc.name }));
+            let _ = crate::audit::append(&state.pg, &ev).await;
+            by_id.insert(id, crate::telephony::policy::REFUSED_ON_CALL.to_string());
+        }
+        // How long any one tool call may take while a caller waits. Read once per step
+        // rather than per call, and only when there is a caller to keep waiting.
+        let call_ceiling = match call_ctx {
+            Some(_) => Some(std::time::Duration::from_secs(
+                crate::telephony::policy::tool_timeout_secs(&state.pg).await,
+            )),
+            None => None,
+        };
         let auto_results = futures_util::future::join_all(auto.iter().map(|tc| {
             let sem = sem.clone();
             async move {
                 let _permit = sem.acquire().await.expect("semaphore");
-                run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, authorised, overrides, ci_files, custom_tools, rag_ctx, desktop_ctx, tc).await
+                let call = run_one_call(state, ctx, run_id, project_id, chat_id, turn_id, tx, agent, authorised, overrides, ci_files, custom_tools, rag_ctx, desktop_ctx, call_ctx, tc);
+                // Off a call, a slow tool is somebody watching a spinner. On one it is
+                // silence on a live line, so the wait has a ceiling and passing it is an
+                // answer the caller can be given rather than a failure of the turn.
+                match call_ceiling {
+                    None => call.await,
+                    Some(ceiling) => match tokio::time::timeout(ceiling, call).await {
+                        Ok(done) => done,
+                        Err(_) => {
+                            let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
+                            tracing::warn!(tool = %tc.name, secs = ceiling.as_secs(), "a tool kept a caller waiting past the ceiling");
+                            let mut ev = crate::audit::AuditEvent::action("telephony.tool.timeout", ctx.role.as_str());
+                            ev.actor_user_id = ctx.user_id;
+                            ev.resource_type = Some("telephony".into());
+                            ev.outcome = crate::audit::AuditOutcome::Failure;
+                            ev.outcome_reason = Some("kept the caller waiting past the ceiling".into());
+                            ev.payload = Some(json!({ "chat_id": chat_id, "tool": tc.name, "seconds": ceiling.as_secs() }));
+                            let _ = crate::audit::append(&state.pg, &ev).await;
+                            (id, crate::telephony::policy::TIMED_OUT_ON_CALL.to_string(), None)
+                        }
+                    },
+                }
             }
         }))
         .await;
@@ -2402,7 +2520,7 @@ async fn run_tool_loop(
         }
         for tc in gated {
             let (id, r, effect) = gated_call(
-                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, desktop_ctx, tc, unattended,
+                state, ctx, run_id.expect("gated implies a run"), project_id, chat_id, turn_id, tx, agent, authorised, overrides, custom_tools, desktop_ctx, call_ctx, tc, unattended,
             )
             .await;
             by_id.insert(id, r);
@@ -2444,6 +2562,7 @@ async fn run_one_call(
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     rag_ctx: Option<&crate::tools::RagToolCtx>,
     desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
+    call_ctx: Option<&crate::tools::phone::CallToolCtx>,
     tc: &ml::ToolCall,
 ) -> (String, String, Option<ActivityEffect>) {
     let id = tc.id.clone().unwrap_or_else(|| format!("call_{}", tc.name));
@@ -2497,7 +2616,7 @@ async fn run_one_call(
                 .await
                 {
                     crate::tools::NativeDecision::Allowed(w) => {
-                        crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, desktop_ctx, ci_files, custom_tools, &w, &tc.arguments).await
+                        crate::tools::dispatch(state, ctx, chat_id, turn_id, tx, agent.web.as_ref(), rag_ctx, desktop_ctx, call_ctx, ci_files, custom_tools, &w, &tc.arguments).await
                     }
                     crate::tools::NativeDecision::Recoverable(m) => Ok(m),
                     crate::tools::NativeDecision::Denied(e) => Err(e),
@@ -2548,6 +2667,7 @@ async fn gated_call(
     overrides: &std::collections::HashMap<String, crate::tools::Override>,
     custom_tools: &std::collections::HashMap<String, crate::tools::custom::CustomToolRow>,
     desktop_ctx: Option<&crate::tools::DesktopToolCtx>,
+    call_ctx: Option<&crate::tools::phone::CallToolCtx>,
     tc: &ml::ToolCall,
     unattended: bool,
 ) -> (String, String, Option<ActivityEffect>) {
@@ -2623,7 +2743,7 @@ async fn gated_call(
         Ok(Ok(true)) => {
             // Gated tools are MCP/custom side-effecting calls, never code_interpreter or
             // search_library → no CI files, no RAG-tool context.
-            let (_id, r, effect) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, desktop_ctx, tc).await;
+            let (_id, r, effect) = run_one_call(state, ctx, Some(run_id), project_id, chat_id, turn_id, tx, agent, authorised, overrides, &[], custom_tools, None, desktop_ctx, call_ctx, tc).await;
             crate::agent::mark_running(state, run_id).await;
             (id, r, effect)
         }

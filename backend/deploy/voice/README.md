@@ -110,10 +110,33 @@ frames (the editable transcript, citations, persistence ride those). `whoami` ad
 So on a box with only the batch engines (Qwen3-ASR + kokoro), live voice works end to
 end via the fallbacks; the streaming engines + sidecar are a per-profile upgrade.
 
-**Runtime dials** (super-admin knobs, audited): `voice.silence_threshold_ms` (600;
-the latency lever), `voice.ptt_default` (true), `voice.aec_required` (true),
-`voice.turn_detection` (false). **Metrics:** `voice_turn_latency_ms` (final → first
-audio chunk; target p50<500 / p95<800 ms) and `voice_barge_in_total`.
+**Runtime dials** (super-admin knobs, audited): `voice.silence_threshold_ms` (1500; the
+latency lever), `voice.min_speech_ms` (200), `voice.ptt_default` (true),
+`voice.aec_required` (true), `voice.turn_detection` (false), and the two loudness gates
+`voice.speech_rms` (0.012) and `voice.barge_rms` (0.035) with `voice.barge_min_ms` (320).
+
+**Per-transport dials.** A telephone line is tuned separately: any dial may also be set as
+`voice.phone.<dial>`, which is used for calls and ignored everywhere else. A dial with no
+telephone value follows the shared one, so a change made for the browser reaches a line too
+unless the line has its own. Calls default to a shorter turn silence (900 ms), a higher
+speech floor (250 ms), semantic turn detection **on**, and quicker yielding when talked
+over (240 ms), because a caller has no screen to show that a pause is being waited out. The
+two loudness gates default to the same values as the browser: they were chosen for a
+microphone, nobody has yet measured where speech sits relative to noise on a line, and
+`voice_frame_rms` is published so they can be set from measurement rather than guesswork.
+
+**Metrics.** Every stage of a turn is timed separately and labelled by transport; see
+`deploy/observability/README.md` for the list. The headline figures are
+`voice_turn_latency_seconds` (settled transcript → first reply audio handed to the
+transport) and, on a telephone, `voice_reply_heard_seconds` (→ the caller began hearing
+it), which is the one the **target p50<500 / p95<800 ms** applies to. The gap between them
+is the transport's own delay.
+
+Two things to know about the numbers. The clock now starts when recognition settles rather
+than a step later, so the headline figure includes announcing the transcript and recording
+it: it reads slightly higher than it used to, deliberately, because a speaker waits through
+both. And `voice_turn_latency_ms` has been replaced by `voice_turn_latency_seconds` — same
+measurement, the unit everything else uses.
 
 **NVIDIA vs CPU profile.** Nemotron streaming STT needs a CUDA GPU (Linux profile).
 The macOS / no-CUDA profile uses the sherpa-onnx CPU streaming engine, or simply the

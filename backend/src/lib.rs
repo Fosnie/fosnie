@@ -53,6 +53,7 @@ pub mod skills_seed;
 pub mod state;
 pub mod storage;
 pub mod telemetry;
+pub mod telephony;
 pub mod tools;
 pub mod vision;
 pub mod research;

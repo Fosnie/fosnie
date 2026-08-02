@@ -95,7 +95,7 @@ export interface WhoAmI {
   /** Fine-grained admin permissions the caller holds (custom RBAC). Empty in Core
    *  → gate admin sections by `is_admin`. A scoped-only holding is `perm:scoped`. */
   permissions: string[];
-  capabilities: { code_interpreter: boolean; voice: boolean; voice_live: boolean; dictation_streaming: boolean; workflows: boolean; groundedness: boolean; groundedness_repair: boolean; mcp: boolean; messaging: boolean; public_api: boolean; white_label: boolean; compliance_audit: boolean; moderation: boolean; message_review: boolean; data_owner_approval: boolean; federated_sso: boolean; custom_rbac: boolean; enterprise_connectors: boolean; reasoning: ReasoningCapability };
+  capabilities: { code_interpreter: boolean; voice: boolean; voice_live: boolean; telephony: boolean; dictation_streaming: boolean; workflows: boolean; groundedness: boolean; groundedness_repair: boolean; mcp: boolean; messaging: boolean; public_api: boolean; white_label: boolean; compliance_audit: boolean; moderation: boolean; message_review: boolean; data_owner_approval: boolean; federated_sso: boolean; custom_rbac: boolean; enterprise_connectors: boolean; reasoning: ReasoningCapability };
   /** Live-voice client dials (present only when `capabilities.voice_live`). */
   voice_live_opts: { ptt_default: boolean; aec_required: boolean; silence_threshold_ms: number } | null;
 }
@@ -372,6 +372,8 @@ export interface CustomToolEntry {
   config: unknown;
   requires_egress: boolean;
   side_effecting: boolean;
+  /** May it be used while somebody is on the telephone, where nobody is watching to approve it? */
+  allow_on_call: boolean;
   enabled: boolean;
   version: number;
   approved_version: number | null;
@@ -399,6 +401,8 @@ export interface CustomToolInput {
   auth_value?: string;
   requires_egress: boolean;
   side_effecting: boolean;
+  /** May it be used while somebody is on the telephone? Omitted means no. */
+  allow_on_call?: boolean;
   timeout_secs: number | null;
 }
 
@@ -1125,6 +1129,8 @@ export interface McpServer {
   auth_header_name: string | null;
   has_secret: boolean;
   requires_egress: boolean;
+  /** `refuse | allow`: whether this server may be reached while a caller is on the telephone. */
+  call_policy: string;
 }
 export function useAdminMcpServers() {
   return useQuery({ queryKey: ["admin-mcp-servers"], queryFn: () => apiFetch<McpServer[]>("/api/admin/mcp-servers") });
@@ -1157,6 +1163,7 @@ export function patchMcpServer(
     auth_header_name?: string;
     auth_value?: string;
     requires_egress?: boolean;
+    call_policy?: "refuse" | "allow";
   },
 ): Promise<{ ok: boolean; reapprove: boolean }> {
   return apiFetch(`/api/admin/mcp-servers/${id}`, { method: "PATCH", body: JSON.stringify(body) });
@@ -1331,6 +1338,428 @@ export function useVoiceLive() {
 export type VoiceLiveBody = Omit<VoiceLive, "stt_api_key_set" | "tts_api_key_set"> & { stt_api_key?: string; tts_api_key?: string };
 export function setVoiceLive(body: VoiceLiveBody): Promise<{ ok: boolean }> {
   return apiFetch("/api/admin/voice-live", { method: "PUT", body: JSON.stringify(body) });
+}
+
+// Telephone lines, and what happened on them. A line binds a public number to one
+// agent and one account: whoever rings it gets a session running as that account,
+// bounded by that agent. Gated by `telephony.manage`, separately from the voice
+// engines above.
+export interface PhoneLine {
+  id: string;
+  e164: string;
+  provider: string;
+  owner_user_id: string;
+  owner_name: string;
+  agent_id: string;
+  agent_name: string;
+  /** Tools the bound agent may use: the width of the line. */
+  agent_tool_count: number;
+  label: string | null;
+  greeting: string | null;
+  /** This line's own notice. Null means the standard wording. */
+  notice: string | null;
+  /** The exact words a caller hears when this line answers, composed by the server. */
+  opening: string;
+  /** After how many days this line's conversations are deleted. 0 keeps them. */
+  transcript_days: number;
+  /** After how many days the record of a call goes too. 0 keeps it. */
+  log_days: number;
+  /** Whether this line keeps the sound of its calls, and for how long. */
+  record_calls: boolean;
+  recording_days: number;
+  enabled: boolean;
+  /** The team chat this line announces what it took in, if it has one. */
+  deliver_group_chat_id: string | null;
+  /** Where this line puts callers through to. Null means it cannot. */
+  transfer_e164: string | null;
+  /** How many names this line's account checks callers against. A count, never the names. */
+  screening_names: number;
+  /** The length of an appointment in this account's diary. Null means it offers no times. */
+  diary_slot_minutes: number | null;
+  created_epoch: number;
+  last_call_epoch: number | null;
+}
+export interface PhoneLineBody {
+  e164: string;
+  agent_id: string;
+  owner_user_id: string;
+  /** What answers the line: a carrier, or the practice's own telephone system. */
+  provider?: string;
+  label?: string | null;
+  greeting?: string | null;
+  notice?: string | null;
+  transcript_days?: number;
+  log_days?: number;
+  record_calls?: boolean;
+  recording_days?: number;
+  enabled?: boolean;
+  deliver_group_chat_id?: string | null;
+  transfer_e164?: string | null;
+}
+export function usePhoneNumbers(enabled = true) {
+  return useQuery({
+    queryKey: ["admin-telephony-numbers"],
+    queryFn: () => apiFetch<PhoneLine[]>("/api/admin/telephony/numbers"),
+    enabled,
+  });
+}
+export function createPhoneNumber(body: PhoneLineBody): Promise<{ id: string }> {
+  return apiFetch("/api/admin/telephony/numbers", { method: "POST", body: JSON.stringify(body) });
+}
+export function updatePhoneNumber(id: string, body: Partial<PhoneLineBody>): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/admin/telephony/numbers/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+export function deletePhoneNumber(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/admin/telephony/numbers/${id}`, { method: "DELETE" });
+}
+
+/** How a call ended. `in_progress` is a call being carried right now. */
+export const CALL_OUTCOMES = [
+  "in_progress",
+  "completed",
+  "carrier_ended",
+  "dropped",
+  "no_media",
+  "line_full",
+  "transferred",
+  "notice_failed",
+] as const;
+export interface CallRecord {
+  id: string;
+  number_id: string | null;
+  to_e164: string;
+  /** Empty when the caller withheld their number. */
+  from_e164: string;
+  owner_user_id: string;
+  owner_name: string;
+  agent_id: string | null;
+  agent_name: string | null;
+  /** The conversation, when the caller said something; null when nobody spoke. */
+  chat_id: string | null;
+  outcome: string;
+  /** What checking the caller against the account's own list concluded, if it was done. */
+  conflict_check: string | null;
+  /** When this caller was told what they were speaking to. Null on a call that ended first. */
+  notice_epoch: number | null;
+  /** When the conversation was deleted, by a retention period or by hand. */
+  transcript_deleted_epoch: number | null;
+  /** How long the recording is and how big, when there is one. Null means there is none. */
+  recording_seconds: number | null;
+  recording_bytes: number | null;
+  /** The line was set to record and no audio came of it. Different from having none. */
+  recording_failed: boolean;
+  started_epoch: number;
+  ended_epoch: number | null;
+  seconds: number | null;
+}
+/** What a caller wanted, written down during a call.
+ *
+ *  Everything below `to_e164` is withheld from a reader who may see that a line took a
+ *  message and not what it says: null means withheld, never empty. */
+export interface Enquiry {
+  id: string;
+  kind: string;
+  urgency: string;
+  handled: boolean;
+  call_id: string | null;
+  chat_id: string | null;
+  number_id: string | null;
+  to_e164: string;
+  owner_user_id: string;
+  created_epoch: number;
+  handled_epoch: number | null;
+  subject: string | null;
+  body: string | null;
+  caller_e164: string | null;
+  caller_name: string | null;
+  contact: string | null;
+  for_whom: string | null;
+  details: Record<string, string> | null;
+}
+type EnquiryFilter = { open?: boolean; numberId?: string; before?: string; limit?: number };
+function enquiryQuery(opts: EnquiryFilter): string {
+  const p = new URLSearchParams();
+  if (opts.open) p.set("open", "true");
+  if (opts.numberId) p.set("number_id", opts.numberId);
+  if (opts.before) p.set("before", opts.before);
+  if (opts.limit) p.set("limit", String(opts.limit));
+  const qs = p.toString();
+  return qs ? `?${qs}` : "";
+}
+/** Messages taken for you. Your own records: no permission involved. */
+export function useMyEnquiries(opts: EnquiryFilter = {}, enabled = true) {
+  const qs = enquiryQuery(opts);
+  return useQuery({
+    queryKey: ["enquiries", qs],
+    queryFn: () => apiFetch<Enquiry[]>(`/api/enquiries${qs}`),
+    enabled,
+  });
+}
+/** Everything the deployment's lines have taken, redacted per row by the server. */
+export function useTelephonyEnquiries(opts: EnquiryFilter = {}, enabled = true) {
+  const qs = enquiryQuery(opts);
+  return useQuery({
+    queryKey: ["admin-telephony-enquiries", qs],
+    queryFn: () => apiFetch<Enquiry[]>(`/api/admin/telephony/enquiries${qs}`),
+    enabled,
+  });
+}
+export function setEnquiryHandled(id: string, handled: boolean): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/enquiries/${id}`, { method: "PATCH", body: JSON.stringify({ handled }) });
+}
+
+/** A name a line checks callers against.
+ *
+ *  The practice's own confidential list: readable by the account it belongs to and by a
+ *  platform administrator, and not by somebody who may merely register telephone lines. */
+export interface ConflictName {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  note: string | null;
+  created_epoch: number;
+}
+export function useConflictNames(ownerUserId: string | undefined, enabled = true) {
+  const qs = ownerUserId ? `?owner_user_id=${ownerUserId}` : "";
+  return useQuery({
+    queryKey: ["conflict-names", qs],
+    queryFn: () => apiFetch<ConflictName[]>(`/api/conflict-names${qs}`),
+    enabled: enabled && !!ownerUserId,
+  });
+}
+export function addConflictNames(body: { owner_user_id?: string; names: string; note?: string | null }):
+  Promise<{ added: number; already_there: number }> {
+  return apiFetch("/api/conflict-names", { method: "POST", body: JSON.stringify(body) });
+}
+export function removeConflictName(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/conflict-names/${id}`, { method: "DELETE" });
+}
+
+
+/** A practice's diary: when it is open, and who is coming in.
+ *
+ *  The account's own working arrangements, readable and changeable by the account and by a
+ *  platform administrator, and not by somebody who may merely register telephone lines. */
+export interface DiaryOpening {
+  /** 0 is Monday. */
+  weekday: number;
+  opens_minute: number;
+  closes_minute: number;
+}
+export interface DiaryClosure {
+  /** A local calendar date, as YYYY-MM-DD. */
+  closed_on: string;
+  note: string | null;
+}
+export interface Diary {
+  owner_user_id: string;
+  /** An IANA zone name. Every time below is shown in this zone, not the reader's. */
+  timezone: string;
+  slot_minutes: number;
+  lead_minutes: number;
+  horizon_days: number;
+  enabled: boolean;
+  hours: DiaryOpening[];
+  closures: DiaryClosure[];
+}
+export type DiaryBody = {
+  owner_user_id?: string;
+  timezone: string;
+  slot_minutes: number;
+  lead_minutes: number;
+  horizon_days: number;
+  enabled: boolean;
+  hours: DiaryOpening[];
+};
+export function useDiary(ownerUserId: string | undefined, enabled = true) {
+  const qs = ownerUserId ? `?owner_user_id=${ownerUserId}` : "";
+  return useQuery({
+    queryKey: ["diary", qs],
+    queryFn: () => apiFetch<Diary | null>(`/api/diary${qs}`),
+    enabled: enabled && !!ownerUserId,
+  });
+}
+export function setDiary(body: DiaryBody): Promise<{ ok: boolean }> {
+  return apiFetch("/api/diary", { method: "PUT", body: JSON.stringify(body) });
+}
+export function addDiaryClosure(body: { owner_user_id?: string; closed_on: string; note?: string | null }):
+  Promise<{ ok: boolean }> {
+  return apiFetch("/api/diary/closures", { method: "POST", body: JSON.stringify(body) });
+}
+export function removeDiaryClosure(date: string, ownerUserId?: string): Promise<{ ok: boolean }> {
+  const qs = ownerUserId ? `?owner_user_id=${ownerUserId}` : "";
+  return apiFetch(`/api/diary/closures/${date}${qs}`, { method: "DELETE" });
+}
+
+export interface Appointment {
+  id: string;
+  starts_at: string;
+  ends_at: string;
+  status: string;
+  /** What the caller was told to quote if they ring back. */
+  reference: string;
+  caller_name: string;
+  caller_e164: string;
+  contact: string | null;
+  subject: string;
+  chat_id: string | null;
+  /** The practice's own zone, so a reader can be shown its local time. */
+  timezone: string | null;
+}
+export function useAppointments(ownerUserId: string | undefined, enabled = true) {
+  const qs = ownerUserId ? `?owner_user_id=${ownerUserId}` : "";
+  return useQuery({
+    queryKey: ["diary-appointments", qs],
+    queryFn: () => apiFetch<Appointment[]>(`/api/diary/appointments${qs}`),
+    enabled: enabled && !!ownerUserId,
+  });
+}
+export function cancelAppointment(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/diary/appointments/${id}`, { method: "DELETE" });
+}
+
+export function useTelephonyCalls(
+  opts: { numberId?: string; outcome?: string; before?: string; limit?: number },
+  enabled = true,
+) {
+  const p = new URLSearchParams();
+  if (opts.numberId) p.set("number_id", opts.numberId);
+  if (opts.outcome) p.set("outcome", opts.outcome);
+  if (opts.before) p.set("before", opts.before);
+  if (opts.limit) p.set("limit", String(opts.limit));
+  const qs = p.toString();
+  return useQuery({
+    queryKey: ["admin-telephony-calls", qs],
+    queryFn: () => apiFetch<CallRecord[]>(`/api/admin/telephony/calls${qs ? `?${qs}` : ""}`),
+    enabled,
+  });
+}
+
+/** One line, as the record of what these lines do with what they are told describes it. */
+export interface ComplianceLine {
+  /** Whether the sound of a call is kept on this line, and for how long. */
+  records_calls: boolean;
+  recording_days: number;
+  id: string;
+  e164: string;
+  label: string | null;
+  enabled: boolean;
+  /** The exact words a caller hears before anything they say is acted on. */
+  spoken_to_callers: string;
+  notice_is_standard: boolean;
+  /** Where a caller can ask to be put through to. Null means nowhere. */
+  transfers_to: string | null;
+  announces_to_team: boolean;
+  transcript_days: number;
+  log_days: number;
+  calls: number;
+  /** Of those, how many were told what they were speaking to. */
+  calls_with_notice: number;
+}
+export interface ComplianceHolding {
+  held: string;
+  contents: string;
+  kept: string;
+  rows: number;
+}
+export interface ComplianceRecord {
+  owner_user_id: string;
+  lines: ComplianceLine[];
+  holdings: ComplianceHolding[];
+  no_audio_is_kept: boolean;
+  leaves_the_deployment: string[];
+  screening_names: number;
+  diary_enabled: boolean;
+  as_at_epoch: number;
+}
+/** One finding from the telephone readiness check. */
+export interface TelephonyCheck {
+  id: string;
+  title: string;
+  ok: boolean;
+  detail: string;
+  fix: string | null;
+}
+/** Will a call actually work? Asked on demand: it makes a real request to the synthesiser. */
+export function runTelephonyCheck(): Promise<TelephonyCheck[]> {
+  return apiFetch("/api/admin/telephony/check");
+}
+
+/** Somewhere outside this deployment that is told what a line took. */
+export interface NotifyTarget {
+  id: string;
+  owner_user_id: string;
+  label: string;
+  kind: "slack" | "teams" | "webhook";
+  /** The host the address points at. The address itself never leaves the deployment. */
+  host: string;
+  events: string[];
+  enabled: boolean;
+  created_epoch: number;
+}
+/** The events a target can be told about, in the order they read best in a list. */
+export const NOTIFY_EVENTS = [
+  "message_taken",
+  "appointment_booked",
+  "appointment_moved",
+  "appointment_cancelled",
+] as const;
+export function useNotifyTargets(ownerUserId?: string, enabled = true) {
+  const qs = ownerUserId ? `?owner_user_id=${ownerUserId}` : "";
+  return useQuery({
+    queryKey: ["notify-targets", ownerUserId ?? "mine"],
+    queryFn: () => apiFetch<NotifyTarget[]>(`/api/notify-targets${qs}`),
+    enabled,
+  });
+}
+export function createNotifyTarget(body: {
+  owner_user_id?: string;
+  label: string;
+  kind: string;
+  url: string;
+  events: string[];
+  enabled?: boolean;
+}): Promise<{ id: string }> {
+  return apiFetch("/api/notify-targets", { method: "POST", body: JSON.stringify(body) });
+}
+export function updateNotifyTarget(
+  id: string,
+  body: { label?: string; url?: string; events?: string[]; enabled?: boolean },
+): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/notify-targets/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+export function deleteNotifyTarget(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/notify-targets/${id}`, { method: "DELETE" });
+}
+/** Send a specimen line, so a wrong address is found now rather than by a client. */
+export function testNotifyTarget(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/notify-targets/${id}/test`, { method: "POST" });
+}
+
+/** What the lines do with what they are told, assembled from the settings themselves. */
+export function useTelephonyCompliance(ownerUserId?: string, enabled = true) {
+  const qs = ownerUserId ? `?owner_user_id=${ownerUserId}` : "";
+  return useQuery({
+    queryKey: ["telephony-compliance", ownerUserId ?? "mine"],
+    queryFn: () => apiFetch<ComplianceRecord>(`/api/telephony/compliance${qs}`),
+    enabled,
+  });
+}
+/** Throw away what was said on one call, including the sound. The call itself survives. */
+export function deleteCallTranscript(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/telephony/calls/${id}/transcript`, { method: "DELETE" });
+}
+/** The sound of a call, as an object URL for a player. The caller owns it and must revoke
+ *  it. Fetched rather than linked because the address needs the session behind it, and
+ *  every listen is recorded. */
+export async function callRecordingUrl(id: string): Promise<string> {
+  const res = await apiRequest(`/api/telephony/calls/${id}/recording`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return URL.createObjectURL(await res.blob());
+}
+/** Remove the sound of a call and keep everything else. */
+export function deleteCallRecording(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/telephony/calls/${id}/recording`, { method: "DELETE" });
 }
 
 // Provider "Test connection". Probes the role with the given

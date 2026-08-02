@@ -40,3 +40,15 @@ export function Badge({ children, tone = "slate", className = "" }: { children: 
 export function H1({ children }: { children: ReactNode }) {
   return <h1 className="mb-4 text-xl text-slate-lightest">{children}</h1>;
 }
+
+/**
+ * A table with more columns than the page is wide scrolls inside its own box.
+ *
+ * The wrapper rather than the table itself, so the table keeps ordinary table
+ * layout: making the table a scrolling block shrinks it to its contents, and a
+ * narrow one would then stop filling the width it was given. Without either, a
+ * wide table drags the whole page sideways and every other section with it.
+ */
+export function TableScroll({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={"table-scroll" + (className ? " " + className : "")}>{children}</div>;
+}

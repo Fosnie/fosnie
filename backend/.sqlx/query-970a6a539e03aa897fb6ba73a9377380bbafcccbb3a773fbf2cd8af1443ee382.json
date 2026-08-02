@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET outcome = $3, ended_at = now() WHERE provider = $1 AND provider_call_id = $2 AND ended_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "970a6a539e03aa897fb6ba73a9377380bbafcccbb3a773fbf2cd8af1443ee382"
+}

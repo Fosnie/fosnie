@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM phone_numbers WHERE id = $1 RETURNING e164",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "e164"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e98b21b069528e2f2613ba0cb9c47ccaed375e482b2c96e1b4524c2d63dec9d9"
+}

@@ -51,6 +51,10 @@ pub enum ConnectorKind {
     /// `requires_egress` flag drives the SSRF mode; this single global flag
     /// (`integration.custom_tool.enabled`) is the connector-level kill-switch.
     CustomTool,
+    /// Telling somebody outside that a telephone line took something: an incoming
+    /// webhook at a chat service, or anything else that accepts a posted message.
+    /// Nothing about a caller leaves through it until an administrator switches it on.
+    Notify,
 }
 
 /// Broad grouping of a connector (drives where it routes / how it is presented).
@@ -61,6 +65,7 @@ pub enum ConnectorCategory {
     Mail,
     Mcp,
     Tool,
+    Notify,
 }
 
 impl ConnectorCategory {
@@ -71,6 +76,7 @@ impl ConnectorCategory {
             ConnectorCategory::Mail => "mail",
             ConnectorCategory::Mcp => "mcp",
             ConnectorCategory::Tool => "tool",
+            ConnectorCategory::Notify => "notify",
         }
     }
 }
@@ -79,7 +85,7 @@ impl ConnectorKind {
     /// Every known connector kind.
     pub fn all() -> &'static [ConnectorKind] {
         use ConnectorKind::*;
-        &[WebSearch, IManage, NetDocuments, Outlook, Gmail, Mcp, CustomTool]
+        &[WebSearch, IManage, NetDocuments, Outlook, Gmail, Mcp, CustomTool, Notify]
     }
 
     /// Stable wire/config form.
@@ -92,6 +98,7 @@ impl ConnectorKind {
             ConnectorKind::Gmail => "gmail",
             ConnectorKind::Mcp => "mcp",
             ConnectorKind::CustomTool => "custom_tool",
+            ConnectorKind::Notify => "notify",
         }
     }
 
@@ -105,6 +112,7 @@ impl ConnectorKind {
             "gmail" => ConnectorKind::Gmail,
             "mcp" => ConnectorKind::Mcp,
             "custom_tool" => ConnectorKind::CustomTool,
+            "notify" => ConnectorKind::Notify,
             _ => return None,
         })
     }
@@ -118,6 +126,7 @@ impl ConnectorKind {
             ConnectorKind::Gmail => "Gmail",
             ConnectorKind::Mcp => "MCP client",
             ConnectorKind::CustomTool => "Custom tool",
+            ConnectorKind::Notify => "Outward notifications",
         }
     }
 
@@ -128,6 +137,7 @@ impl ConnectorKind {
             ConnectorKind::Outlook | ConnectorKind::Gmail => ConnectorCategory::Mail,
             ConnectorKind::Mcp => ConnectorCategory::Mcp,
             ConnectorKind::CustomTool => ConnectorCategory::Tool,
+            ConnectorKind::Notify => ConnectorCategory::Notify,
         }
     }
 
@@ -254,7 +264,7 @@ mod tests {
 
     #[test]
     fn closed_set_is_complete() {
-        assert_eq!(ConnectorKind::all().len(), 7);
+        assert_eq!(ConnectorKind::all().len(), 8);
     }
 
     #[test]

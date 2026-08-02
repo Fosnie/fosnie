@@ -163,6 +163,7 @@ pub const PROVIDERS_MANAGE: &str = "providers.manage";
 pub const CONFIG_MANAGE: &str = "config.manage";
 pub const MCP_MANAGE: &str = "mcp.manage";
 pub const VOICE_MANAGE: &str = "voice.manage";
+pub const TELEPHONY_MANAGE: &str = "telephony.manage";
 pub const IDENTITY_MANAGE: &str = "identity.manage";
 pub const ANNOUNCEMENTS_MANAGE: &str = "announcements.manage";
 pub const EXPORT_RUN: &str = "export.run";
@@ -235,6 +236,17 @@ pub const PERMISSION_CATALOG: &[PermissionDef] = &[
     PermissionDef {
         name: VOICE_MANAGE,
         description: "Configure live-voice settings.",
+        area: PermissionArea::Providers,
+        scope: ScopeKind::None,
+    },
+    PermissionDef {
+        // Deliberately not folded into voice.manage above. That one configures which
+        // speech engines are used; this one decides that a telephone number the public
+        // can dial runs as a named person's account, bounded only by the agent it is
+        // bound to. It is the most consequential grant in the product, and it must be
+        // possible to give somebody the engines without giving them that.
+        name: TELEPHONY_MANAGE,
+        description: "Register telephone numbers, bind each to an agent and an owning account, and read the call log.",
         area: PermissionArea::Providers,
         scope: ScopeKind::None,
     },

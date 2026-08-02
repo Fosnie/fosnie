@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO diary_closures (owner_user_id, closed_on, note) VALUES ($1, $2, $3) ON CONFLICT (owner_user_id, closed_on) DO UPDATE SET note = EXCLUDED.note",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "825c36db74323aaa0b9e8a418dd7c4be263d2fad317f7a6dc252adcd5048baa6"
+}

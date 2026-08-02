@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE calls SET notice_at = now(), notice_text = $2 WHERE id = $1 AND notice_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dd0d8182808cf720c558e6d15ecc85e38ea6e947c8f1c53ccd8e6d1c2577130d"
+}

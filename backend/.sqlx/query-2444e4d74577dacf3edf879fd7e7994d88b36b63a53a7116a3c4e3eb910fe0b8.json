@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             (SELECT count(*) FROM calls        WHERE owner_user_id = $1) AS \"calls!\",\n             (SELECT count(*) FROM calls        WHERE owner_user_id = $1\n                                                 AND chat_id IS NOT NULL) AS \"transcripts!\",\n             (SELECT count(*) FROM enquiries    WHERE owner_user_id = $1) AS \"enquiries!\",\n             (SELECT count(*) FROM appointments WHERE owner_user_id = $1\n                                                 AND status = 'booked')   AS \"appointments!\",\n             (SELECT count(*) FROM conflict_names WHERE owner_user_id = $1) AS \"names!\",\n             (SELECT count(*) FROM calls        WHERE owner_user_id = $1\n                                                 AND recording_path IS NOT NULL) AS \"recordings!\",\n             (SELECT count(*) FROM diaries      WHERE owner_user_id = $1\n                                                 AND enabled)             AS \"diaries!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "calls!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "transcripts!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "enquiries!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "appointments!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "names!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "recordings!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "diaries!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "2444e4d74577dacf3edf879fd7e7994d88b36b63a53a7116a3c4e3eb910fe0b8"
+}

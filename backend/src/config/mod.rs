@@ -97,6 +97,9 @@ pub struct BootConfig {
     /// Live / streaming-voice engine endpoints (used only when the feature is on).
     #[serde(default)]
     pub voice_live: VoiceLiveConfig,
+    /// The telephone line, if there is one (used only when the feature is on).
+    #[serde(default)]
+    pub telephony: TelephonyConfig,
     /// Metrics + logging knobs.
     #[serde(default)]
     pub observability: ObservabilityConfig,
@@ -209,6 +212,17 @@ pub struct FeaturesConfig {
     /// the loop still runs without them.
     #[serde(default)]
     pub voice_live: bool,
+    /// Taking live voice calls on a telephone line. A Core presence capability (like
+    /// `voice`/`messaging`, NOT an edition gate): when false the carrier's endpoints
+    /// are not merely refused but absent, so an instance with no phone line has no
+    /// phone surface for anyone to find. Off by default, and needs `voice` and
+    /// `voice_live` on as well, since a call is a live-voice session with a different
+    /// transport. Beneath this flag the line is dormant until an operator names a
+    /// provider under `[telephony]`. Toggleable at runtime
+    /// (`config_settings["features.telephony"]`) so a line under abuse can be shut
+    /// without a restart, which matters because a call costs money.
+    #[serde(default)]
+    pub telephony: bool,
     /// Native MCP tool support (FEATURE B1).
     /// A Core presence capability (like `voice`/`messaging`, NOT an edition gate): when
     /// false the MCP client is invisible and no server is dispatched. Default **on** so
@@ -442,6 +456,36 @@ impl Default for VoiceLiveConfig {
     }
 }
 
+/// The telephone line a live-voice session can be carried on.
+///
+/// Only the settings an operator would keep beside the rest of the deployment live
+/// here. The identity the line runs as, the agent it is bound to and above all the
+/// carrier's own credential are runtime settings instead, so that the credential is
+/// held encrypted rather than sitting in a compose file and a process listing.
+///
+/// `provider` is the dormancy switch beneath the feature flag: even with the feature
+/// compiled and on, nothing answers a telephone until an operator names a provider.
+///
+/// The numbers themselves are not here. A line has its own agent and its own owning
+/// account, so several can be answered by one deployment, and a boot file cannot express
+/// that and would be a second place to look for it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelephonyConfig {
+    /// Which carrier is on the line: `"none"` or `"twilio"`.
+    pub provider: String,
+    /// The public base URL the carrier reaches this instance at, scheme and host,
+    /// e.g. `https://calls.example.com`. Must match what is configured at the
+    /// carrier exactly, because it is part of what their request signature covers.
+    /// Empty → falls back to `server.public_url`.
+    pub public_base_url: String,
+}
+
+impl Default for TelephonyConfig {
+    fn default() -> Self {
+        Self { provider: "none".into(), public_base_url: String::new() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub host: String,
@@ -503,6 +547,10 @@ pub struct StorageConfig {
     /// Per-user avatar images (`<user_id>`), set on the profile page.
     #[serde(default = "default_avatars_dir")]
     pub avatars_dir: String,
+    /// Recordings of telephone calls (`<call_id>.wav`), on the lines that record.
+    /// Written only where a line has been set to record and told its callers so.
+    #[serde(default = "default_recordings_dir")]
+    pub recordings_dir: String,
     /// Persisted per-turn chat (LLM) attachments (`<id>__<filename>`) — rendered
     /// under the user message and in the docs rail.
     #[serde(default = "default_chat_attachments_dir")]
@@ -525,6 +573,10 @@ fn default_chat_attachments_dir() -> String {
 
 fn default_avatars_dir() -> String {
     "./data/avatars".into()
+}
+
+fn default_recordings_dir() -> String {
+    "./data/recordings".into()
 }
 
 fn default_desktop_installer_dir() -> String {
@@ -669,6 +721,7 @@ impl Default for BootConfig {
                 exports_dir: "./data/exports".into(),
                 message_attachments_dir: default_message_attachments_dir(),
                 avatars_dir: default_avatars_dir(),
+                recordings_dir: default_recordings_dir(),
                 chat_attachments_dir: default_chat_attachments_dir(),
                 desktop_installer_dir: default_desktop_installer_dir(),
             },
@@ -695,11 +748,12 @@ impl Default for BootConfig {
                 client_secret: String::new(),
             },
             log_level: "info".into(),
-            features: FeaturesConfig { code_interpreter: false, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, mcp: true, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false },
+            features: FeaturesConfig { code_interpreter: false, desktop_execution: true, voice: false, agents_enabled: true, workflows: false, groundedness: false, voice_live: false, telephony: false, mcp: true, messaging: true, public_api: true, white_label: false, compliance_audit: false, moderation: false, message_review: false, data_owner_approval: false, federated_sso: false, custom_rbac: false, enterprise_connectors: false },
             tool_timeout_secs: HashMap::new(),
             code_interpreter_vm: CodeInterpreterConfig::default(),
             code_interpreter: CodeInterpreterBackendConfig::default(),
             voice_live: VoiceLiveConfig::default(),
+            telephony: TelephonyConfig::default(),
             observability: ObservabilityConfig::default(),
             breakglass_default_ttl_secs: default_breakglass_ttl_secs(),
             breakglass_max_ttl_secs: default_breakglass_max_ttl_secs(),

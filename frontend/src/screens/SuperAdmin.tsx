@@ -99,6 +99,7 @@ function Gate({ onUnlock }: { onUnlock: (grant: string, s: Session["grant"]) => 
 const SECTIONS = [
   { id: "settings", label: "Settings", ready: true },
   { id: "integrations", label: "Integrations", ready: true },
+  { id: "telephone", label: "Telephone", ready: true },
   { id: "desktop", label: "Desktop client", ready: true },
   { id: "chats", label: "All chats", ready: true },
   { id: "accounts", label: "Accounts", ready: true },
@@ -154,6 +155,7 @@ function Panel({ grant, session, onLock }: { grant: string; session: NonNullable
         <main className="sa-main">
           {section === "settings" && <Settings grant={grant} />}
           {section === "integrations" && <Integrations grant={grant} />}
+          {section === "telephone" && <Telephone grant={grant} />}
           {section === "desktop" && <DesktopClient grant={grant} />}
           {section === "chats" && <Chats grant={grant} />}
           {section === "accounts" && <Accounts grant={grant} />}
@@ -344,6 +346,250 @@ function Integrations({ grant }: { grant: string }) {
               </div>
             </div>
           ))}
+        </section>
+      )}
+    </div>
+  );
+}
+
+// --- Telephone (what answers a call, and whether it will) --------------------
+//
+// The settings that decide whether this deployment answers a telephone at all, and a
+// readiness list that says whether it actually will. Break-glass rather than ordinary
+// administration for the same reason as the installer: this decides who can ring an
+// instance and what identity the calls run as.
+//
+// Both credentials are write-only, like every other secret here: what comes back is
+// whether one is stored, never a character of it.
+
+interface TelephonySettings {
+  provider: string;
+  public_base_url: string;
+  max_concurrent_calls: number;
+  auth_token_set: boolean;
+  audiosocket_listen: string;
+  audiosocket_key_set: boolean;
+  calls_in_progress: number;
+}
+
+interface Check {
+  id: string;
+  title: string;
+  ok: boolean;
+  detail: string;
+  fix: string | null;
+}
+
+function Telephone({ grant }: { grant: string }) {
+  const [cfg, setCfg] = useState<TelephonySettings | null>(null);
+  const [checks, setChecks] = useState<Check[] | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // Drafts, because a form that writes on every keystroke would store half an address.
+  const [provider, setProvider] = useState("none");
+  const [publicUrl, setPublicUrl] = useState("");
+  const [maxCalls, setMaxCalls] = useState("2");
+  const [listen, setListen] = useState("");
+  const [token, setToken] = useState("");
+  const [secret, setSecret] = useState("");
+
+  async function load() {
+    try {
+      const data: TelephonySettings = await (await bg(grant, "/api/admin/telephony")).json();
+      setCfg(data);
+      setProvider(data.provider || "none");
+      setPublicUrl(data.public_base_url);
+      setMaxCalls(String(data.max_concurrent_calls));
+      setListen(data.audiosocket_listen);
+    } catch (e) { setErr((e as Error).message); }
+  }
+  useEffect(() => { void load(); /* eslint-disable-next-line */ }, []);
+
+  async function save() {
+    setSaving(true); setErr(null);
+    try {
+      await bg(grant, "/api/admin/telephony", {
+        method: "PUT",
+        body: JSON.stringify({
+          provider,
+          public_base_url: publicUrl.trim(),
+          max_concurrent_calls: Number(maxCalls) || undefined,
+          audiosocket_listen: listen.trim(),
+          // Omitted rather than emptied: an empty one keeps what is stored.
+          ...(token.trim() ? { auth_token: token.trim() } : {}),
+          ...(secret.trim() ? { audiosocket_key: secret.trim() } : {}),
+        }),
+      });
+      setToken(""); setSecret("");
+      await load();
+    } catch (e) { setErr((e as Error).message); }
+    finally { setSaving(false); }
+  }
+
+  async function check() {
+    setChecking(true); setErr(null);
+    try { setChecks(await (await bg(grant, "/api/admin/telephony/preflight")).json()); }
+    catch (e) { setErr((e as Error).message); }
+    finally { setChecking(false); }
+  }
+
+  const ownSystem = provider === "audiosocket";
+  if (!cfg) return <div className="ed-hint mono">{err ? <span style={{ color: "var(--red)" }}>{err}</span> : "Loading…"}</div>;
+
+  return (
+    <div>
+      <h2 className="sa-title">Telephone</h2>
+      <p className="ed-hint" style={{ marginBottom: 18 }}>
+        What answers a call, and how it reaches this deployment. Which numbers are answered, and whose
+        account and which agent each one runs as, is ordinary administration done on the telephone
+        screen; this is the switch beneath it. Credentials are stored encrypted and never shown again.
+      </p>
+      {err && <div className="ed-hint" style={{ color: "var(--red)", marginBottom: 12 }}>{err}</div>}
+
+      <section className="sa-card">
+        <h3 className="sa-card-h">Settings</h3>
+        <div className="sa-knob">
+          <div className="sa-knob-l">
+            <div className="sa-knob-label">What answers calls</div>
+            <div className="field-help">
+              A carrier carries the call for you and the audio passes through them. Your own telephone
+              system hands the audio straight here over your network, and it reaches nobody else.
+            </div>
+          </div>
+          <div className="sa-knob-r">
+            <select className="input" value={provider} onChange={(e) => setProvider(e.target.value)}>
+              <option value="none">Nothing (off)</option>
+              <option value="twilio">A telephone carrier</option>
+              <option value="audiosocket">This practice's own telephone system</option>
+            </select>
+          </div>
+        </div>
+
+        {provider === "twilio" && (
+          <>
+            <div className="sa-knob">
+              <div className="sa-knob-l">
+                <div className="sa-knob-label">Public address of this deployment</div>
+                <div className="field-help">
+                  Where the carrier sends the call and opens the audio connection. It must begin with
+                  https and be reachable from the internet, because the carrier is on the internet.
+                </div>
+              </div>
+              <div className="sa-knob-r">
+                <input className="input" placeholder="https://calls.example.com" value={publicUrl} onChange={(e) => setPublicUrl(e.target.value)} />
+              </div>
+            </div>
+            <div className="sa-knob">
+              <div className="sa-knob-l">
+                <div className="sa-knob-label">Carrier credential {cfg.auth_token_set && <span className="sa-default mono">stored</span>}</div>
+                <div className="field-help">
+                  The token from your carrier account. Every request the carrier makes is checked
+                  against it, which is the whole of how a call proves it is theirs. Leave empty to keep
+                  the stored one.
+                </div>
+              </div>
+              <div className="sa-knob-r">
+                <input className="input" type="password" placeholder={cfg.auth_token_set ? "stored" : "not set"} value={token} onChange={(e) => setToken(e.target.value)} />
+              </div>
+            </div>
+          </>
+        )}
+
+        {ownSystem && (
+          <>
+            <div className="sa-knob">
+              <div className="sa-knob-l">
+                <div className="sa-knob-label">Listen for your telephone system on</div>
+                <div className="field-help">
+                  An address and port on your own network. Taken up when this deployment starts, so a
+                  change here needs a restart. Empty means no port is opened at all.
+                </div>
+              </div>
+              <div className="sa-knob-r">
+                <input className="input" placeholder="0.0.0.0:9092" value={listen} onChange={(e) => setListen(e.target.value)} />
+              </div>
+            </div>
+            <div className="sa-knob">
+              <div className="sa-knob-l">
+                <div className="sa-knob-label">Shared secret {cfg.audiosocket_key_set && <span className="sa-default mono">stored</span>}</div>
+                <div className="field-help">
+                  Put the same value in your telephone system's call routing. It is what stands in for
+                  the signature a carrier puts on its requests, and requests are only accepted from
+                  your own network. Leave empty to keep the stored one.
+                </div>
+              </div>
+              <div className="sa-knob-r">
+                <input className="input" type="password" placeholder={cfg.audiosocket_key_set ? "stored" : "not set"} value={secret} onChange={(e) => setSecret(e.target.value)} />
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="sa-knob">
+          <div className="sa-knob-l">
+            <div className="sa-knob-label">Calls at once</div>
+            <div className="field-help">
+              A hard ceiling that does not depend on anything outside this process, so it holds when
+              everything else is failing. {cfg.calls_in_progress} up right now.
+            </div>
+          </div>
+          <div className="sa-knob-r">
+            <input className="input" style={{ width: 90 }} inputMode="numeric" value={maxCalls} onChange={(e) => setMaxCalls(e.target.value.replace(/[^0-9]/g, ""))} />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <button className="btn" disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+        </div>
+      </section>
+
+      <section className="sa-card">
+        <h3 className="sa-card-h">Will a call work?</h3>
+        <p className="ed-hint" style={{ marginBottom: 12 }}>
+          Asks the questions a call asks, in the order it asks them. This makes a real test request to
+          your speech synthesiser, which is the only way to know it answers: a deployment that cannot
+          speak picks a call up and ends it, and the person who finds out is otherwise a caller.
+        </p>
+        <button className="btn btn-line" disabled={checking} onClick={() => void check()}>
+          {checking ? "Checking…" : "Run the check"}
+        </button>
+        {checks && (
+          <div style={{ marginTop: 14 }}>
+            {checks.map((c) => (
+              <div key={c.id} className="sa-knob">
+                <div className="sa-knob-l">
+                  <div className="sa-knob-label">
+                    <span style={{ color: c.ok ? "var(--green, #4ade80)" : "var(--red)" }}>{c.ok ? "✓" : "✗"}</span> {c.title}
+                  </div>
+                  <div className="field-help">{c.detail}</div>
+                  {c.fix && <div className="field-help" style={{ color: "var(--red)" }}>{c.fix}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {ownSystem && (
+        <section className="sa-card">
+          <h3 className="sa-card-h">What to put in your telephone system</h3>
+          <p className="ed-hint" style={{ marginBottom: 12 }}>
+            Your system asks this deployment what to do with a call, is given a one-off identifier good
+            for thirty seconds, and opens a connection with it. The last lines are what lets the agent
+            put a caller through to a person.
+          </p>
+          <pre className="mono" style={{ overflowX: "auto", fontSize: 11, lineHeight: 1.5 }}>
+{`exten => _X.,1,Set(CURLOPT(httpheader)=x-fosnie-telephony-key: YOUR-SECRET)
+ same => n,Set(ID=\${CURL(https://this-deployment/api/telephony/audiosocket/answer?from=\${CALLERID(num)}&to=\${EXTEN})})
+ same => n,GotoIf($["\${ID}" = ""]?hangup)
+ same => n,Answer()
+ same => n,Dial(AudioSocket/this-deployment:9092/\${ID})
+ same => n,Set(TO=\${CURL(https://this-deployment/api/telephony/audiosocket/continue?call=\${ID})})
+ same => n,GotoIf($["\${TO}" = ""]?hangup)
+ same => n,Dial(PJSIP/\${TO}@your-trunk)
+ same => n(hangup),Hangup()`}
+          </pre>
         </section>
       )}
     </div>

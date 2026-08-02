@@ -45,6 +45,37 @@ fn is_openai(base_url: &str) -> bool {
     base_url.contains("api.openai.com")
 }
 
+/// What to ask the engine to synthesise into.
+///
+/// The choice is the recipient's, not the engine's: something with a decoder wants a
+/// container, and something feeding a telephone line wants the samples themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClauseFormat {
+    /// A complete mp3 clip. What a browser plays.
+    Mp3,
+    /// Raw signed 16-bit little-endian mono samples at 24 kHz, which is the rate the
+    /// OpenAI-audio engines produce natively.
+    Pcm24k,
+}
+
+impl ClauseFormat {
+    /// The engine's `response_format` value.
+    fn request(self) -> &'static str {
+        match self {
+            ClauseFormat::Mp3 => "mp3",
+            ClauseFormat::Pcm24k => "pcm",
+        }
+    }
+
+    /// The media type of what comes back.
+    pub fn mime(self) -> &'static str {
+        match self {
+            ClauseFormat::Mp3 => "audio/mpeg",
+            ClauseFormat::Pcm24k => "audio/pcm;rate=24000;channels=1",
+        }
+    }
+}
+
 /// A streaming-TTS session for one clause.
 pub struct TtsStream {
     rx: mpsc::Receiver<Vec<u8>>,
@@ -77,6 +108,7 @@ pub async fn stream_clause(
     text: &str,
     voice: Option<&str>,
     api_key: Option<&str>,
+    format: ClauseFormat,
 ) -> Result<TtsStream, AppError> {
     let url = audio_speech_url(base_url);
     let openai = is_openai(base_url);
@@ -87,11 +119,11 @@ pub async fn stream_clause(
         "model": model,
         "input": text,
         "voice": voice,
-        "response_format": "mp3",
+        "response_format": format.request(),
     });
     // `stream: true` is a kokoro-fastapi extension for chunked synthesis. OpenAI's
     // /v1/audio/speech has no such field and returns a payload the browser can't
-    // play as audio/mpeg — it streams the mp3 body natively, so omit it there.
+    // play as audio/mpeg — it streams the body natively, so omit it there.
     if !openai {
         body["stream"] = serde_json::Value::Bool(true);
     }
@@ -106,10 +138,10 @@ pub async fn stream_clause(
     if !resp.status().is_success() {
         return Err(AppError::Unavailable(format!("streaming TTS returned {}", resp.status())));
     }
-    // We always request mp3, so present the stream as audio/mpeg regardless of what
-    // the provider labels it — the player decodes mp3 clips and some engines mislabel
-    // or omit the Content-Type.
-    let mime = "audio/mpeg".to_string();
+    // Present the stream as what was *asked for*, regardless of what the provider
+    // labels it: some engines mislabel the Content-Type and some omit it, and the
+    // recipient was built for the format this call requested.
+    let mime = format.mime().to_string();
     let (tx, rx) = mpsc::channel::<Vec<u8>>(32);
     let reader = tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
@@ -161,5 +193,16 @@ mod tests {
     fn is_openai_detects_host() {
         assert!(is_openai("https://api.openai.com/v1"));
         assert!(!is_openai("http://localhost:8880"));
+    }
+
+    /// Both halves of a format are pinned together: the word sent to the engine and
+    /// the media type handed to the recipient have to describe the same thing, and a
+    /// mismatch between them is audible rather than visible.
+    #[test]
+    fn a_format_asks_for_and_reports_the_same_thing() {
+        assert_eq!(ClauseFormat::Mp3.request(), "mp3");
+        assert_eq!(ClauseFormat::Mp3.mime(), "audio/mpeg");
+        assert_eq!(ClauseFormat::Pcm24k.request(), "pcm");
+        assert_eq!(ClauseFormat::Pcm24k.mime(), "audio/pcm;rate=24000;channels=1");
     }
 }

@@ -32,6 +32,12 @@ pub enum ChatOrigin {
     #[default]
     Web,
     Desktop,
+    /// A conversation held aloud, over a telephone line.
+    ///
+    /// The caller has no account and never signs in, so the rule above holds in its
+    /// strongest form here: the provenance comes from the carrier's request signature and
+    /// a single-use ticket minted against it, and from nothing the media stream says.
+    Phone,
 }
 
 impl ChatOrigin {
@@ -39,8 +45,13 @@ impl ChatOrigin {
         match self {
             ChatOrigin::Web => "web",
             ChatOrigin::Desktop => "desktop",
+            ChatOrigin::Phone => "phone",
         }
     }
+
+    /// Every value the chat row will accept, so a variant added here without the
+    /// migration that permits it fails a test rather than a write.
+    pub const ALL: [ChatOrigin; 3] = [ChatOrigin::Web, ChatOrigin::Desktop, ChatOrigin::Phone];
 
     /// A connection authenticated by a device token is a desktop client; any
     /// other is web.
@@ -75,17 +86,33 @@ pub struct TurnContext<'a> {
     /// or a failure can be reflected on the automation's own record) and marks the
     /// folder binding as made by a schedule rather than by a person.
     pub automation_id: Option<Uuid>,
+    /// The telephone call being carried, when this turn is part of one.
+    ///
+    /// Provenance again, and again not authority: the call runs as the account the
+    /// line is registered to and can reach nothing that account cannot. What this
+    /// decides is what a turn may write *about* — which call a record of what the
+    /// caller wanted belongs to. Carried rather than looked up, because the record
+    /// is written while the call is still in progress and nothing has yet linked
+    /// the call to the conversation it is producing.
+    pub call_id: Option<Uuid>,
 }
 
 impl<'a> TurnContext<'a> {
     /// The ordinary case: a turn from the web, or from any caller for which
     /// provenance is not tracked (scheduler, workflows, voice).
     pub fn web(auth: &'a AuthContext) -> Self {
-        Self { auth, origin: ChatOrigin::Web, device_id: None, workspace_id: None, automation_id: None }
+        Self {
+            auth,
+            origin: ChatOrigin::Web,
+            device_id: None,
+            workspace_id: None,
+            automation_id: None,
+            call_id: None,
+        }
     }
 
     pub fn new(auth: &'a AuthContext, origin: ChatOrigin) -> Self {
-        Self { auth, origin, device_id: None, workspace_id: None, automation_id: None }
+        Self { auth, origin, device_id: None, workspace_id: None, automation_id: None, call_id: None }
     }
 
     /// The same turn, knowing which machine it arrived from.
@@ -104,5 +131,34 @@ impl<'a> TurnContext<'a> {
     pub fn with_automation(mut self, automation_id: Option<Uuid>) -> Self {
         self.automation_id = automation_id;
         self
+    }
+
+    /// The same turn, knowing which telephone call it is being spoken during.
+    pub fn with_call(mut self, call_id: Option<Uuid>) -> Self {
+        self.call_id = call_id;
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The strings the chat row is stamped with. They are the values a database check
+    /// permits, so they are pinned here rather than left to a rename: a variant whose
+    /// string drifts writes rows the database refuses, at the end of a telephone call.
+    #[test]
+    fn every_origin_is_a_value_the_chat_row_accepts() {
+        let written: Vec<&str> = ChatOrigin::ALL.iter().map(|o| o.as_str()).collect();
+        assert_eq!(written, vec!["web", "desktop", "phone"]);
+        // 'api' is deliberately absent: the programmatic surface stamps its own rows and
+        // never runs a turn through here.
+        assert!(!written.contains(&"api"));
+    }
+
+    #[test]
+    fn a_device_token_means_a_desktop_client() {
+        assert_eq!(ChatOrigin::from_device(Some(Uuid::now_v7())), ChatOrigin::Desktop);
+        assert_eq!(ChatOrigin::from_device(None), ChatOrigin::Web);
     }
 }

@@ -58,6 +58,8 @@ pub enum TaskType {
     McpHealth,
     ReindexEmbeddings,
     ApiChatCleanup,
+    TelephonyRetention,
+    NotifyDeliver,
 }
 
 impl TaskType {
@@ -80,6 +82,8 @@ impl TaskType {
             TaskType::McpHealth => "mcp_health",
             TaskType::ReindexEmbeddings => "reindex_embeddings",
             TaskType::ApiChatCleanup => "api_chat_cleanup",
+            TaskType::TelephonyRetention => "telephony_retention",
+            TaskType::NotifyDeliver => "notify_deliver",
         }
     }
 
@@ -103,6 +107,8 @@ impl TaskType {
             "mcp_health" => Some(TaskType::McpHealth),
             "reindex_embeddings" => Some(TaskType::ReindexEmbeddings),
             "api_chat_cleanup" => Some(TaskType::ApiChatCleanup),
+            "telephony_retention" => Some(TaskType::TelephonyRetention),
+            "notify_deliver" => Some(TaskType::NotifyDeliver),
             _ => None,
         }
     }
@@ -447,6 +453,19 @@ async fn handle(
                 Err(e) => Err(e.to_string()),
             }
         }
+        // One line, posted where somebody outside will see it. An error here is worth
+        // retrying, which is what the queue's own backoff is for, and is why this is a
+        // task rather than something done where the decision to notify was made.
+        TaskType::NotifyDeliver => match crate::telephony::notify::deliver(state, payload).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        },
+        // A line's own periods decide what goes, so this is a no-op on a deployment
+        // where nobody has set one.
+        TaskType::TelephonyRetention => match crate::telephony::retention::sweep(state).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        },
         TaskType::ApiChatCleanup => match run_api_chat_cleanup(state).await {
             Ok(n) => {
                 if n > 0 {

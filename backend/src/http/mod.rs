@@ -59,6 +59,13 @@ pub mod skills;
 pub mod superadmin;
 pub mod tabular;
 pub mod telemetry;
+pub mod conflict_names;
+pub mod diary;
+pub mod enquiries;
+pub mod notify_targets;
+pub mod telephony_admin;
+pub mod telephony_compliance;
+pub mod telephony_lines;
 pub mod tools;
 pub mod users_admin;
 pub mod v1;
@@ -219,9 +226,32 @@ pub fn router(
         .route("/api/admin/super/users/{id}/deactivate", post(superadmin::deactivate_user))
         .route("/api/admin/super/users/{id}/data", axum::routing::delete(superadmin::erase_user))
         .route("/api/admin/super/chats/{id}/messages", get(superadmin::chat_messages))
+        // Configuring the telephone line, including the carrier's credential.
+        // Break-glass rather than client-admin for the same reason as the installer
+        // above: this decides who can ring an instance and what identity the calls run
+        // as, which is a different order of thing from configuring the platform.
+        .route(
+            "/api/admin/telephony",
+            get(telephony_admin::get_settings).put(telephony_admin::set_settings),
+        )
+        .route("/api/admin/telephony/preflight", get(telephony_admin::preflight))
         .with_state(state.clone());
 
-    let mut app = public.merge(breakglass);
+    // The carrier's endpoints. Public, because a carrier has no account here: each one
+    // authenticates itself by the request signature its own handler checks. Mounted on
+    // the public router rather than through the edition slot, which is for a private
+    // edition's routes; and behind a guard that makes the whole surface absent unless
+    // this instance actually has a line. The 16 KiB cap is a webhook body's worth: it is
+    // buffered whole to be signed, so it is also the memory the route can cost.
+    let telephony = crate::telephony::routes()
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::telephony::enabled_guard,
+        ))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .with_state(state.clone());
+
+    let mut app = public.merge(breakglass).merge(telephony);
 
     // Protected API. Routes are mounted regardless of auth mode: in keycloak mode
     // the Bearer-JWT validation layer is applied below; in local mode the
@@ -482,6 +512,60 @@ pub fn router(
             .route("/api/admin/providers/{role}", axum::routing::put(providers::set_provider))
             .route("/api/admin/providers/{role}/test", post(providers::test_provider))
             .route("/api/admin/voice-live", get(voice_admin::get).put(voice_admin::set))
+        // Telephone lines. Ordinary administration, done daily, so the protected router
+        // rather than break-glass: what stays break-glass is the switch that decides
+        // whether this instance answers a telephone at all, and the carrier's credential.
+        .route(
+            "/api/admin/telephony/numbers",
+            get(telephony_lines::list_lines).post(telephony_lines::create_line),
+        )
+        .route(
+            "/api/admin/telephony/numbers/{id}",
+            axum::routing::patch(telephony_lines::update_line).delete(telephony_lines::delete_line),
+        )
+        .route("/api/admin/telephony/calls", get(telephony_lines::list_calls))
+        // The same readiness list as the deployment's own settings screen, for whoever
+        // wires the lines.
+        .route("/api/admin/telephony/check", get(telephony_lines::check))
+        .route("/api/admin/telephony/enquiries", get(enquiries::list_all))
+        // Your own messages, under no permission at all: somebody whose telephone line
+        // takes them need not administer anything.
+        .route("/api/enquiries", get(enquiries::list_mine))
+        .route("/api/enquiries/{id}", axum::routing::patch(enquiries::set_handled))
+        // The list a line checks callers against. The practice's own confidential
+        // holding, so it is gated on owning it rather than on being able to wire a line.
+        .route("/api/conflict-names", get(conflict_names::list).post(conflict_names::add))
+        .route("/api/conflict-names/{id}", axum::routing::delete(conflict_names::remove))
+        // The practice's diary: when it is open and who is coming in. Its own working
+        // arrangements, so gated on owning it rather than on being able to wire a line.
+        .route("/api/diary", get(diary::get).put(diary::set))
+        .route("/api/diary/closures", post(diary::add_closure))
+        .route("/api/diary/closures/{date}", axum::routing::delete(diary::remove_closure))
+        .route("/api/diary/appointments", get(diary::appointments).post(diary::book))
+        .route("/api/diary/appointments/{id}", axum::routing::delete(diary::cancel))
+        // Where an account is told about what its lines took. The practice's own
+        // arrangements, so gated on owning them rather than on being able to wire a line.
+        .route("/api/notify-targets", get(notify_targets::list).post(notify_targets::create))
+        .route(
+            "/api/notify-targets/{id}",
+            axum::routing::patch(notify_targets::update).delete(notify_targets::remove),
+        )
+        .route("/api/notify-targets/{id}/test", post(notify_targets::test))
+        // What the lines do with what they are told, assembled from the settings
+        // themselves, and throwing away what was said on one call. Both the practice's own
+        // business rather than line wiring, so gated the same way the diary is.
+        .route("/api/telephony/compliance", get(telephony_compliance::record))
+        .route(
+            "/api/telephony/calls/{id}/transcript",
+            axum::routing::delete(telephony_compliance::delete_transcript),
+        )
+        // The sound of a call, on the lines that record. Read and removed by the account
+        // whose line took it, and audited every time somebody listens.
+        .route(
+            "/api/telephony/calls/{id}/recording",
+            get(telephony_compliance::play_recording)
+                .delete(telephony_compliance::delete_recording),
+        )
             .route("/api/admin/embedding-index", get(providers::embedding_index_status))
             .route("/api/admin/embedding-index/reindex", post(providers::reindex_embeddings))
             .route("/api/me/providers", get(providers::list_my_providers))
@@ -950,6 +1034,7 @@ async fn whoami(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> impl 
         groundedness_on && crate::ml::groundedness_repair_enabled(&state.pg).await;
     // Live voice: the host flag plus the client-relevant runtime dials (so the SPA
     // can default push-to-talk and require echo cancellation without a second call).
+    let telephony = state.features.enabled_for(&state, &ctx, "telephony").await;
     let voice_live_opts = if voice_live {
         let k = crate::voice::VoiceKnobs::load(&state.pg).await;
         json!({
@@ -1046,6 +1131,7 @@ async fn whoami(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> impl 
             "code_interpreter": state.boot.features.code_interpreter,
             "voice": voice_on,
             "voice_live": voice_live,
+            "telephony": telephony,
             "dictation_streaming": dictation_streaming,
             "workflows": workflows,
             "groundedness": groundedness_on,
@@ -1071,7 +1157,7 @@ async fn whoami(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> impl 
 /// Constant-time byte equality — no early exit on a content mismatch, so a
 /// timing side-channel can't recover the secret byte-by-byte. (Length is
 /// allowed to short-circuit: a high-entropy token's length is not the secret.)
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

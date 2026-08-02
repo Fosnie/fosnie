@@ -75,13 +75,18 @@ pub struct ServerOut {
     pub has_secret: bool,
     /// True ⇒ the server reaches a remote/public endpoint (egress-gated, public URL).
     pub requires_egress: bool,
+    /// May this server's side-effecting tools be used while a caller is on the telephone,
+    /// where there is nobody to approve them? `refuse` (the default) means the agent is
+    /// told it cannot and offers to take a message instead.
+    pub call_policy: String,
 }
 
 pub async fn list(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> Result<Json<Vec<ServerOut>>> {
     state.rbac.require_permission(&state.pg, &ctx, permissions::MCP_MANAGE).await?;
     let rows = sqlx::query!(
         r#"SELECT id, slug, name, transport, url, status, enabled, tools_catalog, last_health_at,
-                  created_at, auth_type, auth_header_name, auth_value_enc, requires_egress
+                  created_at, auth_type, auth_header_name, auth_value_enc, requires_egress,
+                  call_policy
            FROM mcp_servers ORDER BY created_at DESC"#
     )
     .fetch_all(&state.pg)
@@ -124,6 +129,7 @@ pub async fn list(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> Res
             auth_header_name: r.auth_header_name,
             has_secret: r.auth_value_enc.is_some(),
             requires_egress: r.requires_egress,
+            call_policy: r.call_policy,
         });
     }
     Ok(Json(out))
@@ -379,6 +385,9 @@ pub struct PatchBody {
     pub auth_value: Option<String>,
     #[serde(default)]
     pub requires_egress: Option<bool>,
+    /// `refuse | allow` — whether this server may be reached during a telephone call.
+    #[serde(default)]
+    pub call_policy: Option<String>,
 }
 
 /// Update a registered server in place. Changing `url` or `auth_type` forces re-approval
@@ -393,7 +402,8 @@ pub async fn patch_server(
 ) -> Result<Json<Value>> {
     state.rbac.require_permission(&state.pg, &ctx, permissions::MCP_MANAGE).await?;
     let cur = sqlx::query!(
-        "SELECT slug, transport, url, auth_type, requires_egress FROM mcp_servers WHERE id = $1",
+        "SELECT slug, transport, url, auth_type, requires_egress, call_policy \
+           FROM mcp_servers WHERE id = $1",
         id
     )
     .fetch_optional(&state.pg)
@@ -409,6 +419,19 @@ pub async fn patch_server(
         true
     } else {
         body.requires_egress.unwrap_or(cur.requires_egress)
+    };
+
+    // Refused unless the word that permits it is the word given: on a call there is
+    // nobody to approve anything, so anything unrecognised has to mean no.
+    let call_policy = match body.call_policy.as_deref() {
+        Some("allow") => "allow".to_string(),
+        Some("refuse") => "refuse".to_string(),
+        Some(other) => {
+            return Err(AppError::Validation(format!(
+                "a server is either allowed on a telephone call or refused, not {other:?}"
+            )))
+        }
+        None => cur.call_policy.clone(),
     };
 
     let new_url = body.url.clone().or_else(|| cur.url.clone());
@@ -452,6 +475,7 @@ pub async fn patch_server(
                       auth_header_name = $5,
                       auth_value_enc = COALESCE($6, auth_value_enc),
                       requires_egress = $7,
+                      call_policy = $9,
                       status = CASE WHEN $8 THEN 'pending' ELSE status END,
                       updated_at = now()
                 WHERE id = $1"#,
@@ -463,6 +487,7 @@ pub async fn patch_server(
             value_enc,
             requires_egress,
             reapprove,
+            call_policy,
         )
         .execute(&state.pg)
         .await?;
@@ -472,6 +497,7 @@ pub async fn patch_server(
                   SET name = COALESCE($2, name),
                       url = $3,
                       requires_egress = $4,
+                      call_policy = $6,
                       status = CASE WHEN $5 THEN 'pending' ELSE status END,
                       updated_at = now()
                 WHERE id = $1"#,
@@ -480,6 +506,7 @@ pub async fn patch_server(
             new_url,
             requires_egress,
             reapprove,
+            call_policy,
         )
         .execute(&state.pg)
         .await?;

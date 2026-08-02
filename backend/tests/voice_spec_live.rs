@@ -172,7 +172,8 @@ async fn session_for(st: &AppState, user: Uuid, chat: Uuid) -> Arc<Session> {
     let (tx, rx) = mpsc::channel::<ServerFrame>(256);
     // Keep the receiver alive for the session's lifetime, or its sends start failing.
     std::mem::forget(rx);
-    Session::start(st.clone(), ctx(user), Uuid::now_v7(), tx, Some(chat), None, None, Some("ptt".into()), true).await
+    let sink = Arc::new(fosnie_backend::voice::WebSocketSink::new(tx));
+    Session::start(st.clone(), ctx(user), Uuid::now_v7(), sink, Some(chat), None, None, Some("ptt".into()), true, fosnie_backend::voice::VoiceProfile::Browser, fosnie_backend::chat::origin::ChatOrigin::Web, None).await
 }
 
 /// The scope a speculative search reads must be exactly the scope the committed turn
@@ -267,7 +268,14 @@ async fn interrupting_stops_a_search_the_turn_is_waiting_on() {
 
     // The speaker finishes with the same words, so the turn decides the search in
     // flight is the right one and waits for it...
-    session.start_turn(QUESTION.to_string()).await;
+    session
+        .start_turn(
+            QUESTION.to_string(),
+            std::sync::Arc::new(fosnie_backend::voice::session::TurnClock::for_profile(
+                fosnie_backend::voice::VoiceProfile::Browser,
+            )),
+        )
+        .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     // ...and then interrupts.
     session.barge_in().await;

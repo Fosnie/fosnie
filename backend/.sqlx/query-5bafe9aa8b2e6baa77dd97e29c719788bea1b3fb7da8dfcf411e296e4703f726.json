@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT weekday, opens_minute, closes_minute FROM diary_hours WHERE owner_user_id = $1 ORDER BY weekday, opens_minute",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "weekday",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "diary_hours",
+            "name": "weekday"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "opens_minute",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "diary_hours",
+            "name": "opens_minute"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "closes_minute",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "diary_hours",
+            "name": "closes_minute"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5bafe9aa8b2e6baa77dd97e29c719788bea1b3fb7da8dfcf411e296e4703f726"
+}

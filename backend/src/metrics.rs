@@ -18,14 +18,100 @@
 
 use std::sync::OnceLock;
 
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle};
 
 static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+
+/// Where each timing metric's buckets fall.
+///
+/// **A metric absent from this table cannot be plotted as a percentile.** Without
+/// declared boundaries a histogram is rendered as a rolling quantile summary, which has
+/// no `_bucket` series at all, and a dashboard panel or an alert built on
+/// `histogram_quantile` over one returns nothing: not an error, not a zero, nothing. So a
+/// panel simply stays blank and an alert simply never fires, which is the worst way for
+/// monitoring to fail.
+///
+/// Two rules about the numbers themselves. Every value a target or an alert threshold is
+/// stated in **is an exact boundary**, because a quantile read between boundaries is
+/// interpolated, and alerting on an interpolated number means alerting on an estimate of
+/// something that was measured exactly. And boundaries ascend, since the exporter takes
+/// them as upper bounds in order.
+const BUCKETS: &[(&str, MatchKind, &[f64])] = &[
+    // Every voice stage shares one ladder, so a stage added later is plottable without
+    // touching this table. 0.5 and 0.8 are the documented turn-latency targets.
+    (
+        "voice_",
+        MatchKind::Prefix,
+        &[0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.65, 0.8, 1.0, 1.5, 2.0, 3.0, 5.0],
+    ),
+    // Loudness, not time: the two values that are the speech and talk-over gates are
+    // boundaries, because reading the distribution against them is the whole purpose.
+    // A full-name match beats the prefix above, which the exporter documents.
+    (
+        "voice_frame_rms",
+        MatchKind::Full,
+        &[0.002, 0.004, 0.008, 0.012, 0.02, 0.035, 0.05, 0.08, 0.12, 0.2, 0.35],
+    ),
+    // 2.0 is the request-latency alert threshold.
+    (
+        "http_request_duration_seconds",
+        MatchKind::Full,
+        &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 2.5, 5.0, 10.0],
+    ),
+    // 5.0 is the slow-first-token alert threshold.
+    ("llm_ttft_seconds", MatchKind::Full, &[0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 13.0, 21.0, 34.0]),
+    // A reasoning model generates for minutes, so the tail is long on purpose.
+    (
+        "llm_generation_seconds",
+        MatchKind::Full,
+        &[0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 300.0, 600.0],
+    ),
+    // One series spans an embedding call and a whole research run.
+    (
+        "ml_request_duration_seconds",
+        MatchKind::Full,
+        &[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0],
+    ),
+    // Telephone calls are measured in minutes, not fractions of a second.
+    ("telephony_call_seconds", MatchKind::Full, &[5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0]),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchKind {
+    Full,
+    Prefix,
+}
+
+impl MatchKind {
+    fn matcher(self, name: &str) -> Matcher {
+        match self {
+            MatchKind::Full => Matcher::Full(name.to_string()),
+            MatchKind::Prefix => Matcher::Prefix(name.to_string()),
+        }
+    }
+}
 
 /// Install the global Prometheus recorder. Idempotent-ish: a second call is a
 /// no-op (the first handle wins). Call once at startup, after telemetry init.
 pub fn init() {
-    match PrometheusBuilder::new().install_recorder() {
+    let mut builder = PrometheusBuilder::new();
+    // Per-metric only. The exporter documents that setting one global bucket set makes
+    // every per-metric override inert, so calling the global form here would silently
+    // undo this whole table.
+    for (name, kind, bounds) in BUCKETS {
+        // The only way the call below can fail is an empty boundary list, and taking it
+        // out here rather than catching it after keeps the builder, which the call
+        // consumes. Warn and carry on: losing one metric's percentiles is not a reason to
+        // start with no metrics at all.
+        if bounds.is_empty() {
+            tracing::warn!(metric = %name, "no bucket boundaries declared; percentiles will be unavailable");
+            continue;
+        }
+        builder = builder
+            .set_buckets_for_metric(kind.matcher(name), bounds)
+            .expect("the boundary list was just checked to be non-empty");
+    }
+    match builder.install_recorder() {
         Ok(handle) => {
             let _ = HANDLE.set(handle);
         }
@@ -114,4 +200,96 @@ pub fn spawn_runtime_collector(pg: sqlx::PgPool, redis: deadpool_redis::Pool) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod bucket_tests {
+    use super::*;
+
+    fn bounds(name: &str) -> &'static [f64] {
+        BUCKETS
+            .iter()
+            .find(|(n, kind, _)| *n == name && *kind == MatchKind::Full)
+            .map(|(_, _, b)| *b)
+            .or_else(|| {
+                BUCKETS
+                    .iter()
+                    .find(|(n, kind, _)| *kind == MatchKind::Prefix && name.starts_with(*n))
+                    .map(|(_, _, b)| *b)
+            })
+            .unwrap_or_else(|| panic!("{name} has no declared buckets, so it cannot be plotted"))
+    }
+
+    /// A quantile read between two boundaries is interpolated. So a figure anybody
+    /// alerts on, or states as a target, has to be a boundary itself: otherwise the
+    /// number being compared with the threshold is an estimate of the number that was
+    /// measured exactly.
+    ///
+    /// Each pair here is a value written down somewhere outside this file: in an alert
+    /// rule, in a dashboard threshold, or in the deployment notes.
+    #[test]
+    fn every_stated_threshold_is_an_exact_boundary() {
+        for (metric, threshold) in [
+            // The documented turn-latency targets.
+            ("voice_turn_latency_seconds", 0.5),
+            ("voice_turn_latency_seconds", 0.8),
+            ("voice_reply_heard_seconds", 0.8),
+            // The two loudness gates, which are read off the distribution.
+            ("voice_frame_rms", 0.012),
+            ("voice_frame_rms", 0.035),
+            // The shipped alert thresholds.
+            ("http_request_duration_seconds", 2.0),
+            ("llm_ttft_seconds", 5.0),
+        ] {
+            assert!(
+                bounds(metric).contains(&threshold),
+                "{threshold} is not a boundary of {metric}, so a percentile compared with it is interpolated"
+            );
+        }
+    }
+
+    /// The exporter takes boundaries as ordered upper bounds.
+    #[test]
+    fn boundaries_ascend_and_are_usable() {
+        for (name, _, bounds) in BUCKETS {
+            assert!(!bounds.is_empty(), "{name} declares no boundaries");
+            for pair in bounds.windows(2) {
+                assert!(pair[0] < pair[1], "{name} boundaries are out of order at {pair:?}");
+            }
+            assert!(bounds.iter().all(|b| b.is_finite() && *b > 0.0), "{name} has an unusable bound");
+        }
+    }
+
+    /// A metric matched by name must not also be matched by a second name-match, and the
+    /// one prefix is only allowed to overlap a full match, which the exporter resolves in
+    /// the full match's favour.
+    #[test]
+    fn no_two_entries_claim_the_same_metric_ambiguously() {
+        let full: Vec<&str> =
+            BUCKETS.iter().filter(|(_, k, _)| *k == MatchKind::Full).map(|(n, _, _)| *n).collect();
+        let mut sorted = full.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), full.len(), "a metric is named twice");
+
+        let prefixes: Vec<&str> =
+            BUCKETS.iter().filter(|(_, k, _)| *k == MatchKind::Prefix).map(|(n, _, _)| *n).collect();
+        for a in &prefixes {
+            for b in &prefixes {
+                if a != b {
+                    assert!(!a.starts_with(b), "prefix {a} is also matched by {b}");
+                }
+            }
+        }
+    }
+
+    /// Every voice stage inherits the shared ladder, so a stage added later is plottable
+    /// without anybody remembering to come back here.
+    #[test]
+    fn a_new_voice_stage_is_plottable_without_a_new_entry() {
+        let ladder = bounds("voice_turn_latency_seconds");
+        assert_eq!(bounds("voice_some_stage_added_later_seconds"), ladder);
+        // ...except the loudness one, which is not a duration and says so by name.
+        assert_ne!(bounds("voice_frame_rms"), ladder);
+    }
 }

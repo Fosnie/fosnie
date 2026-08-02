@@ -20,12 +20,20 @@ API (below). Everything stays inside the perimeter — no egress.
 
 ### Key series
 
+**A percentile needs declared buckets.** A histogram with no bucket boundaries is exported
+as a rolling quantile summary, which has no `_bucket` series, so `histogram_quantile` over
+it returns nothing at all: the panel is blank and the alert never fires, with no error
+anywhere. The boundaries live in one table in the backend's metrics module, and every value
+a target or an alert threshold is stated in is an exact boundary of the metric it applies
+to. A new timing metric that wants a percentile needs an entry there.
+
 | Area | Series |
 | --- | --- |
 | HTTP | `http_requests_total{method,route,status}`, `http_request_duration_seconds{…,status}` |
 | LLM | `llm_ttft_seconds`, `llm_generation_seconds`, `llm_tokens_total{kind,model}`, `chat_turns_total` |
 | ML upstream | `ml_request_duration_seconds{op}` (backend→ML), `ml_request_seconds{path}` (ML self) |
-| Voice | `voice_turn_latency_ms`, `voice_barge_in_total` |
+| Voice | Per stage of a turn, all `{transport="browser"\|"phone"}`: `voice_endpoint_seconds` (speaker stopped → turn ended), `voice_turn_detect_seconds` + `voice_turn_detect_total{outcome}`, `voice_stt_commit_seconds`, `voice_commit_overhead_seconds`, `voice_first_token_seconds`, `voice_first_clause_seconds`, `voice_tts_open_seconds`, `voice_turn_latency_seconds` (→ first reply audio handed to the transport). Plus `voice_barge_in_total`, `voice_turn_forced_total`, and `voice_frame_rms{transport,phase}` — the loudness distribution the two speech gates are set from. Batch speech-to-text on the fallback path is `ml_request_duration_seconds{op="transcribe"}` rather than a series of its own. |
+| Telephony | `voice_reply_heard_seconds{transport}` / `voice_reply_spoken_seconds{transport}` — when the **caller** began and finished hearing a reply, which is later than `voice_turn_latency_seconds` by the pacing, the socket and the carrier's own buffer. Also `telephony_calls_total`, `telephony_call_seconds`, `telephony_refused_total{reason}`, `telephony_clear_total`, `telephony_frames_out_total`, `telephony_error_total`, `telephony_mark_timeout_total`. |
 | Tasks | `task_queue_depth{status}`, `task_runs_total{type,outcome}` |
 | Datastores | `db_pool_connections{state}`, `redis_pool_connections{state}`, `db_ping_seconds`, `redis_ping_seconds` |
 | WebSocket | `ws_connections`, `ws_origin_rejected_total` |

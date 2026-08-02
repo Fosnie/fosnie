@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE enquiries SET handled_at = CASE WHEN $3 THEN now() ELSE NULL END, handled_by = CASE WHEN $3 THEN $2 ELSE NULL END WHERE id = $1 AND ($4::bool OR owner_user_id = $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9f485749913be0c00e1e6da165b9eac5977391e510aed1c1d420c82484114b4e"
+}

@@ -543,9 +543,15 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         if let Some(old) = state.voice.remove(socket_id) {
                             old.shutdown().await; // one live session per socket
                         }
+                        let sink = Arc::new(crate::voice::WebSocketSink::new(tx.clone()));
                         let s = crate::voice::Session::start(
-                            state.clone(), ctx.clone(), socket_id, tx.clone(), chat_id, project_id,
+                            state.clone(), ctx.clone(), socket_id, sink, chat_id, project_id,
                             agent_id, mode, aec,
+                            crate::voice::VoiceProfile::Browser,
+                            crate::chat::origin::ChatOrigin::Web,
+                            // Nobody is on a telephone: there is no call to attach
+                            // anything to, and the tools that would attach it refuse.
+                            None,
                         )
                         .await;
                         state.voice.insert(socket_id, s);

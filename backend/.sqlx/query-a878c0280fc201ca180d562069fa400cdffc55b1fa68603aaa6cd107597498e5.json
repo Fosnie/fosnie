@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT normalised FROM conflict_names WHERE owner_user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "normalised",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "conflict_names",
+            "name": "normalised"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a878c0280fc201ca180d562069fa400cdffc55b1fa68603aaa6cd107597498e5"
+}

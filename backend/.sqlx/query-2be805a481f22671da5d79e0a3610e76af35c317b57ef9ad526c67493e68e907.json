@@ -1,0 +1,163 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.phone_number_id, c.owner_user_id, c.agent_id,\n                  c.provider, c.provider_call_id,\n                  c.from_e164, c.to_e164,\n                  u.display_name AS owner_name,\n                  p.deliver_group_chat_id, p.transfer_e164,\n                  EXISTS (SELECT 1 FROM conflict_names n\n                           WHERE n.owner_user_id = c.owner_user_id) AS \"screening_required!\",\n                  EXISTS (SELECT 1 FROM diaries d\n                           WHERE d.owner_user_id = c.owner_user_id AND d.enabled)\n                        AS \"diary_enabled!\"\n             FROM calls c\n             JOIN users u ON u.id = c.owner_user_id\n             LEFT JOIN phone_numbers p ON p.id = c.phone_number_id\n            WHERE c.id = $1 AND c.owner_user_id = $2 AND c.ended_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "phone_number_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "phone_number_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "owner_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "agent_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "agent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "provider_call_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "provider_call_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "from_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "from_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "to_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "calls",
+            "name": "to_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "owner_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "deliver_group_chat_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "deliver_group_chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "transfer_e164",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "phone_numbers",
+            "name": "transfer_e164"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "screening_required!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "diary_enabled!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "2be805a481f22671da5d79e0a3610e76af35c317b57ef9ad526c67493e68e907"
+}

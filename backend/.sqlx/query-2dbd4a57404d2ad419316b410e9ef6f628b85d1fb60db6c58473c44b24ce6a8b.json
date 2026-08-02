@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT timezone, slot_minutes, lead_minutes, horizon_days FROM diaries WHERE owner_user_id = $1 AND enabled",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "timezone",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "diaries",
+            "name": "timezone"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "slot_minutes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "diaries",
+            "name": "slot_minutes"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "lead_minutes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "diaries",
+            "name": "lead_minutes"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "horizon_days",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "diaries",
+            "name": "horizon_days"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2dbd4a57404d2ad419316b410e9ef6f628b85d1fb60db6c58473c44b24ce6a8b"
+}

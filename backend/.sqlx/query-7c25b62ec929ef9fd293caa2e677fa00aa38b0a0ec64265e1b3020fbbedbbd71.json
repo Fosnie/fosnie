@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM diary_closures WHERE owner_user_id = $1 AND closed_on = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7c25b62ec929ef9fd293caa2e677fa00aa38b0a0ec64265e1b3020fbbedbbd71"
+}

@@ -385,6 +385,9 @@ export function Sidebar() {
                     {c.origin === "desktop" && (
                       <Icon.Desktop size={12} className="chat-origin-icon" aria-label="Created on desktop" />
                     )}
+                    {c.origin === "phone" && (
+                      <Icon.Phone size={12} className="chat-origin-icon" aria-label="From a telephone call" />
+                    )}
                     <span className="chat-title" title={c.title}>{c.title}</span>
                   </span>
                   <span className="chat-meta mono">{relTime(c.created_at)}</span>
