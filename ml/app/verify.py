@@ -26,18 +26,43 @@ returns raw spans only; the score formula lives HERE so swapping the model never
 changes the score. Dev engine: backend/deploy/verify (port 8095)."""
 
 import logging
+import math
 import re
 import time
 
 from . import http_client
 from .config import settings
+from .inference_fixed import routed_fixed, post
+from .inference_target import strict
 
-_log = logging.getLogger("pai.verify")
+_log = logging.getLogger("fosnie.verify")
 _RETRY_AFTER = 30.0  # seconds to skip the verifier after a failure, then retry
 _down_until = 0.0
 _warned = False
 
 _EMPTY = {"spans": [], "score": None, "total": 0, "flagged": 0}
+
+
+def _routed_spans(data, answer, strictness, threshold):
+    """Malformed evidence cannot be silently converted into a grounded answer."""
+    if not isinstance(data, dict) or not isinstance(data.get("spans"), list) or len(data["spans"]) > 1024:
+        raise ValueError("invalid verifier spans")
+    spans = []
+    for item in data["spans"]:
+        if not isinstance(item, dict):
+            raise ValueError("invalid verifier span")
+        start, end = item.get("start"), item.get("end")
+        confidence = item.get("confidence", item.get("score"))
+        if (type(start) is not int or type(end) is not int or not 0 <= start < end <= len(answer)
+                or item.get("label") not in ("contradicted", "not_mentioned")
+                or type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1
+                or "text" in item and item["text"] != answer[start:end]):
+            raise ValueError("invalid verifier span")
+        spans.append(dict(start=start, end=end, text=answer[start:end], label=item["label"], score=confidence))
+    spans.sort(key=lambda s: (s["start"], s["end"]))
+    if any(left["end"] > right["start"] for left, right in zip(spans, spans[1:])):
+        raise ValueError("overlapping verifier spans")
+    return [s for s in spans if s["score"] >= threshold and (strictness == "strict" or s["label"] == "contradicted")]
 
 
 def _sentence_count(text: str) -> int:
@@ -47,6 +72,7 @@ def _sentence_count(text: str) -> int:
     return max(len(parts), 1)
 
 
+@routed_fixed("verify")
 async def verify_live(
     context: str,
     question: str,
@@ -65,13 +91,22 @@ async def verify_live(
     global _down_until, _warned
     from .rag_ctx import cfg
 
+    if strict():
+        if (strictness not in ("strict", "lenient") or not math.isfinite(threshold) or not 0 <= threshold <= 1
+                or hhem_filter):
+            raise ValueError("invalid or unadopted routed verification options")
+        for text, limit in ((context, 1024 * 1024), (question, 65536), (answer, 262144)):
+            if not text.strip() or len(text.encode("utf-8")) > limit:
+                raise ValueError("empty or oversized routed verification input")
     chosen = model or cfg("verify_model", settings.verify_model)
+    if strict() and chosen != cfg("verify_model", None):
+        raise ValueError("verification model conflicts with routing target")
     if not cfg("verify_enabled", settings.verify_enabled):
         return {**_EMPTY, "model": chosen}
     answer = answer or ""
     if not answer.strip() or not context.strip():
         return {**_EMPTY, "model": chosen}
-    if time.monotonic() < _down_until:
+    if not strict() and time.monotonic() < _down_until:
         return {**_EMPTY, "model": chosen}  # cooling down after a recent failure
 
     url = f"{cfg('verify_base_url', settings.verify_base_url).rstrip('/')}/v1/verify"
@@ -79,11 +114,15 @@ async def verify_live(
         "context": [context], "question": question, "answer": answer,
         "model": chosen, "hhem_filter": hhem_filter,
     }
-    headers = {"Authorization": f"Bearer {cfg('verify_api_key', settings.verify_api_key)}"}
+    headers = http_client.bearer_headers(cfg('verify_api_key', settings.verify_api_key))
     try:
         client = http_client.get_client()
-        r = await client.post(url, json=payload, headers=headers, timeout=settings.verify_timeout)
+        r = await post("verify", client, url, json=payload, headers=headers, timeout=settings.verify_timeout)
         r.raise_for_status()
+        if strict():
+            spans = _routed_spans(r.json(), answer, strictness, threshold)
+            return {"spans": spans, "score": 1.0 - sum(s["end"] - s["start"] for s in spans) / len(answer),
+                    "total": _sentence_count(answer), "flagged": len(spans), "model": chosen}
         data = r.json().get("spans", [])
         # The sidecar already cleaned (whole-word) and labelled each span. Clamp
         # defensively to the answer bounds and normalise the label.
@@ -128,6 +167,8 @@ async def verify_live(
             "model": chosen,
         }
     except Exception as e:  # noqa: BLE001 — degrade, never break the answer
+        if strict():
+            raise
         _down_until = time.monotonic() + _RETRY_AFTER
         if not _warned:
             _log.warning(
@@ -139,6 +180,7 @@ async def verify_live(
         return {**_EMPTY, "model": chosen}
 
 
+@routed_fixed("verify_claims")
 async def verify_claims(pairs: list[dict], hhem_filter: bool = False) -> list[dict]:
     """Mode B per-claim verification: each `pair` is {text, evidence}. Returns one
     `{verdict, score}` per pair, verdict ∈ supported | contradicted | not_mentioned
@@ -149,13 +191,22 @@ async def verify_claims(pairs: list[dict], hhem_filter: bool = False) -> list[di
 
     if not pairs:
         return []
+    if strict():
+        import math
+        if hhem_filter or len(pairs) > 16 or any(
+            not isinstance(p.get("text"), str) or not p["text"].strip() or len(p["text"].encode("utf-8")) > 4096
+            or not isinstance(p.get("evidence"), str) or len(p["evidence"].encode("utf-8")) > 16384 for p in pairs):
+            raise ValueError("invalid bounded claim verification")
     fallback = [{"verdict": "not_mentioned", "score": 0.0} for _ in pairs]
     if not cfg("verify_enabled", settings.verify_enabled):
         return fallback
 
     url = f"{cfg('verify_base_url', settings.verify_base_url).rstrip('/')}/v1/verify-claims"
-    headers = {"Authorization": f"Bearer {cfg('verify_api_key', settings.verify_api_key)}"}
-    batch = max(1, settings.verify_claims_batch)
+    headers = http_client.bearer_headers(cfg('verify_api_key', settings.verify_api_key))
+    batch = cfg("verify_claims_batch", settings.verify_claims_batch)
+    if strict() and (type(batch) is not int or not 1 <= batch <= 16):
+        raise ValueError("invalid bounded verifier batch size")
+    batch = max(1, batch)
     out: list[dict] = []
     try:
         client = http_client.get_client()
@@ -167,9 +218,19 @@ async def verify_claims(pairs: list[dict], hhem_filter: bool = False) -> list[di
                 ],
                 "hhem_filter": hhem_filter,
             }
-            r = await client.post(url, json=payload, headers=headers, timeout=settings.verify_timeout)
+            if strict():
+                payload["model"] = cfg("verify_model", None)
+            r = await post("verify_claims", client, url, json=payload, headers=headers, timeout=settings.verify_timeout)
             r.raise_for_status()
             verdicts = r.json().get("verdicts", [])
+            if strict():
+                if not isinstance(verdicts, list) or len(verdicts) != len(chunk):
+                    raise ValueError("claim verifier returned the wrong number of verdicts")
+                for v in verdicts:
+                    if (not isinstance(v, dict) or v.get("verdict") not in ("supported", "contradicted", "not_mentioned")
+                            or type(v.get("score")) not in (int, float) or not math.isfinite(v["score"])
+                            or not 0 <= v["score"] <= 1):
+                        raise ValueError("invalid claim verdict")
             # Guard against a short response — pad with not_mentioned.
             for j in range(len(chunk)):
                 v = verdicts[j] if j < len(verdicts) else {}
@@ -179,5 +240,7 @@ async def verify_claims(pairs: list[dict], hhem_filter: bool = False) -> list[di
                 out.append({"verdict": verd, "score": float(v.get("score", 0.0))})
         return out
     except Exception as e:  # noqa: BLE001 — degrade, never abort the job
+        if strict():
+            raise
         _log.warning("verify-claims unavailable, claims unscored: %s", e)
         return fallback

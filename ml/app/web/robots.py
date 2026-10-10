@@ -29,7 +29,7 @@ from urllib.robotparser import RobotFileParser
 from ..config import settings
 from .cache import TTLCache
 
-_log = logging.getLogger("pai.web.robots")
+_log = logging.getLogger("fosnie.web.robots")
 
 # host -> RobotFileParser | None (None = robots unavailable ⇒ allow).
 _robots_cache = TTLCache(settings.web_robots_cache_ttl)
@@ -38,8 +38,8 @@ _ALLOW_ALL = object()  # cache sentinel for "no usable robots ⇒ allow"
 
 
 def _agent_token() -> str:
-    """First product token of the configured UA (e.g. "PAIPlatform/1.0 (+url)"
-    → "PAIPlatform") — what robots.txt user-agent matching expects."""
+    """First product token of the configured UA (e.g. "Fosnie/1.0 (+url)"
+    → "Fosnie") — what robots.txt user-agent matching expects."""
     ua = settings.web_user_agent.strip()
     return ua.split("/")[0].split(" ")[0] or "*"
 

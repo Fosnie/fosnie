@@ -27,7 +27,7 @@ backend never calls them directly — Rust → ML `/transcribe` and `/speech` �
 llama-server -hf foryoung365/Qwen3-ASR-1.7B-Q4_K_M-GGUF:Q4_K_M --port 8092
 
 # TTS — kokoro-fastapi (OpenAI /v1/audio/speech, fully local)
-docker run -d --name pai-kokoro-tts -p 8094:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
+docker run -d --name fosnie-kokoro-tts -p 8094:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
 #   → TTS_BASE_URL=http://127.0.0.1:8094  TTS_MODEL=kokoro  TTS_VOICE=af_sky
 ```
 
@@ -170,7 +170,7 @@ down mid-reply.
 
 ```
 # with both llama-servers up and features.voice = true + STT_*/TTS_* set:
-PAI_VOICE=1 cargo test --test voice_live
+FOSNIE_VOICE=1 cargo test --test voice_live
 ```
 
 Round-trips: synthesise "hello" → audio; transcribe it back → text. Then a manual

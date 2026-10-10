@@ -54,7 +54,7 @@ from .bank import Bank, DocSource, from_pool_sources
 from .budgets import ResearchBudgets, budgets
 from .outline import OutlineSection
 
-_log = logging.getLogger("pai.research.pipeline")
+_log = logging.getLogger("fosnie.research.pipeline")
 
 _WID_RE = re.compile(r"\[([WD]\d+)\]")
 

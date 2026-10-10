@@ -69,8 +69,8 @@ def ensure_reference_docx() -> str:
 def _build_neutral_reference(path: Path) -> None:
     """A clean neutral reference: python-docx's default template already defines
     Heading 1–9, Title, Normal and a Table Grid style; we tune type so output reads
-    as professionally designed rather than Word-default. Not PAI-branded — a
-    deployment supplies its own reference.docx to brand."""
+    as professionally designed rather than Word-default. Carries no Fosnie branding —
+    a deployment supplies its own reference.docx to brand."""
     import docx
     from docx.shared import Pt, RGBColor
 

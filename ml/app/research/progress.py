@@ -21,7 +21,7 @@ import logging
 from contextvars import ContextVar
 from typing import Awaitable, Callable
 
-_log = logging.getLogger("pai.research.progress")
+_log = logging.getLogger("fosnie.research.progress")
 
 _emitter: ContextVar[Callable[[dict], None] | None] = ContextVar("research_progress_emitter", default=None)
 # Report-writing tokens are RELIABLE (a dropped token corrupts the streamed

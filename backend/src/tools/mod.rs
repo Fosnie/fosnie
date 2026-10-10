@@ -21,6 +21,7 @@
 pub mod custom;
 pub mod desktop;
 pub mod phone;
+pub mod routed_document;
 
 pub use desktop::{DesktopReply, DesktopToolCtx};
 
@@ -807,6 +808,7 @@ pub struct WebBudget {
 /// allow-list + source-ACL deny-list (identical scoping), the per-turn caps, and shared mutable
 /// state guarded for the parallel-dispatch case.
 pub struct RagToolCtx {
+    pub routing: Option<crate::model_routing::run::RoutedRun>,
     pub kb_ids: Vec<String>,
     pub deny_doc_ids: Vec<String>,
     pub max_calls: u32,
@@ -848,6 +850,7 @@ impl RagToolCtx {
             }
         }
         RagToolCtx {
+            routing:None,
             kb_ids,
             deny_doc_ids,
             max_calls,
@@ -986,6 +989,134 @@ pub fn clamp_depth(requested: Option<&str>, max: Option<&str>) -> String {
     }
 }
 
+/// Library-only dispatch keeps the adopted inference path independent of the
+/// much larger general tool state machine. Admission still requires its witness.
+pub(crate) async fn dispatch_library(state:&AppState,ctx:&AuthContext,chat_id:Uuid,turn_id:Uuid,
+    tx:&mpsc::Sender<ServerFrame>,rag_ctx:Option<&RagToolCtx>,call:&AuthorizedTool,args:&Value) -> Result<String> {
+    if call.name()!="search_library" || !host_enabled(call.name(),&state.boot.features) {
+        return Err(crate::model_routing::RoutingError::Forbidden.into());
+    }
+    if let Some(run)=rag_ctx.and_then(|rag|rag.routing.as_ref()) {
+        run.validate_turn(ctx,turn_id,Some(chat_id))?;
+        if run.context(crate::model_routing::CallPurpose::ToolLoop).project_id!=call.project_id() {
+            return Err(crate::model_routing::RoutingError::Forbidden.into());
+        }
+        if !crate::chat::routing::search_enabled(state).await? { return Err(crate::model_routing::RoutingError::NeedsReplan.into()); }
+    }
+    // Model-driven RAG top-up. The MAIN model is the outer loop, so each call runs a
+    // LIGHT profile (inner iterative loop off) scoped to the exact same KB allow-list +
+    // deny-list as this turn's auto-RAG pass.
+    let rag = match rag_ctx {
+        Some(r) if !r.kb_ids.is_empty() => r,
+        _ => return Ok(
+            "Library search is not available for this conversation (no knowledge base attached).".to_string(),
+        ),
+    };
+    let query = args.get("query").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if query.is_empty() {
+        return Ok("search_library needs a non-empty 'query'.".to_string());
+    }
+    let sections: Vec<String> = args
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let reason = args.get("reason").and_then(Value::as_str).unwrap_or("").trim().to_string();
+
+    // Per-turn call cap (anti-thrash): the model must answer once it is spent.
+    {
+        let mut st = rag.state.lock().await;
+        if st.calls >= rag.max_calls {
+            return Ok(
+                "Search budget exhausted for this turn — answer now from the context you already have, and state plainly anything still missing.".to_string(),
+            );
+        }
+        st.calls += 1;
+    }
+    if !reason.is_empty() {
+        let _ = tx
+            .send(ServerFrame::ChatTool {
+                turn_id,
+                name: "search_library".into(),
+                phase: "progress".into(),
+                detail: Some(reason.clone()),
+            })
+            .await;
+    }
+
+    // Light retrieval profile: the model replaces the inner iterative loop.
+    let overrides = crate::ml::RagOverrides {
+        gap_round_enabled: Some(false),
+        max_subqueries: Some(2),
+        max_rounds: Some(1),
+        query_variants: Some(2),
+        ..Default::default()
+    };
+    let prompt = if sections.is_empty() {
+        query.clone()
+    } else {
+        format!("{query}\nRelevant sections: {}", sections.join(", "))
+    };
+    let unavailable = |e: &dyn std::fmt::Display| {
+        format!("Library search is currently unavailable: {e}. Answer from the context you already have.")
+    };
+    let timeout = Duration::from_secs(rag.deadline_secs.saturating_add(5));
+    let mut stream = match Box::pin(crate::chat::routing::Retrieval::start(
+        state,ctx,rag.routing.as_ref(),
+        &prompt,
+        &rag.kb_ids,
+        &rag.deny_doc_ids,
+        &overrides,
+        None,
+        timeout,
+    ))
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => { if rag.routing.is_some() { return Err(e); } return Ok(unavailable(&e)); },
+    };
+    let (context, citations) = loop {
+        match stream.recv().await? {
+            Some(crate::ml::RetrieveEvent::Progress { stage, detail }) => {
+                let _ = tx
+                    .send(ServerFrame::ChatTool {
+                        turn_id,
+                        name: "search_library".into(),
+                        phase: "progress".into(),
+                        detail: Some(detail.unwrap_or(stage)),
+                    })
+                    .await;
+            }
+            Some(crate::ml::RetrieveEvent::Done { context, citations, .. }) => {
+                break (context, citations)
+            }
+            Some(crate::ml::RetrieveEvent::Error { message }) => {
+                if rag.routing.is_some() { return Err(AppError::Unavailable(message)); }
+                return Ok(unavailable(&message));
+            }
+            None => {
+                if rag.routing.is_some() { return Err(AppError::Unavailable("routed retrieval ended without a terminal report".into())); }
+                return Ok(unavailable(&"the retrieval stream ended unexpectedly"));
+            }
+        }
+    };
+
+    // Turn-level dedup + through-turn [D#] renumbering, reserved under the lock so parallel
+    // calls never collide on the offset or double-count a passage.
+    let blocks = split_doc_blocks(&context);
+    let result = {
+        let mut st = rag.state.lock().await;
+        render_top_up(&blocks, &citations, &mut st)
+    };
+    Ok(result)
+}
+
 /// Execute a tool call. `project_id` is the current chat's project (scope for
 /// document tools); `web_budget` is the calling Agent's web-search cap (None
 /// for agent-less contexts). Returns the tool result content (fed back to the
@@ -1010,6 +1141,13 @@ pub async fn dispatch(
     // `authorize_native_call`, so reaching this point means every gate passed.
     let name = call.name();
     let project_id = call.project_id();
+    if let Some(run)=rag_ctx.and_then(|rag|rag.routing.as_ref()) {
+        run.validate_turn(ctx,turn_id,Some(chat_id))?;
+        if run.context(crate::model_routing::CallPurpose::ToolLoop).project_id!=project_id || name!="search_library" {
+            return Err(crate::model_routing::RoutingError::Forbidden.into());
+        }
+        if !crate::chat::routing::search_enabled(state).await? { return Err(crate::model_routing::RoutingError::NeedsReplan.into()); }
+    }
     // Defence in depth: a capability-gated tool must not run if its host feature
     // is off (already checked at authorisation; never trust a single layer).
     if !host_enabled(name, &state.boot.features) {
@@ -1200,7 +1338,7 @@ pub async fn dispatch(
             };
             let query = args.get("query").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
             let path = crate::storage::resolve_file(&state.boot.storage.documents_dir, &doc.bytes_path);
-            crate::ml::read_document(&state.http, &state.boot.ml.base_url, &path.to_string_lossy(), doc.mime.as_deref(), query, crate::ml::provider_overrides(state, ctx.user_id).await)
+            crate::ml::read_document(&state.http, &state.boot.ml.base_url, &path.to_string_lossy(), doc.mime.as_deref(), query, crate::ml::provider_overrides(state, ctx.user_id).await?)
                 .await
         }
 
@@ -1272,7 +1410,7 @@ pub async fn dispatch(
 
             let cur = crate::documents::current_version(&state.pg, &state.boot.storage.workspace_dir, doc_id).await?;
             let out = std::env::temp_dir()
-                .join(format!("pai_edit_{}.docx", Uuid::now_v7()))
+                .join(format!("fosnie_edit_{}.docx", Uuid::now_v7()))
                 .to_string_lossy()
                 .to_string();
             let applied = crate::ml::apply_tracked_changes(
@@ -1562,7 +1700,7 @@ pub async fn dispatch(
                     };
                     let mut stream = match crate::ml::web_search_stream(
                         &state.http, &state.boot.ml.base_url, query, recency, depth, &overrides,
-                        crate::ml::provider_overrides(state, ctx.user_id).await, None,
+                        crate::ml::provider_overrides(state, ctx.user_id).await?, None,
                     )
                     .await
                     {
@@ -1630,115 +1768,7 @@ pub async fn dispatch(
             }
         }
 
-        "search_library" => {
-            // Model-driven RAG top-up. The MAIN model is the outer loop, so each call runs a
-            // LIGHT profile (inner iterative loop off) scoped to the exact same KB allow-list +
-            // deny-list as this turn's auto-RAG pass.
-            let rag = match rag_ctx {
-                Some(r) if !r.kb_ids.is_empty() => r,
-                _ => return Ok(
-                    "Library search is not available for this conversation (no knowledge base attached).".to_string(),
-                ),
-            };
-            let query = args.get("query").and_then(Value::as_str).unwrap_or("").trim().to_string();
-            if query.is_empty() {
-                return Ok("search_library needs a non-empty 'query'.".to_string());
-            }
-            let sections: Vec<String> = args
-                .get("sections")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_str)
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
-            let reason = args.get("reason").and_then(Value::as_str).unwrap_or("").trim().to_string();
-
-            // Per-turn call cap (anti-thrash): the model must answer once it is spent.
-            {
-                let mut st = rag.state.lock().await;
-                if st.calls >= rag.max_calls {
-                    return Ok(
-                        "Search budget exhausted for this turn — answer now from the context you already have, and state plainly anything still missing.".to_string(),
-                    );
-                }
-                st.calls += 1;
-            }
-            if !reason.is_empty() {
-                let _ = tx
-                    .send(ServerFrame::ChatTool {
-                        turn_id,
-                        name: "search_library".into(),
-                        phase: "progress".into(),
-                        detail: Some(reason.clone()),
-                    })
-                    .await;
-            }
-
-            // Light retrieval profile: the model replaces the inner iterative loop.
-            let overrides = crate::ml::RagOverrides {
-                gap_round_enabled: Some(false),
-                max_subqueries: Some(2),
-                max_rounds: Some(1),
-                query_variants: Some(2),
-                ..Default::default()
-            };
-            let prompt = if sections.is_empty() {
-                query.clone()
-            } else {
-                format!("{query}\nRelevant sections: {}", sections.join(", "))
-            };
-            let unavailable = |e: &dyn std::fmt::Display| {
-                format!("Library search is currently unavailable: {e}. Answer from the context you already have.")
-            };
-            let timeout = Duration::from_secs(rag.deadline_secs + 5);
-            let mut stream = match crate::ml::retrieve_stream(
-                &state.http,
-                &state.boot.ml.base_url,
-                &prompt,
-                &rag.kb_ids,
-                &rag.deny_doc_ids,
-                &overrides,
-                crate::ml::provider_overrides(state, ctx.user_id).await,
-                Some(timeout),
-            )
-            .await
-            {
-                Ok(s) => s,
-                Err(e) => return Ok(unavailable(&e)),
-            };
-            let (context, citations) = loop {
-                match stream.recv().await {
-                    Some(crate::ml::RetrieveEvent::Progress { stage, detail }) => {
-                        let _ = tx
-                            .send(ServerFrame::ChatTool {
-                                turn_id,
-                                name: "search_library".into(),
-                                phase: "progress".into(),
-                                detail: Some(detail.unwrap_or(stage)),
-                            })
-                            .await;
-                    }
-                    Some(crate::ml::RetrieveEvent::Done { context, citations, .. }) => {
-                        break (context, citations)
-                    }
-                    Some(crate::ml::RetrieveEvent::Error { message }) => return Ok(unavailable(&message)),
-                    None => return Ok(unavailable(&"the retrieval stream ended unexpectedly")),
-                }
-            };
-
-            // Turn-level dedup + through-turn [D#] renumbering, reserved under the lock so parallel
-            // calls never collide on the offset or double-count a passage.
-            let blocks = split_doc_blocks(&context);
-            let result = {
-                let mut st = rag.state.lock().await;
-                render_top_up(&blocks, &citations, &mut st)
-            };
-            Ok(result)
-        }
+        "search_library" => dispatch_library(state,ctx,chat_id,turn_id,tx,rag_ctx,call,args).await,
 
         "code_interpreter" => {
             // Defence-in-depth: also refuse here if a per-group flag disables it
@@ -1985,7 +2015,7 @@ mod tests {
     #[tokio::test]
     async fn skill_subfile_guards_and_manifest_lists() {
         use std::fs;
-        let base = std::env::temp_dir().join(format!("pai_skill_{}", uuid::Uuid::now_v7()));
+        let base = std::env::temp_dir().join(format!("fosnie_skill_{}", uuid::Uuid::now_v7()));
         fs::create_dir_all(base.join("references")).unwrap();
         fs::create_dir_all(base.join("templates")).unwrap();
         fs::write(base.join("references/policy.md"), "POLICY").unwrap();

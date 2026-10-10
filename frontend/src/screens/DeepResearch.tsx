@@ -40,6 +40,8 @@ import { Dropdown } from "@/components/Dropdown";
 import { TemplatePreview } from "@/components/TemplatePreview";
 import { NeuralBackground } from "@/components/NeuralBackground";
 import { slideDownVariants, spring } from "@/app/motion";
+import { useResearchJobCapabilities } from "@/api/researchJobs";
+import { ResearchJobLaunch, ResearchJobHistory } from "@/components/ResearchJob";
 
 // The report templates come from the catalogue (GET /api/research/templates): the
 // four built-ins plus the user's own. Editing them lives in Studio; this screen
@@ -78,6 +80,9 @@ export function DeepResearch() {
   const location = useLocation();
   const runs = useResearchChats();
   const catalogue = useResearchTemplates();
+  const routing = useResearchJobCapabilities();
+  const [routingSeen, setRoutingSeen] = useState(false);
+  useEffect(() => { if (routing.data?.enabled) setRoutingSeen(true); }, [routing.data?.enabled]);
   const [question, setQuestion] = useState("");
   const qRef = useRef<HTMLTextAreaElement | null>(null);
   function grow(el: HTMLTextAreaElement) {
@@ -91,6 +96,10 @@ export function DeepResearch() {
   const [prepared, setPrepared] = useState<ResearchPrepareOut | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Unknown settings and revocation must never fall through to legacy inference.
+  const routedResearch = (new URLSearchParams(location.search).has("research_request") || routingSeen || routing.isError || !routing.data
+    || routing.data.schema_version !== 1 || routing.data.enabled !== false);
+  const recentChats = (runs.data ?? []).filter(c => !routing.data?.history || !c.research_params?.routed_job_id);
 
   // 'Refine' from a finished/cancelled run: re-open prefilled (router state),
   // then clear it so a manual reload starts blank.
@@ -102,7 +111,7 @@ export function DeepResearch() {
     if (r.template) setTemplate(r.template);
     setKbIds(r.kb_ids ?? []);
     setRefinements(r.refinements ?? []);
-    nav(location.pathname, { replace: true, state: null });
+    nav(location.pathname + location.search, { replace: true, state: null });
   }, [location, nav]);
 
   const reset = () => {
@@ -120,7 +129,7 @@ export function DeepResearch() {
   });
 
   async function runPrepare(over: Partial<ResearchRequestBody> = {}) {
-    if (!question.trim() || busy) return;
+    if (!question.trim() || busy || routedResearch) return;
     setBusy(true);
     setRefusal(null);
     try {
@@ -154,7 +163,7 @@ export function DeepResearch() {
   }
 
   async function onStart() {
-    if (busy) return;
+    if (busy || routedResearch) return;
     setBusy(true);
     try {
       const { chat_id } = await startResearch(body());
@@ -165,8 +174,8 @@ export function DeepResearch() {
     }
   }
 
-  const showChips = prepared && prepared.questions.length > 0;
-  const showConfirm = prepared && prepared.questions.length === 0;
+  const showChips = !routedResearch && prepared && prepared.questions.length > 0;
+  const showConfirm = !routedResearch && prepared && prepared.questions.length === 0;
   const corpus = source !== "web";
 
   // Resolve the picker options and the preview for the current selection. The
@@ -244,6 +253,7 @@ export function DeepResearch() {
             return (
               <button
                 key={s.id}
+                disabled={busy}
                 className={`btn sm ${active ? "btn-gold" : "btn-line"}`}
                 onClick={() => {
                   setSource(s.id);
@@ -263,6 +273,7 @@ export function DeepResearch() {
         <div className="composer" style={{ marginTop: 22, flexDirection: "column", alignItems: "stretch", gap: 10, padding: 14 }}>
           <textarea
             ref={qRef}
+            disabled={busy}
             className="chat-in"
             rows={1}
             placeholder={
@@ -288,19 +299,20 @@ export function DeepResearch() {
               ariaLabel="Report template"
               value={template}
               options={templateOptions}
-              disabled={catalogue.isLoading}
+              disabled={catalogue.isLoading || busy}
               onChange={(v) => { setTemplate(v); reset(); }}
             />
             <button
               className="btn btn-ghost sm"
               onClick={openManageTemplates}
+              disabled={busy}
               title="Create, duplicate or edit report templates"
             >
               Manage templates
             </button>
-            <button className="btn btn-gold sm" style={{ marginLeft: "auto" }} onClick={() => void runPrepare()} disabled={!question.trim() || busy}>
+            {!routedResearch && <button className="btn btn-gold sm" style={{ marginLeft: "auto" }} onClick={() => void runPrepare()} disabled={!question.trim() || busy}>
               {busy && !prepared ? "Checking…" : "Review scope"}
-            </button>
+            </button>}
           </div>
           {/* What the chosen template produces — the same preview the editor shows. */}
           {preview && (
@@ -312,6 +324,14 @@ export function DeepResearch() {
             />
           )}
         </div>
+
+        {!routedResearch && <p className="mt-3 text-xs text-slate">Research uses the existing configuration. Per-job model selection is disabled on this deployment.</p>}
+        {routedResearch && <>
+          {routing.isLoading && <p>Loading research routing settings…</p>}
+          {routing.isError && <p role="alert">Could not load research routing settings. <button onClick={() => void routing.refetch()}>Retry routing settings</button></p>}
+          <ResearchJobLaunch request={{ question, template, source, kb_ids: kbIds, refinements }} onLibraries={setKbIds} onBusy={setBusy}
+            capabilities={routing.isError ? undefined : routing.data} />
+        </>}
 
         {/* Triage chips (corpus ambiguity) — one screen, tappable */}
         <AnimatePresence>
@@ -422,13 +442,14 @@ export function DeepResearch() {
         </AnimatePresence>
 
         {/* Recent runs */}
+        {routing.data?.history && <ResearchJobHistory />}
         <div className="mt-10">
           <p className="side-label mono">Recent research</p>
-          {(runs.data ?? []).length === 0 && (
+          {recentChats.length === 0 && (
             <p className="mt-2 text-sm text-slate">No research runs yet.</p>
           )}
           <div className="mt-2">
-            {(runs.data ?? []).slice(0, 12).map((c) => (
+            {recentChats.slice(0, 12).map((c) => (
               <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <button
                   className="chat-item"

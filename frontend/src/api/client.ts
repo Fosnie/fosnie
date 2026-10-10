@@ -22,6 +22,7 @@ import {
   saveBlob,
 } from "@/api/instance";
 import type { Citation } from "@/ws/protocol";
+import type { RoutingMessage } from "./chatRouting";
 
 export const queryClient = new QueryClient({
   // Freshness defaults: every screen open / tab-switch remount refetches
@@ -1311,6 +1312,12 @@ export function useEmbeddingIndex() {
       q.state.data?.status === "reindexing" || q.state.data?.desired_model ? 2000 : false,
   });
 }
+export function cancelEmbeddingReindex(): Promise<{cancelled:string|null}> {
+  return apiFetch("/api/admin/embedding-index/cancel",{method:"POST"});
+}
+export function cleanupEmbeddingIndices(): Promise<{deleted:number}> {
+  return apiFetch("/api/admin/embedding-index/cleanup",{method:"POST"});
+}
 export function reindexEmbeddings(): Promise<{ ok: boolean; task_id?: string }> {
   return apiFetch("/api/admin/embedding-index/reindex", { method: "POST" });
 }
@@ -1861,9 +1868,10 @@ export interface LlmProviderList {
   providers: LlmProviderOption[];
   active_id: string | null;
 }
-export function useMyLlmProviders(chatId: string | null) {
+export function useMyLlmProviders(chatId: string | null, enabled = true) {
   return useQuery({
     queryKey: ["my-llm-providers", chatId ?? "draft"],
+      enabled,
     queryFn: () => apiFetch<LlmProviderList>(`/api/me/llm-providers${chatId ? `?chat_id=${chatId}` : ""}`),
   });
 }
@@ -2690,6 +2698,8 @@ export interface ChatSummary {
 
 /** The persisted params of a Deep Research run, replayed by 'Refine'. */
 export interface ResearchRefineParams {
+  /** Queued routed research survives page reloads; independent of agent runs. */
+  routed_job_id?: string;
   question: string;
   source: ResearchRequestBody["source"];
   template: ResearchRequestBody["template"];
@@ -2746,6 +2756,7 @@ export interface ChatAttachmentMeta {
 }
 
 export interface MessageOut {
+  routing?: RoutingMessage;
   id: string;
   role: "user" | "assistant";
   content: string;

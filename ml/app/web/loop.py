@@ -36,11 +36,12 @@ from datetime import date
 
 from .. import guided, llm, reranker
 from ..config import settings
-from . import dedup, pipeline, progress, rank
+from ..inference_target import strict
+from . import dedup, pipeline, progress, quick_evidence, rank
 from .pipeline import _Source, _domain, _domain_allowed, _fetch_source, _quote, _serp
 from .provider import SerpResult
 
-_log = logging.getLogger("pai.web.loop")
+_log = logging.getLogger("fosnie.web.loop")
 
 _EVIDENCE_PER_SUBQ = 8     # top reranked chunks kept per sub-question
 _MAX_SNIPPET_SOURCES = 40  # cap on snippet-only sources accumulated in the pool
@@ -170,6 +171,8 @@ async def _plan(query: str, recency: str, today: str, max_subqs: int) -> list[_S
         llm.set_guided(guided.WEB_PLAN)
         out = await llm.complete(system, query, max_tokens=512)
     except Exception as e:  # noqa: BLE001 — degrade to single sub-question
+        if strict():
+            raise
         _log.warning("web plan LLM unavailable, single sub-question: %s", e)
         return [_SubQ(query, [query], recency)]
     try:
@@ -215,6 +218,8 @@ async def _grade(subq: str, evidence_lines: list[str], today: str) -> str:
             )
         ).strip().lower()
     except Exception as e:  # noqa: BLE001
+        if strict():
+            raise
         _log.warning("web grade LLM unavailable, stopping rounds: %s", e)
         return "yes"
     if out.startswith("yes"):
@@ -234,6 +239,8 @@ async def _reformulate(subq: str) -> str:
             max_tokens=64,
         )
     except Exception as e:  # noqa: BLE001
+        if strict():
+            raise
         _log.warning("web reformulate LLM unavailable: %s", e)
         return subq
     return out.strip() or subq
@@ -256,6 +263,8 @@ async def _detect_conflict(subq: str, evidence_lines: list[str]) -> tuple[bool, 
         obj = json.loads(out[start : end + 1]) if start >= 0 else {}
         return (bool(obj.get("conflict", False)), str(obj.get("topic", "")).strip())
     except Exception as e:  # noqa: BLE001
+        if strict():
+            raise
         _log.debug("web conflict check failed (treating as no conflict): %s", e)
         return (False, "")
 
@@ -285,7 +294,7 @@ async def _fetch_batch(
     """Fetch a batch (paced, SSRF-guarded), drop near-duplicates, fold survivors
     into the pool. Returns the pool indices of the fetched, non-duplicate pages."""
     sem = asyncio.Semaphore(max(1, settings.web_fetch_concurrency))
-    fetched = await asyncio.gather(*[_fetch_source(r, sem) for r in results])
+    fetched = await pipeline._gather(*[_fetch_source(r, sem) for r in results])
     idxs: list[int] = []
     for src in fetched:
         if src.snippet_only:
@@ -332,7 +341,7 @@ async def _resolve_subq(
         queries = queries[: max(1, state.serp_budget)]
         state.serp_budget -= len(queries)
         progress.emit("serp", "; ".join(queries), round=r + 1, subq=sq.text)
-        serp_lists = await asyncio.gather(
+        serp_lists = await pipeline._gather(
             *[_serp(q, recency_eff, budget.serp_limit) for q in queries]
         )
 
@@ -500,6 +509,10 @@ async def collect(
 async def run(query: str, recency: str = "any", depth: str = "standard") -> dict:
     from ..rag_ctx import cfg
 
+    depth = (depth or "standard").lower()
+    if depth == "quick" and cfg("web_quick_snippets_only", False) is True:
+        from . import snippet_search
+        return await snippet_search.run(query, recency)
     budget = _budget(depth)
     # Per-Agent fetch cap (sent by the backend as a request override) min-clamps
     # the depth class's budget — an agent can tighten, never widen.
@@ -549,10 +562,24 @@ async def run(query: str, recency: str = "any", depth: str = "standard") -> dict
             digest = "\n".join(notes) + "\n\n" + digest
         return {"digest": digest, "citations": []}
 
-    scores = await reranker.rerank(query, [c for _, c in candidate_pairs])
-    picked = [
-        pair for pair, _ in sorted(zip(candidate_pairs, scores), key=lambda x: x[1], reverse=True)
-    ][:cap]
+    if depth == "quick":
+        # Only local ranking sees the original question; engine queries and all
+        # source/egress guards above retain their original inputs.
+        ranking_query = quick_evidence.ranking_query(query, cfg("web_ranking_question", None))
+        original_count = len(candidate_pairs)
+        candidate_pairs, partial = quick_evidence.shortlist(ranking_query, candidate_pairs)
+        scores = await reranker.rerank(ranking_query, [c for _, c in candidate_pairs])
+        picked = quick_evidence.pick(candidate_pairs, scores)
+        if partial or len(picked) < original_count:
+            notes.append(
+                "Note: quick search returns selected excerpts only; coverage is partial. "
+                "Do not infer absence or exhaustive coverage from this digest."
+            )
+    else:
+        scores = await reranker.rerank(query, [c for _, c in candidate_pairs])
+        picked = [
+            pair for pair, _ in sorted(zip(candidate_pairs, scores), key=lambda x: x[1], reverse=True)
+        ][:cap]
 
     assembled = pipeline._assemble(query, pool.sources, picked, notes=notes)
 
@@ -610,6 +637,8 @@ async def _synthesise_deep(query: str, evidence: str) -> str:
                 acc.append(delta)
                 await progress.emit_token(delta)
     except Exception as e:  # noqa: BLE001 — degrade to the evidence digest
+        if strict():
+            raise
         _log.warning("deep synthesis failed (%s); returning raw evidence", e)
         return evidence
     return "".join(acc)

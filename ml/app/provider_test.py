@@ -146,7 +146,7 @@ async def _probe_llm() -> dict:
     # `max_completion_tokens` — so try the classic field first (vLLM/Ollama/
     # llama.cpp speak it) and, on a 400, retry with the newer field.
     url = f"{base.rstrip('/')}/chat/completions"
-    headers = {"Authorization": f"Bearer {cfg('llm_api_key', settings.llm_api_key)}"}
+    headers = http_client.bearer_headers(cfg('llm_api_key', settings.llm_api_key))
     msgs = [{"role": "user", "content": "ping"}]
     r = await _post(url, json={"model": model, "messages": msgs, "max_tokens": 1, "stream": False}, headers=headers)
     if r.status_code == 400:
@@ -166,7 +166,7 @@ async def _probe_llm() -> dict:
 async def _probe_embed() -> dict:
     base = cfg("embed_base_url", settings.embed_base_url)
     model = cfg("embed_model", settings.embed_model)
-    headers = {"Authorization": f"Bearer {cfg('embed_api_key', settings.embed_api_key)}"}
+    headers = http_client.bearer_headers(cfg('embed_api_key', settings.embed_api_key))
     r = await _post(f"{base.rstrip('/')}/embeddings", json={"model": model, "input": ["test"]}, headers=headers)
     if err := _fail_if_error(r):
         return {**err, "model": model}
@@ -179,7 +179,7 @@ async def _probe_embed() -> dict:
 async def _probe_rerank() -> dict:
     base = cfg("rerank_base_url", settings.rerank_base_url)
     model = cfg("rerank_model", settings.rerank_model)
-    headers = {"Authorization": f"Bearer {cfg('rerank_api_key', settings.rerank_api_key)}"}
+    headers = http_client.bearer_headers(cfg('rerank_api_key', settings.rerank_api_key))
     payload = {"model": model, "query": "test", "documents": ["a", "b"]}
     r = await _post(f"{base.rstrip('/')}/v1/rerank", json=payload, headers=headers)
     if err := _fail_if_error(r):
@@ -192,7 +192,7 @@ async def _probe_rerank() -> dict:
 async def _probe_ocr() -> dict:
     base = cfg("ocr_base_url", settings.ocr_base_url) or cfg("llm_base_url", settings.llm_base_url)
     model = cfg("ocr_model", settings.ocr_model)
-    headers = {"Authorization": f"Bearer {cfg('ocr_api_key', settings.ocr_api_key)}"}
+    headers = http_client.bearer_headers(cfg('ocr_api_key', settings.ocr_api_key))
     # Match generation: OpenAI reasoning models need `max_completion_tokens` and
     # reject `temperature` (gpt-5.x / o-series); `_gen_caps` picks the right shape.
     token_key, sampling_ok = _gen_caps(base, model)
@@ -217,7 +217,7 @@ async def _probe_ocr() -> dict:
 async def _probe_verify() -> dict:
     base = cfg("verify_base_url", settings.verify_base_url)
     model = cfg("verify_model", settings.verify_model)
-    headers = {"Authorization": f"Bearer {cfg('verify_api_key', settings.verify_api_key)}"}
+    headers = http_client.bearer_headers(cfg('verify_api_key', settings.verify_api_key))
     payload = {"context": ["The sky is blue."], "question": "What colour is the sky?", "answer": "Blue.", "model": model}
     r = await _post(f"{base.rstrip('/')}/v1/verify", json=payload, headers=headers, timeout=settings.verify_timeout)
     if err := _fail_if_error(r):
@@ -231,7 +231,7 @@ async def _probe_stt() -> dict:
     # failure (→ "cannot reach") or an auth rejection is a real failure.
     base = cfg("stt_base_url", settings.stt_base_url).rstrip("/")
     model = cfg("stt_model", settings.stt_model)
-    headers = {"Authorization": f"Bearer {cfg('stt_api_key', settings.stt_api_key)}"}
+    headers = http_client.bearer_headers(cfg('stt_api_key', settings.stt_api_key))
     r = await _post(http_client.v1_url(base, "audio/transcriptions"), headers=headers)
     if r.status_code in (401, 403):
         return {"ok": False, "error": "invalid API key"}
@@ -241,7 +241,7 @@ async def _probe_stt() -> dict:
 async def _probe_tts() -> dict:
     base = cfg("tts_base_url", settings.tts_base_url).rstrip("/")
     model = cfg("tts_model", settings.tts_model)
-    headers = {"Authorization": f"Bearer {cfg('tts_api_key', settings.tts_api_key)}"}
+    headers = http_client.bearer_headers(cfg('tts_api_key', settings.tts_api_key))
     # Voice sets differ per engine: OpenAI rejects kokoro's `af_sky` and vice-versa.
     # Use a known-valid voice for the OpenAI host; otherwise the configured one.
     voice = "alloy" if _is_openai(base) else cfg("tts_voice", settings.tts_voice)

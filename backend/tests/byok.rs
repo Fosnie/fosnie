@@ -45,7 +45,7 @@ async fn mk_user(pg: &sqlx::PgPool) -> Uuid {
 
 async fn setup() -> Option<(AppState, sqlx::PgPool, u16)> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
-    let redis_url = std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+    let redis_url = std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 5).await.ok()?;
     let redis = cache::create_pool(&redis_url).ok()?;
     let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };
@@ -119,10 +119,10 @@ async fn byok_gate_isolation_and_revert() {
     assert!(a_llm.get("api_key").is_none(), "key never returned");
 
     // Resolver isolation: A's overrides carry A's provider; B (no row) gets none.
-    let a_ov = fosnie_backend::ml::provider_overrides(&state, Some(a)).await;
+    let a_ov = fosnie_backend::ml::provider_overrides(&state, Some(a)).await.unwrap();
     assert_eq!(a_ov.get("llm_base_url").and_then(|v| v.as_str()), Some("https://a.example/v1"));
     assert_eq!(a_ov.get("llm_api_key").and_then(|v| v.as_str()), Some("sk-a"));
-    let b_ov = fosnie_backend::ml::provider_overrides(&state, Some(b)).await;
+    let b_ov = fosnie_backend::ml::provider_overrides(&state, Some(b)).await.unwrap();
     assert!(b_ov.is_empty(), "user B has no row and no deployment row ⇒ ML default");
 
     // B's GET never shows A's row.
@@ -138,7 +138,7 @@ async fn byok_gate_isolation_and_revert() {
     let av2: serde_json::Value = get(a).await.unwrap().json().await.unwrap();
     let a_llm2 = av2["providers"].as_array().unwrap().iter().find(|p| p["role"] == "llm").unwrap();
     assert_eq!(a_llm2["source"], "default");
-    assert!(fosnie_backend::ml::provider_overrides(&state, Some(a)).await.is_empty());
+    assert!(fosnie_backend::ml::provider_overrides(&state, Some(a)).await.unwrap().is_empty());
 
     // Cleanup.
     let _ = sqlx::query("DELETE FROM provider_configs WHERE scope='user' AND scope_id = ANY($1)").bind(vec![a, b]).execute(&pg).await;

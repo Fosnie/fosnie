@@ -26,7 +26,7 @@ from .. import llm
 from .budgets import ResearchBudgets
 from .templates import EXEC_SUMMARY_PLACEHOLDER
 
-_log = logging.getLogger("pai.research.cohere")
+_log = logging.getLogger("fosnie.research.cohere")
 
 _WID_RE = re.compile(r"\[[WD]\d+\]")
 _H2_RE = re.compile(r"^## .+$", re.MULTILINE)

@@ -1,6 +1,6 @@
 //! Real Firecracker microVM smoke — **Linux + KVM only**, and only when the
 //! rootfs/kernel/guest-agent are deployed (deploy/firecracker/README.md). Gated
-//! on PAI_FIRECRACKER=1 and `#[cfg(target_os = "linux")]`; it never runs (or even
+//! on FOSNIE_FIRECRACKER=1 and `#[cfg(target_os = "linux")]`; it never runs (or even
 //! compiles a body) on the Windows/macOS dev boxes. This is the deploy-box check
 //! for the VMM path that cannot be exercised in dev.
 
@@ -14,17 +14,17 @@ use fosnie_backend::state::AppState;
 use fosnie_backend::{cache, db};
 
 fn enabled() -> bool {
-    std::env::var("PAI_FIRECRACKER").as_deref() == Ok("1")
+    std::env::var("FOSNIE_FIRECRACKER").as_deref() == Ok("1")
 }
 
 async fn state() -> AppState {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 2).await.unwrap();
     let redis = cache::create_pool(&redis_url).unwrap();
     let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };
-    boot.features.code_interpreter = true; // VM paths come from PAI__CODE_INTERPRETER_VM__* / config file
+    boot.features.code_interpreter = true; // VM paths come from FOSNIE__CODE_INTERPRETER_VM__* / config file
     AppState::new(pg, redis, Arc::new(boot))
 }
 

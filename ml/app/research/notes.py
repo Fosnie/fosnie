@@ -27,7 +27,7 @@ from . import progress
 from .bank import Bank, Note
 from .budgets import ResearchBudgets
 
-_log = logging.getLogger("pai.research.notes")
+_log = logging.getLogger("fosnie.research.notes")
 
 _SYSTEM = (
     "You are building research notes from ONE web source. Extract everything "

@@ -33,7 +33,7 @@ sec()  { printf '\n===== %s =====\n' "$1"; }
 try()  { if have "$1"; then shift; "$@" 2>&1; else echo "(skip: $1 not installed)"; fi; }
 
 {
-  echo "PAI perf-probe — $HOST — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "Fosnie perf-probe — $HOST — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   sec "OS / kernel"
   uname -a 2>/dev/null || echo "(uname unavailable)"
@@ -58,7 +58,7 @@ try()  { if have "$1"; then shift; "$@" 2>&1; else echo "(skip: $1 not installed
   sec "Disks / block devices"
   try lsblk lsblk -o NAME,SIZE,TYPE,ROTA,MOUNTPOINT
   echo "--- mounts (data paths) ---"
-  mount 2>/dev/null | grep -E 'pai|pg|postgres|qdrant' || echo "(no pai/pg/qdrant mounts matched)"
+  mount 2>/dev/null | grep -E 'fosnie|pg|postgres|qdrant' || echo "(no fosnie/pg/qdrant mounts matched)"
 
   sec "Tool versions"
   for t in psql redis-server qdrant vllm python uv cargo node nginx; do
@@ -85,9 +85,9 @@ try()  { if have "$1"; then shift; "$@" 2>&1; else echo "(skip: $1 not installed
     echo "(skip: curl not installed)"
   fi
 
-  sec "systemd CPU/NUMA pinning (pai units)"
+  sec "systemd CPU/NUMA pinning (fosnie units)"
   if have systemctl; then
-    for u in fosnie-backend pai-ml; do
+    for u in fosnie-backend fosnie-ml; do
       echo "--- $u ---"
       systemctl show "$u" -p CPUAffinity -p NUMAPolicy -p NUMAMask -p MemoryMax 2>/dev/null || echo "(no unit)"
     done

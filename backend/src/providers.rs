@@ -54,6 +54,9 @@ impl ext::ProviderRegistry for DbProviderRegistry {
         role: &str,
         user_id: Option<Uuid>,
     ) -> Result<Option<ResolvedProvider>> {
+        if role == "llm" {
+            return resolve_db_llm(pool, self.key, user_id, None, None).await;
+        }
         // Pick the user row over the deployment row when both exist. A NULL
         // `user_id` never matches the user branch, so deployment wins.
         // Deployment-wide roles ignore any (legacy) user-scope row entirely.
@@ -74,23 +77,7 @@ impl ext::ProviderRegistry for DbProviderRegistry {
 
         let Some(row) = row else { return Ok(None) };
 
-        let api_key = match (row.api_key_encrypted, self.key) {
-            (Some(ct), Some(_key)) => match crate::crypto::decrypt_at_rest(&ct) {
-                Ok(pt) => Some(pt),
-                Err(_) => {
-                    tracing::warn!(role, "provider api_key failed to decrypt; sending none");
-                    None
-                }
-            },
-            (Some(_), None) => {
-                tracing::warn!(
-                    role,
-                    "provider api_key is set but message_encryption_key is unset; cannot decrypt"
-                );
-                None
-            }
-            (None, _) => None,
-        };
+        let api_key = decrypt_api_key(row.api_key_encrypted, self.key)?;
 
         Ok(Some(ResolvedProvider {
             base_url: row.base_url,
@@ -99,6 +86,33 @@ impl ext::ProviderRegistry for DbProviderRegistry {
             enabled: row.enabled,
             reasoning_mode: row.reasoning_mode,
         }))
+    }
+
+    async fn resolve_llm_id(&self, pool: &sqlx::PgPool, user_id: Option<Uuid>, provider_id: Uuid) -> Result<Option<ResolvedProvider>> {
+        fetch_visible_llm(pool, self.key, user_id, provider_id).await
+    }
+
+    async fn resolve_active_embed(&self,pool:&sqlx::PgPool,provider_id:Uuid,index_revision:i64) -> Result<Option<ResolvedProvider>> {
+        let row:Option<(String,Option<String>,Option<String>)>=sqlx::query_as("SELECT e.embed_model,e.embed_base_url,e.embed_api_key_encrypted FROM embedding_index e JOIN provider_configs p ON p.id=$1 AND p.role='embed' AND p.scope='deployment' AND p.scope_id IS NULL AND p.enabled WHERE e.id=1 AND e.routing_revision=$2")
+            .bind(provider_id).bind(index_revision).fetch_optional(pool).await?;
+        let Some((model,base_url,encrypted))=row else { return Ok(None); };
+        Ok(Some(ResolvedProvider { base_url,model:Some(model),api_key:decrypt_api_key(encrypted,self.key)?,enabled:true,reasoning_mode:None }))
+    }
+
+    async fn resolve_desired_embed(&self,pool:&sqlx::PgPool,provider_id:Uuid,index_revision:i64) -> Result<Option<ResolvedProvider>> {
+        let row:Option<(String,Option<String>,Option<String>)>=sqlx::query_as("SELECT e.desired_model,e.desired_base_url,e.desired_api_key_encrypted FROM embedding_index e JOIN provider_configs p ON p.id=$1 AND p.role='embed' AND p.scope='deployment' AND p.scope_id IS NULL AND p.enabled WHERE e.id=1 AND e.desired_routing_revision=$2 AND e.desired_model IS NOT NULL AND e.desired_dim>0")
+            .bind(provider_id).bind(index_revision).fetch_optional(pool).await?;
+        let Some((model,base_url,encrypted))=row else { return Ok(None); };
+        Ok(Some(ResolvedProvider { base_url,model:Some(model),api_key:decrypt_api_key(encrypted,self.key)?,enabled:true,reasoning_mode:None }))
+    }
+
+    async fn resolve_fixed_id(&self,pool:&sqlx::PgPool,role:&str,user_id:Option<Uuid>,provider_id:Uuid) -> Result<Option<ResolvedProvider>> {
+        if role=="llm" || !ROLES.contains(&role) { return Err(crate::AppError::Validation("invalid fixed inference role".into())); }
+        let user=if DEPLOYMENT_WIDE.contains(&role) { None } else { user_id };
+        let row:Option<(Option<String>,Option<String>,Option<String>)>=sqlx::query_as("SELECT base_url,model,api_key_encrypted FROM provider_configs WHERE id=$1 AND role=$2 AND enabled AND ((scope='deployment' AND scope_id IS NULL) OR (scope='user' AND scope_id=$3))")
+            .bind(provider_id).bind(role).bind(user).fetch_optional(pool).await?;
+        let Some((base_url,model,encrypted))=row else { return Ok(None); };
+        Ok(Some(ResolvedProvider { base_url,model,api_key:decrypt_api_key(encrypted,self.key)?,enabled:true,reasoning_mode:None }))
     }
 }
 
@@ -114,20 +128,12 @@ impl ext::ProviderRegistry for DbProviderRegistry {
 
 /// Decrypt a stored provider api_key ciphertext, gated on the deployment key being
 /// present. Mirrors [`DbProviderRegistry::resolve`]'s decrypt arm.
-fn decrypt_api_key(ct: Option<String>, key: Option<[u8; 32]>) -> Option<String> {
+fn decrypt_api_key(ct: Option<String>, key: Option<[u8; 32]>) -> Result<Option<String>> {
     match (ct, key) {
-        (Some(ct), Some(_)) => match crate::crypto::decrypt_at_rest(&ct) {
-            Ok(pt) => Some(pt),
-            Err(_) => {
-                tracing::warn!("llm provider api_key failed to decrypt; sending none");
-                None
-            }
-        },
-        (Some(_), None) => {
-            tracing::warn!("llm provider api_key is set but message_encryption_key is unset; cannot decrypt");
-            None
-        }
-        (None, _) => None,
+        (Some(ct), Some(_)) => crate::crypto::decrypt_at_rest(&ct).map(Some)
+            .map_err(|_| crate::AppError::Unavailable("provider credentials could not be decrypted".into())),
+        (Some(_), None) => Err(crate::AppError::Unavailable("provider credentials require an encryption key".into())),
+        (None, _) => Ok(None),
     }
 }
 
@@ -151,13 +157,13 @@ async fn fetch_visible_llm(
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|r| ResolvedProvider {
+    row.map(|r| Ok(ResolvedProvider {
         base_url: r.base_url,
         model: r.model,
-        api_key: decrypt_api_key(r.api_key_encrypted, key),
+        api_key: decrypt_api_key(r.api_key_encrypted, key)?,
         enabled: r.enabled,
         reasoning_mode: r.reasoning_mode,
-    }))
+    })).transpose()
 }
 
 /// Is `id` a visible `llm` provider for `user_id`? (Cheap existence check for
@@ -183,7 +189,7 @@ pub async fn visible_llm(pool: &sqlx::PgPool, user_id: Option<Uuid>, id: Uuid) -
 /// remembered `llm_provider_id` (when still visible) → the caller's own default
 /// llm row, else the deployment default → `None` (⇒ ML keeps its `.env` default).
 /// Never errors on a stale pick; a deleted/disabled row simply falls through.
-pub async fn resolve_llm(
+async fn resolve_db_llm(
     pool: &sqlx::PgPool,
     key: Option<[u8; 32]>,
     user_id: Option<Uuid>,
@@ -229,11 +235,37 @@ pub async fn resolve_llm(
         return Ok(Some(ResolvedProvider {
             base_url: r.base_url,
             model: r.model,
-            api_key: decrypt_api_key(r.api_key_encrypted, key),
+            api_key: decrypt_api_key(r.api_key_encrypted, key)?,
             enabled: r.enabled,
             reasoning_mode: r.reasoning_mode,
         }));
     }
     // 4. Nothing configured ⇒ the ML service uses its own `.env` default.
     Ok(None)
+}
+
+/// Single entry for named/default selection. Every target is resolved through
+/// the injected registry, including a remembered chat provider.
+pub async fn resolve_llm(
+    state: &crate::AppState,
+    user_id: Option<Uuid>,
+    chat_id: Option<Uuid>,
+    requested_id: Option<Uuid>,
+) -> Result<Option<ResolvedProvider>> {
+    crate::model_routing::admission::require_legacy_chat(state, chat_id).await?;
+    if let Some(id) = requested_id {
+        return state.providers.resolve_llm_id(&state.pg, user_id, id).await?
+            .map(Some).ok_or_else(|| crate::AppError::NotFound("model is unavailable to this caller".into()));
+    }
+    if let Some(chat_id) = chat_id {
+        let stored = sqlx::query_scalar!("SELECT llm_provider_id FROM chats WHERE id = $1", chat_id)
+            .fetch_optional(&state.pg).await?.flatten();
+        if let Some(id) = stored {
+            if let Some(provider) = state.providers.resolve_llm_id(&state.pg, user_id, id).await? {
+                return Ok(Some(provider));
+            }
+            tracing::info!(%chat_id, "remembered model unavailable; resolving the legacy default");
+        }
+    }
+    state.providers.resolve(&state.pg, "llm", user_id).await
 }

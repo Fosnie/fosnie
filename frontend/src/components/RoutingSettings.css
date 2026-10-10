@@ -1,0 +1,29 @@
+.routing-settings { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 22px; }
+.routing-settings h2 { font-size: 18px; margin: 0 0 8px; }
+.routing-settings h3 { font-size: 15px; margin: 0 0 10px; }
+.routing-settings p { margin: 8px 0; line-height: 1.5; }
+.routing-tabs { margin: 18px 0; overflow-x: auto; text-transform: capitalize; }
+.routing-cards { display: grid; gap: 10px; margin: 14px 0; }
+.routing-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+.routing-card p { margin: 4px 0; font-size: 12px; color: var(--ink-3); }
+.routing-card small, .routing-field small { color: var(--ink-3); font-size: 11px; line-height: 1.5; }
+.routing-editor { border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin-top: 16px; }
+.routing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 14px 0; }
+.routing-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; margin-bottom: 12px; }
+.routing-field input, .routing-field select, .routing-field textarea { width: 100%; min-height: 36px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--bg-2); color: var(--ink); font: inherit; }
+.routing-field textarea { resize: vertical; }
+.routing-field input:focus, .routing-field select:focus, .routing-field textarea:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
+.routing-checks { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 12px 0; }
+.routing-check { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }
+.routing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.routing-settings fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.routing-settings fieldset:disabled { opacity: .65; }
+.routing-settings details { margin: 16px 0; }
+.routing-settings summary { cursor: pointer; font-size: 13px; padding: 4px 0; font-weight: 600; }
+.routing-notice, .routing-report { padding: 12px 14px; border-left: 3px solid var(--gold); background: var(--bg-2); border-radius: 4px; font-size: 12px; }
+.routing-rule { padding: 16px; border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; }
+.routing-gates { padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; }
+.routing-gates .routing-actions { margin: 10px 0; }
+.routing-settings .form-err { margin-top: 12px; }
+.routing-settings .form-err button { margin: 8px 12px; }
+@media (max-width: 600px) { .routing-card { align-items: flex-start; flex-direction: column; } .routing-editor { padding: 12px; } .routing-grid { grid-template-columns: 1fr; } }

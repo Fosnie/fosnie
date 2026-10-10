@@ -26,7 +26,7 @@ import logging
 
 from . import llm
 
-_log = logging.getLogger("pai.decompose")
+_log = logging.getLogger("fosnie.decompose")
 
 _SYSTEM = (
     "You extract atomic, verifiable factual claims from a passage so each can be "
@@ -68,6 +68,17 @@ async def decompose_claims(text: str) -> list[str]:
     an empty/unverifiable passage or a model/parse failure (the job continues)."""
     if not text or not text.strip():
         return []
+    from .inference_target import strict
+    if strict():
+        llm.set_stage("draft.decompose")
+        raw = await llm.complete(_SYSTEM, text, max_tokens=1024)
+        if len(raw.encode("utf-8")) > 32768:
+            raise ValueError("oversized claim decomposition")
+        arr = json.loads(raw)
+        if (not isinstance(arr, list) or len(arr) > 16
+                or any(not isinstance(c, str) or not c.strip() or len(c.encode("utf-8")) > 2048 for c in arr)):
+            raise ValueError("invalid claim decomposition")
+        return list(dict.fromkeys(c.strip() for c in arr))
     try:
         raw = await llm.complete(_SYSTEM, text, max_tokens=1024)
     except Exception as e:  # noqa: BLE001 — a bad section must not kill the job

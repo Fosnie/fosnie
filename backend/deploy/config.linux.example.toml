@@ -1,6 +1,6 @@
-# PAI Platform backend — boot config, PROFILE A: Linux + vLLM + NVIDIA/ROCm.
-# Copy to /etc/pai/config.linux.toml and point PAI_CONFIG_FILE at it
-# (EnvironmentFile in systemd/fosnie-backend.service, or PAI__ env overrides).
+# Fosnie backend — boot config, PROFILE A: Linux + vLLM + NVIDIA/ROCm.
+# Copy to /etc/fosnie/config.linux.toml and point FOSNIE_CONFIG_FILE at it
+# (EnvironmentFile in systemd/fosnie-backend.service, or FOSNIE__ env overrides).
 # Boot layer only: endpoints, secrets, ports, paths, host capabilities.
 # Operational tuning (RAG top-k, retention, branding) is runtime-mutable config.
 
@@ -14,17 +14,17 @@ max_context_tokens = 0
 [server]
 host = "127.0.0.1"
 port = 8080
-static_dir = "/opt/pai/frontend/dist"
-public_url = "https://pai.example.internal"
+static_dir = "/opt/fosnie/frontend/dist"
+public_url = "https://fosnie.example.internal"
 # WebSocket Origin allow-list (anti cross-site WS hijacking). Empty/unset ⇒ the
 # origin of `public_url` is the sole allowed origin (correct when the SPA is
 # served same-origin). Set explicitly only if the SPA is served from a different
-# origin (e.g. a separate dev/proxy host): allowed_ws_origins = ["https://pai.example.internal"]
+# origin (e.g. a separate dev/proxy host): allowed_ws_origins = ["https://fosnie.example.internal"]
 
 [ml]
 # The Python ML service; it is the LLM client (talks to vLLM on this profile).
 base_url = "http://127.0.0.1:8090"
-# Shared secret sent as `X-PAI-ML-Key` on every call; the ML service rejects
+# Shared secret sent as `X-Fosnie-ML-Key` on every call; the ML service rejects
 # requests without it. Set the SAME value as the ML service's SHARED_SECRET env
 # (and set the ML service's STORAGE_ROOT to the storage parent below). Generate
 # a random value, e.g. `openssl rand -hex 32`.
@@ -36,7 +36,7 @@ shared_secret = "CHANGE-ME-shared-secret"
 # internal Prometheus scrape (`Authorization: Bearer <token>`, constant-time
 # checked). Generate one: `openssl rand -hex 32`. Keep the scrape on loopback;
 # never proxy /metrics to the public gateway. Prefer setting it via the env file
-# (PAI__OBSERVABILITY__METRICS_TOKEN) rather than committing it here.
+# (FOSNIE__OBSERVABILITY__METRICS_TOKEN) rather than committing it here.
 metrics_token = ""
 log_format = "json"
 
@@ -67,19 +67,19 @@ tts_stream = true
 tts_stream_url = "http://127.0.0.1:8094"
 
 [storage]
-branding_dir = "/var/lib/pai/branding"
-artefacts_dir = "/var/lib/pai/artefacts"
-documents_dir = "/var/lib/pai/documents"
-workspace_dir = "/var/lib/pai/workspace"
-skills_dir = "/var/lib/pai/skills"
-prompts_dir = "/var/lib/pai/prompts"
-exports_dir = "/var/lib/pai/exports"
+branding_dir = "/var/lib/fosnie/branding"
+artefacts_dir = "/var/lib/fosnie/artefacts"
+documents_dir = "/var/lib/fosnie/documents"
+workspace_dir = "/var/lib/fosnie/workspace"
+skills_dir = "/var/lib/fosnie/skills"
+prompts_dir = "/var/lib/fosnie/prompts"
+exports_dir = "/var/lib/fosnie/exports"
 
 [keycloak]
 url = "https://auth.example.internal"
 realm = "fosnie"
 client_id = "fosnie"
-# client_secret via PAI__KEYCLOAK__CLIENT_SECRET env, not committed here.
+# client_secret via FOSNIE__KEYCLOAK__CLIENT_SECRET env, not committed here.
 
 # Per-tool-type timeout overrides (seconds). Defaults suit vLLM; leave empty to
 # use code defaults (system/memory 10, web/dms 30, document_read 60, rag/artefact/code 120).
@@ -96,8 +96,8 @@ client_id = "fosnie"
 [code_interpreter]
 backend = "auto"
 runsc_bin = "runsc"
-gvisor_rootfs = "/opt/pai/firecracker/rootfs"   # OCI rootfs DIRECTORY (read-only)
-gvisor_state_dir = "/run/pai/gvisor"
+gvisor_rootfs = "/opt/fosnie/firecracker/rootfs"   # OCI rootfs DIRECTORY (read-only)
+gvisor_state_dir = "/run/fosnie/gvisor"
 # gVisor cgroup handling: "auto" (default) skips cgroup setup when the process
 # cannot manage cgroups (rootless, or root inside a container without
 # --cgroupns=host). Set "always" if the backend runs in a container and you would
@@ -108,10 +108,10 @@ ignore_cgroups = "auto"
 # Build the kernel/rootfs/guest-agent per deploy/firecracker/README.md.
 [code_interpreter_vm]
 firecracker_bin = "firecracker"
-kernel_image = "/opt/pai/firecracker/vmlinux"
-rootfs_image = "/opt/pai/firecracker/rootfs.ext4"
-snapshot_dir = "/opt/pai/firecracker/snapshot"
-socket_dir = "/run/pai/firecracker"
+kernel_image = "/opt/fosnie/firecracker/vmlinux"
+rootfs_image = "/opt/fosnie/firecracker/rootfs.ext4"
+snapshot_dir = "/opt/fosnie/firecracker/snapshot"
+socket_dir = "/run/fosnie/firecracker"
 vsock_cid = 3
 vsock_port = 5005
 vcpus = 2

@@ -1,0 +1,21 @@
+# Optional local reranker; read-only existing GGUF, never downloads a model.
+services:
+  reranker:
+    image: ${FOSNIE_ROUTING_RERANK_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    profiles: [live-web]
+    command: ["-m", "/models/reranker.gguf", "--alias", "hf.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF:Q8_0", "--reranking", "--host", "0.0.0.0", "--port", "8091", "-c", "2048", "-b", "2048", "-ub", "2048", "-ngl", "0", "-t", "4", "--parallel", "1"]
+    ports:
+      - "127.0.0.1:18091:8091"
+    volumes:
+      - type: bind
+        source: ${FOSNIE_ROUTING_RERANK_GGUF:?Set the existing local reranker GGUF path}
+        target: /models/reranker.gguf
+        read_only: true
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8091/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    cpus: 4
+    restart: "no"

@@ -1,4 +1,4 @@
-# PAI Platform backend — TEST image. Build context = repo root.
+# Fosnie backend — TEST image. Build context = repo root.
 # Multi-stage: build the React SPA, build the Rust binary (sqlx OFFLINE so no DB
 # is needed at build time — uses backend/.sqlx), ship a slim runtime that serves
 # both the API and the SPA bundle. Migrations are embedded at compile time
@@ -29,7 +29,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/backend/target/release/fosnie-backend /usr/local/bin/fosnie-backend
-COPY --from=frontend /app/frontend/dist /opt/pai/frontend/dist
-RUN mkdir -p /var/lib/pai
+COPY --from=frontend /app/frontend/dist /opt/fosnie/frontend/dist
+RUN mkdir -p /var/lib/fosnie
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/fosnie-backend"]

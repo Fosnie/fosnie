@@ -29,31 +29,31 @@ services:
     env_file: .env
     environment:
       # Service hostnames on the compose network — baked here, NOT in the user .env.
-      # DATABASE_URL falls back to the bundled postgres; set PAI__DATABASE_URL in
+      # DATABASE_URL falls back to the bundled postgres; set FOSNIE__DATABASE_URL in
       # .env (+ drop the postgres service) to point at a managed database instead.
-      PAI__DATABASE_URL: "${PAI__DATABASE_URL:-postgres://pai:${POSTGRES_PASSWORD}@postgres:5432/pai}"
-      PAI__REDIS_URL: "redis://redis:6379"
-      PAI__ML__BASE_URL: "http://ml:8090"
-      PAI__ML__SHARED_SECRET: "${ML_SHARED_SECRET}"
-      PAI__MESSAGE_ENCRYPTION_KEY: "${MESSAGE_ENCRYPTION_KEY}"
-      PAI__AUDIT_SIGNING_KEY: "${AUDIT_SIGNING_KEY:-}"
-      PAI__AUTH__MODE: "${AUTH_MODE:-local}"
+      FOSNIE__DATABASE_URL: "${FOSNIE__DATABASE_URL:-postgres://pai:${POSTGRES_PASSWORD}@postgres:5432/pai}"
+      FOSNIE__REDIS_URL: "redis://redis:6379"
+      FOSNIE__ML__BASE_URL: "http://ml:8090"
+      FOSNIE__ML__SHARED_SECRET: "${ML_SHARED_SECRET}"
+      FOSNIE__MESSAGE_ENCRYPTION_KEY: "${MESSAGE_ENCRYPTION_KEY}"
+      FOSNIE__AUDIT_SIGNING_KEY: "${AUDIT_SIGNING_KEY:-}"
+      FOSNIE__AUTH__MODE: "${AUTH_MODE:-local}"
       # Empty = external-inference mode. install.sh --local sets LOCAL_STACK=1 in
       # .env, which makes the backend seed the Ollama/reranker provider rows on boot.
       LOCAL_STACK: "${LOCAL_STACK:-}"
       # The browser-facing URL. Localhost is fine out of the box; if you serve
       # Fosnie on a domain, set PUBLIC_URL to that https URL (a non-loopback URL
       # MUST be https — front the stack with a TLS reverse proxy; see the README).
-      PAI__SERVER__PUBLIC_URL: "${PUBLIC_URL:-http://localhost:${HOST_PORT:-8080}}"
+      FOSNIE__SERVER__PUBLIC_URL: "${PUBLIC_URL:-http://localhost:${HOST_PORT:-8080}}"
     ports:
       - "${HOST_PORT:-8080}:8080"
     volumes:
-      - appdata:/var/lib/pai
+      - appdata:/var/lib/fosnie
       # The document store MUST be shared with the ml service: the backend writes
       # uploads here and hands ml the absolute path to read for extraction/RAG
       # (docs, workspace, chat-attachments). Without this shared mount ml reads its
       # own empty volume → FileNotFoundError on ingest.
-      - docstore:/var/lib/pai/data
+      - docstore:/var/lib/fosnie/data
     # Let the containers reach inference engines you run on the HOST (e.g. a local
     # STT/TTS/verifier on host ports) via `http://host.docker.internal:<port>` in a
     # provider's base_url. Docker Desktop provides this name automatically; this
@@ -84,10 +84,10 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     volumes:
-      - mldata:/var/lib/pai
+      - mldata:/var/lib/fosnie
       # Shared document store (see the backend service) — ml reads the uploaded
       # files the backend wrote, by the same absolute path.
-      - docstore:/var/lib/pai/data
+      - docstore:/var/lib/fosnie/data
     # ml is the HTTP client of the STT/TTS/verifier engines; reach host-run ones via
     # host.docker.internal (see the backend service note).
     extra_hosts:

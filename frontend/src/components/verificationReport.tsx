@@ -46,6 +46,11 @@ export function ReportExport({ runId }: { runId: string }) {
 export function VerificationReport({ runId }: { runId: string }) {
   const run = useVerificationRun(runId);
 
+  if (run.isError) {
+    return <div role="alert" className="gd-note">Could not load this verification report.
+      <button className="btn btn-ghost" onClick={() => void run.refetch()}>Retry report</button></div>;
+  }
+
   if (run.isLoading || !run.data) {
     return <div className="gd-note mono" style={{ padding: "8px 2px" }}>Loading verification…</div>;
   }
@@ -84,14 +89,14 @@ export function VerificationReport({ runId }: { runId: string }) {
   return (
     <div className="groundedness fade-up">
       <div className="gd-head">
-        <span className={"groundedness-badge " + band(score)}>{pct}% grounded</span>
+        <span className={"groundedness-badge " + (r.faithfulness_score == null ? "offcorpus" : band(score))}>{r.faithfulness_score == null ? "Not scored" : `${pct}% grounded`}</span>
         <span className="gd-sub">
           {r.supported}/{r.total_claims} supported · {r.contradicted} contradicted · {r.not_mentioned} unsupported
         </span>
       </div>
       <div className="gd-body">
         {flagged === 0 ? (
-          <div className="gd-note mono">Every claim is supported by your sources.</div>
+          <div className="gd-note mono">{r.total_claims === 0 ? "No claims were extracted for verification." : "Every claim is supported by your sources."}</div>
         ) : (
           <ul className="gd-spans">
             {flaggedClaims.map((c, i) => {

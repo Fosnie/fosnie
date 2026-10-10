@@ -14,9 +14,8 @@
 
 //! `GET /v1/models` — what this caller may address in the `model` field.
 //!
-//! Two kinds of entry, both usable verbatim as `model` in a completion request:
-//! configured LLM providers (by their human-readable label) and the caller's
-//! agents (as `agent/<uuid>`).
+//! Entries usable verbatim as `model`: configured LLM providers (by label),
+//! the caller's agents (as `agent/<uuid>`) and an explicitly enabled Auto alias.
 
 use axum::Json;
 use axum::extract::State;
@@ -55,6 +54,7 @@ pub async fn list_models(
             "owned_by": "fosnie",
         }));
     }
+    if let Some(alias)=super::alias::listed(&state).await? {data.push(alias);}
 
     // Agent visibility mirrors the application's own rule: an administrator sees
     // every agent, everyone else sees the shared pool plus the ones they made.

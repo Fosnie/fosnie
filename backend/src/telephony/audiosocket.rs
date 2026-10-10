@@ -212,11 +212,14 @@ pub async fn answer(
     // discovered mid-call they are a silent line, and a line that cannot speak should not
     // pick up. Nothing here decodes audio, so the reply has to arrive as raw samples.
     let vc = crate::voice::VoiceLiveResolved::load(&state.pg, state.message_key, &state.boot.voice_live).await;
-    if !vc.tts_stream || vc.tts_stream_url.is_empty() {
+    let routing=match super::routing::selection(&state,line.id).await {
+        Ok(value)=>value,Err(_)=>{audit_refusal(&state,"routing_unavailable",&from).await;return refuse();}
+    };
+    if routing.is_none() && (!vc.tts_stream || vc.tts_stream_url.is_empty()) {
         audit_refusal(&state, "no_streaming_synthesiser", &from).await;
         return refuse();
     }
-    if !matches!(vc.stt_sample_rate.max(8_000), 8_000 | 16_000) {
+    if routing.is_none() && !matches!(vc.stt_sample_rate.max(8_000), 8_000 | 16_000) {
         audit_refusal(&state, "unsupported_rate", &from).await;
         return refuse();
     }
@@ -241,6 +244,7 @@ pub async fn answer(
     // The identifier is the ticket, which is what authenticates the connection that
     // follows. Minted last, so nothing that could refuse this call happens after it.
     let details = CallDetails {
+        routing,
         owner_user_id: line.owner_user_id,
         agent_id: line.agent_id,
         opening: line.opening.clone(),
@@ -560,7 +564,7 @@ async fn run(
 
 /// Everything the telephone system sends us, until the call ends.
 async fn read_from_line(
-    voice: &Arc<crate::voice::Session>,
+    voice: &Arc<super::routing::CallVoice>,
     rx: &mut tokio::net::tcp::OwnedReadHalf,
     buf: &mut Vec<u8>,
     ending: &super::Ending,

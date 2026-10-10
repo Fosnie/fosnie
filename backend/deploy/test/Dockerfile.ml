@@ -1,4 +1,4 @@
-# PAI Platform ML/RAG service — TEST image. Build context = repo root.
+# Fosnie ML/RAG service — TEST image. Build context = repo root.
 # This service is a pure HTTP client of the inference stack (no torch / no vLLM
 # in the image) → small and fast to rebuild. The native tools below let the
 # "beautiful documents" paths actually work on a test box (pandoc + LibreOffice
@@ -22,10 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/pai/ml
-ENV UV_PROJECT_ENVIRONMENT=/opt/pai/ml/.venv \
+WORKDIR /opt/fosnie/ml
+ENV UV_PROJECT_ENVIRONMENT=/opt/fosnie/ml/.venv \
     UV_COMPILE_BYTECODE=1 \
-    PATH=/opt/pai/ml/.venv/bin:$PATH
+    PATH=/opt/fosnie/ml/.venv/bin:$PATH
 
 # Install deps first (cache layer), then app code.
 COPY ml/pyproject.toml ml/uv.lock ./
@@ -36,7 +36,7 @@ RUN uv sync --frozen --no-dev
 # SearXNG/DuckDuckGo paths work without it; this covers JS-heavy result pages.
 RUN playwright install --with-deps chromium
 
-RUN mkdir -p /var/lib/pai
+RUN mkdir -p /var/lib/fosnie
 EXPOSE 8090
-# Host networking → bind loopback (matches PAI__ML__BASE_URL=127.0.0.1:8090).
+# Host networking → bind loopback (matches FOSNIE__ML__BASE_URL=127.0.0.1:8090).
 CMD ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8090"]

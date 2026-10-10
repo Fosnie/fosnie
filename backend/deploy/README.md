@@ -54,7 +54,7 @@ Migrations run **inside the backend on boot** (`sqlx::migrate!`), so there is no
 separate migrate step. Data lives in named volumes (`pgdata`, `qdrantdata`,
 `redisdata`, `appdata`, …) and survives `down`/reboots (`restart: unless-stopped`).
 
-- **Managed Postgres:** set `PAI__DATABASE_URL` in `.env`, drop the `postgres`
+- **Managed Postgres:** set `FOSNIE__DATABASE_URL` in `.env`, drop the `postgres`
   service (see `example.env`). Use a session-mode/direct pooler, never
   transaction-mode.
 - **TLS / a public domain:** put a reverse proxy (nginx/Caddy/Traefik) in front and
@@ -76,7 +76,7 @@ the low-friction one.
    reranker, Qdrant, Redis, Keycloak, Postgres). Own lifecycle; not managed by
    the platform. The platform only *connects* to them.
 2. **Boot config** — endpoints, secrets, ports, paths, host capabilities. A TOML
-   file selected by `PAI_CONFIG_FILE`, overlaid by `PAI__*` env vars
+   file selected by `FOSNIE_CONFIG_FILE`, overlaid by `FOSNIE__*` env vars
    (`defaults → file → env`). Profiles above.
 3. **Runtime config** — operational tuning (RAG top-k, retention, branding,
    feature toggles) in Postgres `config_settings`, edited from the admin UI,
@@ -84,10 +84,30 @@ the low-friction one.
 
 ## Selecting a profile
 
-- **Linux:** `EnvironmentFile=/etc/pai/backend.env` (or set `PAI_CONFIG_FILE`) →
-  `config.linux.toml`; `pai-ml` reads `/etc/pai/ml.env`.
-- **macOS:** the launchd plists set `PAI_CONFIG_FILE=/etc/pai/config.macos.toml`
+- **Linux:** `EnvironmentFile=/etc/fosnie/backend.env` (or set `FOSNIE_CONFIG_FILE`) →
+  `config.linux.toml`; `fosnie-ml` reads `/etc/fosnie/ml.env`.
+- **macOS:** the launchd plists set `FOSNIE_CONFIG_FILE=/etc/fosnie/config.macos.toml`
   and the ML env vars.
+
+## Upgrading from a pre-rename deployment
+
+Everything the platform names after itself used to be spelled `pai`. If your host
+was installed before that changed, the following moved:
+
+| Was | Is now | Still works? |
+| --- | --- | --- |
+| `PAI__*` env vars, `PAI_CONFIG_FILE` | `FOSNIE__*`, `FOSNIE_CONFIG_FILE` | yes — read as a fallback, with a warning at boot; `FOSNIE__` wins where both are set |
+| `X-PAI-ML-Key` request header | `X-Fosnie-ML-Key` | yes — the ML service accepts both, so the backend and ML may be upgraded separately |
+| `PAI_DB_URL`, `PAI_QDRANT_URL`, `PAI_STORAGE_DIRS`, `PAI_BACKUP_*` | `FOSNIE_*` | yes — `backup.sh` / `restore.sh` read either |
+| `pai-backup-<UTC>/` bundles | `fosnie-backup-<UTC>/` | yes — old bundles restore unchanged and are still pruned by retention |
+| `pai-ml.service`, `pai-backup.service`/`.timer` | `fosnie-ml.service`, `fosnie-backup.service`/`.timer` | no — install the new units and `systemctl disable --now` the old ones |
+| `com.pai.ml`, `com.pai.backend` launchd jobs | `com.fosnie.ml`, `com.fosnie.backend` | no — `launchctl unload` the old plists first |
+| `/etc/pai`, `/var/lib/pai`, `/opt/pai`, `/run/pai`, `/var/backups/pai` | the same under `fosnie` | no — move the directories, or keep your own paths in the unit and config |
+| Service account `pai` | `fosnie` | no — the unit templates now expect it; `usermod -l fosnie pai` keeps ownership (the uid is unchanged), or edit `User=`/`Group=` back |
+| Prometheus job `pai-ml` | `fosnie-ml` | no — the shipped `alerts.yml` matches the new label, so update the scrape config with it |
+
+The Postgres role and database are still called `pai` in the examples: renaming
+them is a data migration, not a config change, so it is left to you.
 
 ## What makes a host "incapable" of a feature
 
@@ -114,12 +134,12 @@ platform code.
 ## Observability
 
 The backend exposes Prometheus metrics at **`GET /metrics`** (text exposition
-format). It is **fail-closed**: disabled (404) until `PAI__OBSERVABILITY__METRICS_TOKEN`
+format). It is **fail-closed**: disabled (404) until `FOSNIE__OBSERVABILITY__METRICS_TOKEN`
 is set, then required (`Authorization: Bearer <token>` or `?token=`, constant-time
 checked) — system telemetry is never readable out of the box. The ML service's
 `:8090/metrics` is gated by its shared secret (scrape with `Authorization: Bearer
 <ml.shared_secret>`). Keep both on loopback; never proxy `/metrics` publicly. Set
-`PAI__OBSERVABILITY__LOG_FORMAT=json` for structured logs.
+`FOSNIE__OBSERVABILITY__LOG_FORMAT=json` for structured logs.
 
 Series exposed: `http_requests_total{method,route,status}`,
 `http_request_duration_seconds`, `chat_turns_total`,

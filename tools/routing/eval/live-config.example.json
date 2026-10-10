@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "base_url": "https://your-authorized-fosnie.invalid",
+  "auth_env": "FOSNIE_EVALUATION_TOKEN",
+  "total_budget_microusd": 1000000,
+  "request_budget_microusd": 10000,
+  "max_cases": 28,
+  "max_duration_ms": 10000,
+  "max_output_tokens": 256,
+  "policies": {
+    "rules": {"id": "00000000-0000-4000-8000-000000000001", "revision": 1},
+    "classifier": {"id": "00000000-0000-4000-8000-000000000002", "revision": 1},
+    "hybrid": {"id": "00000000-0000-4000-8000-000000000003", "revision": 1}
+  },
+  "economy_provider_id": "00000000-0000-4000-8000-000000000004",
+  "single_provider_id": "00000000-0000-4000-8000-000000000005",
+  "default_policy_id": "00000000-0000-4000-8000-000000000001"
+}

@@ -11,6 +11,57 @@ next tag; a plain merge ships nothing to users.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-10
+
+### Added
+
+- Added a frozen instruction following comparison through the existing Core evaluation endpoint, with manual baselines, Classifier/Hybrid accounting and separate unknown results for incomplete provider responses.
+- Added a bounded, revision-pinned instruction following evaluator for routing experiments, keeping constraint compliance separate from semantic quality and production evidence admission.
+- Added reproducible Manual and Auto evaluation plans for audited public cohorts, with saved profile/policy checks, durable finite reservations and separate unknown results; completed evaluations expose their terminal contract and native profile fingerprint.
+- Added finite native cloud evaluation allocations and explicit temperature for protected text evaluations, preserving prior defaults and rejecting invalid values before dispatch.
+- Added isolated evaluation support for automatic model selection across web search, library retrieval and continued conversations.
+- Added offline blind-review tooling for frozen judge datasets, family/exposure checks and a revision-pinned public benchmark importer. Diagnostics now count dialogue families separately from language variants. These tools do not promote evidence, change routing policies or make model calls automatically.
+- Added an explicitly isolated loopback development demo using the actual chat and routing settings components, separate test data and operator-declared local profiles. It does not enable production routing or connect cloud credentials.
+- Added optional model ranking from reviewed held-out evaluation records and bounded quality escalation for non-streaming stateless Auto API requests. Includes offline evidence aggregation, profile import controls and shared Core/Enterprise admission and budget checks. Both options default to disabled.
+- Added explicit task exclusions to model profiles so automatic selection and fallback can avoid models unsuitable for a workload.
+- Added a revision-bound public EN/RU corpus and calibration-first comparison of Manual, Rules, Classifier and Hybrid, with judge accounting, whole-stage bounds and explicit incomplete evidence/coverage status.
+- Added configurable automatic model selection across local and cloud providers, with routing rules, a selectable judge and shared usage limits.
+- Added bounded embedding rebuilds with pinned models, source access checks, persistent usage and explicit fresh attempts after interruptions.
+- Added safe quota, billing, rate-limit and timeout diagnostics, revision-bound provider cooldowns and bounded pre-output failover for eligible plain-text Auto chat turns. Failed attempts share the original allowance and access checks. Chat error messages now retain received output and offer model selection or a prepared explicit retry; tools, durable work and emitted output never replay.
+- Added an optional quick search mode using search-engine excerpts without page fetching, OCR or reranking inference.
+
+### Changed
+
+- Renamed the settings, service units, backup bundles and file locations that a deployment is configured with so that they carry the product name, with the previous spellings still accepted for settings, backups and the link between the two services, and a note in the deployment guide covering the few that have to be moved by hand.
+- Enabled technical recovery before output in the isolated local routing demo.
+- Add per-model Auto effort presets and an independent judge effort setting, with explicit request/rule precedence and per-candidate fallback resolution. Preserve legacy defaults, shared budgets and evaluation fingerprints without presets; invalidate reviewed evidence when a preset changes. Translate Gemini 3 reasoning levels natively, expose the judge's abstention threshold, and add offline field-level diagnostics for saved judge observations.
+- The private routing example shares its fixture with an installed Enterprise consumer for source-ACL, revocation and signed-provenance evaluation. Core production keeps its edition seams and does not depend on Enterprise.
+- Uploaded documents can opt into the effective Auto policy, pinned embedding/OCR services and a durable shared inference budget. Interrupted ingestion is not automatically replayed; source/actor access and the deployment gate are checked again during work and at publication. Immutable bounded file snapshots prevent changed upload bytes entering the original job. The default-off control appears in routing settings. Legacy and connector ingestion retain their existing path.
+- Model profiles can restrict JSON output to specific declared API efforts. Auto selection, rules, explicit targets, classifiers and dispatch enforce the restriction without changing effort. Settings expose the restriction and evaluation fingerprints change when it changes. Legacy profiles retain their existing fingerprints and behaviour.
+- Quick web search now reranks at most eight verbatim excerpts and returns at most four, reducing work for local models. Routed chat uses the original current question as a bounded ranking hint without sending it to the search engine. Partial coverage is explicit and citations keep their original source metadata. Standard and deep search retain their existing evidence processing.
+- Add opt-in connector document ingestion with pinned models, a durable shared ledger, original importer/sync principal, source-ACL revision checks and explicit reindexing. Unauthorised copies remain stored without model egress; old legacy tasks cannot bypass the gate.
+- Improved model routing upgrade verification and recovery instructions.
+
+### Fixed
+
+- Prevented Auto's judge from consuming the last answer call, and added an optional answer time reserve with explicit skipped-judge reasons and tightened dispatch deadlines.
+- Added model-free recovery for interrupted document index writes and retained the previous embedding index until promotion was confirmed.
+- Preserved existing indexed content when an ingestion model failed, removed stale chunks from both indexes during a rebuild, and rejected contextual workloads that exceeded their routing allowance before starting summaries.
+- Separated provider pacing from the Core request deadline and added request-owned native timeouts and explicit availability stops for bounded routing experiments.
+- Bounded model evaluations now require a normal stop and non-blank final text for plain answers as well as structured answers. Truncated, filtered or missing finish metadata cannot become a successful quality measurement. Failures retain the conservative request cap and do not trigger a retry.
+- Fixed internal retrieval helpers exceeding a routed chat's output allowance before inference could start.
+- Fixed browser routing so its internal generative response ceiling no longer rejects fixed web services with unknown token usage; retained explicit policy caps, prevented documentation keywords from triggering unrequested artefact generation and added an isolated live WebSocket pilot.
+- Fixed learned quality comparisons across model-specific reasoning presets while retaining each model's effort and evaluation provenance checks.
+- Added optional native structured responses for routing judges and bounded evaluations, and clarified when supplied information requires external tools.
+- Fixed native tool-history replay for Responses and Gemini, and reserved generation room for reasoning-based retrieval graders within existing grants.
+- Added safe reasons for rejected native JSON outputs in routed ML calls and Core, plus a private local calibration and weather-tool probe with pinned targets and shared accounting. Rejected responses remain unrepaired and are not replayed. Added an optional loopback SearXNG dependency profile for isolated live-search validation; ordinary offline checks do not start it.
+- Fixed non-streaming model calls to retain their explicitly assigned purpose and token allowance, including primary evaluation requests and final answers.
+- Preserved xhigh in legacy Responses streaming, stopped requesting disabled reasoning summaries and translated Gemini thinking controls for the actual request model, with unsupported controls rejected before dispatch.
+- Added explicit cancellation for an administrator's embedding rebuild and prevented an older stopped worker from overwriting a newer attempt's status.
+- Prevented concurrent rebuilds from replacing the same desired index, and rechecked the built corpus and requesting user's access before publishing it. A proven pre-publication refusal now permits an explicit fresh attempt without replaying inference.
+- Added bounded page-image processing for image-only OCR services, preserving PDF page numbers and checking the remaining OCR allowance before sending scanned pages.
+- Fixed explicit judge tests being refused by Auto's answer reserve. A standalone probe uses its existing single-call allowance and deadline without reserving a nonexistent answer; normal Auto still preserves the last answer call and time.
+
 ## [0.6.0] - 2026-08-02
 
 ### Added

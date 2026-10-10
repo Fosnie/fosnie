@@ -19,9 +19,9 @@ reader can skim in a minute and download to keep.
 - The page must work with **no network**. Never write `<script src="…">`,
   `<link href="…">`, `@import`, web-font URLs, or external `<img src>`. External
   references are rejected.
-- For charts, write `<!-- pai:echarts -->` once in `<head>` — the platform inlines the
-  charting library there. For the house styling, write `<!-- pai:theme -->` in
-  `<head>` — the platform inlines the theme variables and `.pai-*` classes there. A
+- For charts, write `<!-- fosnie:echarts -->` once in `<head>` — the platform inlines the
+  charting library there. For the house styling, write `<!-- fosnie:theme -->` in
+  `<head>` — the platform inlines the theme variables and `.fosnie-*` classes there. A
   Content-Security-Policy is injected automatically; do not add one.
 
 ## What to produce
@@ -29,7 +29,7 @@ reader can skim in a minute and download to keep.
 Read the report and build an **executive-summary page**:
 
 1. **Title + context** — a real title (from the report) and a one-line subtitle.
-2. **KPI strip** — 3–5 of the most important numbers/findings as `.pai-kpi` cards.
+2. **KPI strip** — 3–5 of the most important numbers/findings as `.fosnie-kpi` cards.
    If the report has few hard numbers, use short qualitative highlights instead.
 3. **Charts where the data supports them** — turn tables / figures / comparisons in
    the report into 1–3 ECharts charts (pie for composition, line for trend, bar for
@@ -37,8 +37,8 @@ Read the report and build an **executive-summary page**:
    only chart what the report states; if there is nothing chartable, omit charts and
    use prose + tables.
 4. **Sectioned narrative** — the report's key points under `<h2>` headings, tightened
-   for skim-reading (short paragraphs, bullet lists, `.pai-table` for tabular bits).
-5. **Sources** — a `.pai-sources` footer carrying the citation numbers `[1]`, `[2]`
+   for skim-reading (short paragraphs, bullet lists, `.fosnie-table` for tabular bits).
+5. **Sources** — a `.fosnie-sources` footer carrying the citation numbers `[1]`, `[2]`
    from the report.
 
 ## Scaffold
@@ -49,34 +49,34 @@ Read the report and build an **executive-summary page**:
 <head>
   <meta charset="utf-8">
   <title>REPORT TITLE</title>
-  <!-- pai:theme -->
-  <!-- pai:echarts -->
+  <!-- fosnie:theme -->
+  <!-- fosnie:echarts -->
 </head>
 <body>
-  <main class="pai-wrap">
-    <header class="pai-header">
+  <main class="fosnie-wrap">
+    <header class="fosnie-header">
       <h1>REPORT TITLE</h1>
-      <div class="pai-sub">ONE-LINE CONTEXT</div>
+      <div class="fosnie-sub">ONE-LINE CONTEXT</div>
     </header>
 
-    <section class="pai-kpis">
-      <div class="pai-kpi"><div class="pai-kpi-val">…</div><div class="pai-kpi-label">…</div></div>
+    <section class="fosnie-kpis">
+      <div class="fosnie-kpi"><div class="fosnie-kpi-val">…</div><div class="fosnie-kpi-label">…</div></div>
       <!-- 3–5 cards -->
     </section>
 
-    <section class="pai-grid">
-      <div class="pai-card pai-half"><h2>…</h2><div class="pai-chart" id="c1"></div></div>
-      <div class="pai-card"><h2>Findings</h2><p>…</p></div>
+    <section class="fosnie-grid">
+      <div class="fosnie-card fosnie-half"><h2>…</h2><div class="fosnie-chart" id="c1"></div></div>
+      <div class="fosnie-card"><h2>Findings</h2><p>…</p></div>
     </section>
 
-    <footer class="pai-sources">Sources<ol><li>… [1]</li></ol></footer>
+    <footer class="fosnie-sources">Sources<ol><li>… [1]</li></ol></footer>
   </main>
 
   <script type="application/json" id="data">{ "c1": { } }</script>
   <script>
     const DATA = JSON.parse(document.getElementById('data').textContent);
     const css = getComputedStyle(document.documentElement);
-    const palette = ['--pai-c1','--pai-c2','--pai-c3','--pai-c4','--pai-c5','--pai-c6']
+    const palette = ['--fosnie-c1','--fosnie-c2','--fosnie-c3','--fosnie-c4','--fosnie-c5','--fosnie-c6']
       .map(v => css.getPropertyValue(v).trim() || '#2f6db5');
     // echarts.init(document.getElementById('c1')).setOption({ color: palette, … });
   </script>
@@ -84,17 +84,17 @@ Read the report and build an **executive-summary page**:
 </html>
 ```
 
-## Available `.pai-*` classes
+## Available `.fosnie-*` classes
 
-`pai-wrap`, `pai-header` (`h1`, `.pai-sub`), `pai-kpis`/`pai-kpi`
-(`.pai-kpi-val`, `.pai-kpi-label`), `pai-grid`, `pai-card` (and `pai-card.pai-half`),
-`pai-chart`, `pai-table`, `pai-sources`, `pai-badge good|warn|bad`. Add small inline
+`fosnie-wrap`, `fosnie-header` (`h1`, `.fosnie-sub`), `fosnie-kpis`/`fosnie-kpi`
+(`.fosnie-kpi-val`, `.fosnie-kpi-label`), `fosnie-grid`, `fosnie-card` (and `fosnie-card.fosnie-half`),
+`fosnie-chart`, `fosnie-table`, `fosnie-sources`, `fosnie-badge good|warn|bad`. Add small inline
 CSS only if needed.
 
 ## ECharts usage
 
 One `echarts.init(el).setOption({ color: palette, … })` per chart, container sized via
-`.pai-chart`. Pull colours from `--pai-c1…--pai-c6`. Keep options minimal: `tooltip`,
+`.fosnie-chart`. Pull colours from `--fosnie-c1…--fosnie-c6`. Keep options minimal: `tooltip`,
 axes, one `series`. Chart only what the report contains.
 
 ## Rules

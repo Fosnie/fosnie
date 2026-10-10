@@ -25,8 +25,10 @@ from . import http_client
 from .config import settings
 from .llm import _is_openai
 from .rag_ctx import cfg
+from .inference_fixed import routed_fixed, post
+from .inference_target import strict
 
-_log = logging.getLogger("pai.tts")
+_log = logging.getLogger("fosnie.tts")
 _degraded = False
 
 # OpenAI's /v1/audio/speech voices (from its own rejection message). When the TTS
@@ -50,14 +52,17 @@ def available() -> bool:
     return settings.tts_enabled and not _degraded
 
 
-async def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
+@routed_fixed("tts")
+async def synthesize(text: str, voice: str | None = None, *, response_format: str | None = None) -> tuple[bytes, str]:
     """Synthesise speech for `text` via the OpenAI `/v1/audio/speech` contract.
     Returns (audio_bytes, mime). Raises on failure (route maps to 503)."""
     global _degraded
     base = cfg("tts_base_url", settings.tts_base_url)
     url = http_client.v1_url(base, "audio/speech")
-    headers = {"Authorization": f"Bearer {cfg('tts_api_key', settings.tts_api_key)}"}
-    fmt = settings.tts_format
+    headers = http_client.bearer_headers(cfg('tts_api_key', settings.tts_api_key))
+    if response_format not in (None, "wav"):
+        raise ValueError("unsupported explicit speech format")
+    fmt = response_format or settings.tts_format
     resolved_voice = voice or cfg("tts_voice", settings.tts_voice)
     # OpenAI rejects the local engines' voices (e.g. `af_sky`); default to `alloy`.
     if _is_openai(base) and resolved_voice not in _OPENAI_TTS_VOICES:
@@ -70,13 +75,15 @@ async def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
     }
     try:
         client = http_client.get_client()
-        r = await client.post(url, json=payload, headers=headers, timeout=settings.request_timeout)
+        r = await post("tts", client, url, json=payload, headers=headers, timeout=settings.request_timeout)
         r.raise_for_status()
         audio = r.content
         _degraded = False
         mime = r.headers.get("content-type") or _FORMAT_MIME.get(fmt, "application/octet-stream")
         return audio, mime
     except Exception as e:  # noqa: BLE001
+        if strict():
+            raise
         _degraded = True
         _log.warning("TTS unavailable: %s", e)
         raise

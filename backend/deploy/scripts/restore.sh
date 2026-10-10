@@ -13,16 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# PAI Platform restore — the inverse of backup.sh. Restore ORDER MATTERS:
+# Fosnie restore — the inverse of backup.sh. Restore ORDER MATTERS:
 # Postgres first (source of truth + audit chain), then Qdrant, then storage.
 # After restore, START THE BACKEND and verify the audit hash-chain before
 # cutover (GET /api/admin/audit/export → status, or `verify_chain`); a bad chain
 # means the dump is tampered/corrupt — DO NOT go live.
 #
-# Config (env): PAI_DB_URL, PAI_QDRANT_URL  (same as backup.sh).
+# Config (env): FOSNIE_DB_URL, FOSNIE_QDRANT_URL  (same as backup.sh).
 #
 # Usage:  restore.sh <bundle-dir> [--force]
-#   <bundle-dir>  a pai-backup-* directory produced by backup.sh
+#   <bundle-dir>  a fosnie-backup-* directory produced by backup.sh (a pai-backup-*
+#                 bundle from before the rename restores identically — the bundle
+#                 layout did not change, only the directory name)
 #   --force       proceed even if the target Postgres already has app tables
 #
 # Refuses to clobber a populated database unless --force is given.
@@ -33,8 +35,9 @@ BUNDLE="${1:-}"
 FORCE="${2:-}"
 [ -n "$BUNDLE" ] && [ -d "$BUNDLE" ] || { echo "usage: restore.sh <bundle-dir> [--force]" >&2; exit 2; }
 
-DB_URL="${PAI_DB_URL:-postgres://pai:pai@localhost:5432/pai}"
-QDRANT_URL="${PAI_QDRANT_URL:-http://localhost:6333}"
+# PAI_* are the pre-rename spellings, still read (see backup.sh).
+DB_URL="${FOSNIE_DB_URL:-${PAI_DB_URL:-postgres://pai:pai@localhost:5432/pai}}"
+QDRANT_URL="${FOSNIE_QDRANT_URL:-${PAI_QDRANT_URL:-http://localhost:6333}}"
 
 log() { printf '[restore] %s\n' "$*" >&2; }
 die() { printf '[restore] ERROR: %s\n' "$*" >&2; exit 1; }

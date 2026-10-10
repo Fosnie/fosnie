@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# PAI Platform backup. Captures a consistent point-in-time bundle of the three
+# Fosnie backup. Captures a consistent point-in-time bundle of the three
 # stateful stores and writes a manifest + checksums. Designed for the Linux
 # deploy profile but runs anywhere with bash, pg_dump, curl, tar, python3.
 #
@@ -24,24 +24,26 @@
 # Redis is intentionally skipped — it holds only ephemeral session/ticket state.
 #
 # Config (env, with sensible defaults):
-#   PAI_DB_URL          postgres://pai:pai@localhost:5432/pai   (or standard PG* vars)
-#   PAI_QDRANT_URL      http://localhost:6333                   ("" or "skip" to skip)
-#   PAI_STORAGE_DIRS    space-separated dirs to archive         ("" to skip)
-#   PAI_BACKUP_DIR      /var/backups/pai                        (bundles land here)
-#   PAI_BACKUP_RETAIN   14                                      (keep N newest bundles)
-#   PAI_BACKUP_AGE_RECIPIENT  age public key                    (encrypt bundle if set)
+#   FOSNIE_DB_URL          postgres://pai:pai@localhost:5432/pai   (or standard PG* vars)
+#   FOSNIE_QDRANT_URL      http://localhost:6333                   ("" or "skip" to skip)
+#   FOSNIE_STORAGE_DIRS    space-separated dirs to archive         ("" to skip)
+#   FOSNIE_BACKUP_DIR      /var/backups/fosnie                        (bundles land here)
+#   FOSNIE_BACKUP_RETAIN   14                                      (keep N newest bundles)
+#   FOSNIE_BACKUP_AGE_RECIPIENT  age public key                    (encrypt bundle if set)
 #
 # Usage:  backup.sh            # one-shot backup into a timestamped bundle dir
 # Exit:   non-zero on any failure (set -euo pipefail); safe for a systemd timer.
 
 set -euo pipefail
 
-DB_URL="${PAI_DB_URL:-postgres://pai:pai@localhost:5432/pai}"
-QDRANT_URL="${PAI_QDRANT_URL:-http://localhost:6333}"
-STORAGE_DIRS="${PAI_STORAGE_DIRS:-}"
-BACKUP_DIR="${PAI_BACKUP_DIR:-/var/backups/pai}"
-RETAIN="${PAI_BACKUP_RETAIN:-14}"
-AGE_RECIPIENT="${PAI_BACKUP_AGE_RECIPIENT:-}"
+# The PAI_* spellings are the pre-rename ones, still read so an existing
+# /etc/fosnie/backup.env (or /etc/pai/backup.env) keeps working unchanged.
+DB_URL="${FOSNIE_DB_URL:-${PAI_DB_URL:-postgres://pai:pai@localhost:5432/pai}}"
+QDRANT_URL="${FOSNIE_QDRANT_URL:-${PAI_QDRANT_URL:-http://localhost:6333}}"
+STORAGE_DIRS="${FOSNIE_STORAGE_DIRS:-${PAI_STORAGE_DIRS:-}}"
+BACKUP_DIR="${FOSNIE_BACKUP_DIR:-${PAI_BACKUP_DIR:-/var/backups/fosnie}}"
+RETAIN="${FOSNIE_BACKUP_RETAIN:-${PAI_BACKUP_RETAIN:-14}}"
+AGE_RECIPIENT="${FOSNIE_BACKUP_AGE_RECIPIENT:-${PAI_BACKUP_AGE_RECIPIENT:-}}"
 
 log() { printf '[backup] %s\n' "$*" >&2; }
 die() { printf '[backup] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -51,7 +53,7 @@ command -v curl    >/dev/null || die "curl not found on PATH"
 command -v python3 >/dev/null || die "python3 not found on PATH"
 
 STAMP="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))')"
-DEST="${BACKUP_DIR%/}/pai-backup-${STAMP}"
+DEST="${BACKUP_DIR%/}/fosnie-backup-${STAMP}"
 mkdir -p "$DEST"
 log "bundle → $DEST"
 
@@ -102,7 +104,7 @@ import re
 db_redacted = re.sub(r'(://[^:/]+:)[^@]+(@)', r'\1***\2', db_url)
 files = sorted(f for f in os.listdir(dest) if f not in ("manifest.json", "sha256sums"))
 print(json.dumps({
-    "tool": "pai-backup", "version": 1, "created_utc": stamp,
+    "tool": "fosnie-backup", "version": 1, "created_utc": stamp,
     "postgres_dsn": db_redacted, "qdrant_collections": int(qdrant),
     "files": files,
 }, indent=2))
@@ -113,7 +115,7 @@ log "manifest + sha256sums written"
 
 # 5. Optional encryption (zero-egress: the key/recipient stays in the perimeter).
 if [ -n "$AGE_RECIPIENT" ]; then
-  command -v age >/dev/null || die "PAI_BACKUP_AGE_RECIPIENT set but 'age' not found"
+  command -v age >/dev/null || die "FOSNIE_BACKUP_AGE_RECIPIENT set but 'age' not found"
   log "encrypting bundle with age…"
   TARBALL="${DEST}.tar"
   tar --create --file "$TARBALL" -C "$(dirname "$DEST")" "$(basename "$DEST")"
@@ -125,7 +127,9 @@ fi
 
 # 6. Retention — keep the N newest bundles, prune the rest.
 log "retention: keep $RETAIN"
-ls -1dt "${BACKUP_DIR%/}"/pai-backup-* 2>/dev/null | tail -n +"$((RETAIN + 1))" | while read -r old; do
+# Both bundle spellings are pruned: a directory written before the rename is
+# still one of this deployment's backups and must age out with the rest.
+ls -1dt "${BACKUP_DIR%/}"/fosnie-backup-* "${BACKUP_DIR%/}"/pai-backup-* 2>/dev/null | tail -n +"$((RETAIN + 1))" | while read -r old; do
   log "prune $old"; rm -rf "$old"
 done
 

@@ -20,7 +20,7 @@
 //! Offline evidence-pack attestation lives in the sibling [`super::verify_export`]
 //! module (part of Fosnie Enterprise); this file is the Core tamper-detection half.
 
-use super::{compute_chain_hash, AuditOutcome};
+use super::{compute_chain_hash, compute_legacy_chain_hash, AuditOutcome};
 
 /// Result of verifying the chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +104,9 @@ where
         }
 
         // Integrity: recompute the hash from the row's content + prev.
-        let recomputed = compute_chain_hash(
+        let recompute = |legacy| {
+        let algorithm=if legacy {compute_legacy_chain_hash}else{compute_chain_hash};
+        algorithm(
             row.seq,
             row.actor_user_id,
             &row.actor_role,
@@ -121,9 +123,9 @@ where
             row.risk_anomaly_flag,
             row.payload.as_ref(),
             expected_prev.as_deref(),
-        );
+        )};
 
-        if recomputed != row.hash {
+        if recompute(false) != row.hash && recompute(true) != row.hash {
             return Ok(ChainStatus::bad(row.seq, "row hash does not match recomputed content"));
         }
 

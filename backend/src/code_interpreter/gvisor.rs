@@ -40,7 +40,7 @@ use crate::config::CodeInterpreterBackendConfig;
 use crate::error::{AppError, Result};
 
 /// Path of the guest agent inside the rootfs (installed by `build-rootfs.sh`).
-const GUEST_AGENT: &str = "/opt/pai-agent/guest_agent.py";
+const GUEST_AGENT: &str = "/opt/fosnie-agent/guest_agent.py";
 
 pub struct GvisorExecutor {
     cfg: CodeInterpreterBackendConfig,
@@ -318,7 +318,7 @@ impl GvisorExecutor {
                     "HOME=/tmp",
                     "MPLBACKEND=Agg",
                     "MPLCONFIGDIR=/tmp/mpl",
-                    "PAI_AGENT_PORT=5005"
+                    "FOSNIE_AGENT_PORT=5005"
                 ],
                 "cwd": "/work",
                 "noNewPrivileges": true,

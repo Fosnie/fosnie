@@ -66,7 +66,7 @@ def _run_stream(sampling, model):
     async def _collect():
         return [ev async for ev in llm.stream_chat([{"role": "user", "content": "hi"}], sampling, model)]
 
-    return asyncio.new_event_loop().run_until_complete(_collect())
+    return asyncio.run(_collect())
 
 
 @pytest.fixture(autouse=True)

@@ -26,8 +26,10 @@ import httpx
 
 from . import http_client
 from .config import settings
+from .inference_fixed import routed_fixed, post
+from .inference_target import strict
 
-_log = logging.getLogger("pai.reranker")
+_log = logging.getLogger("fosnie.reranker")
 _RETRY_AFTER = 30.0  # seconds to skip the reranker after a failure, then retry
 _down_until = 0.0
 _warned = False
@@ -76,6 +78,7 @@ def degraded_now() -> bool:
     return time.monotonic() < _down_until
 
 
+@routed_fixed("rerank")
 async def rerank(query: str, docs: list[str]) -> list[float]:
     """Relevance score per doc (higher = better), aligned to `docs`. On failure returns
     equal (0.0) scores so the caller keeps the hybrid-fusion order, and trips a cooldown
@@ -88,12 +91,12 @@ async def rerank(query: str, docs: list[str]) -> list[float]:
 
     if not cfg("rerank_enabled", settings.rerank_enabled) or not docs:
         return [0.0] * len(docs)
-    if time.monotonic() < _down_until:
+    if not strict() and time.monotonic() < _down_until:
         return [0.0] * len(docs)  # cooling down after a recent failure
 
     url = f"{cfg('rerank_base_url', settings.rerank_base_url).rstrip('/')}/v1/rerank"
     payload = {"model": cfg("rerank_model", settings.rerank_model), "query": query, "documents": docs}
-    headers = {"Authorization": f"Bearer {cfg('rerank_api_key', settings.rerank_api_key)}"}
+    headers = http_client.bearer_headers(cfg('rerank_api_key', settings.rerank_api_key))
     retries = max(1, cfg("rerank_max_retries", settings.rerank_max_retries))
     base = max(0.0, cfg("rerank_backoff_base", settings.rerank_backoff_base))
     last_err: Exception | None = None
@@ -101,7 +104,7 @@ async def rerank(query: str, docs: list[str]) -> list[float]:
         for attempt in range(retries):
             try:
                 client = http_client.get_client()
-                r = await client.post(url, json=payload, headers=headers, timeout=settings.rerank_timeout)
+                r = await post("rerank", client, url, json=payload, headers=headers, timeout=settings.rerank_timeout)
                 r.raise_for_status()
                 results = r.json()["results"]
                 scores = [0.0] * len(docs)
@@ -113,6 +116,8 @@ async def rerank(query: str, docs: list[str]) -> list[float]:
                     _warned = False
                 return scores
             except Exception as e:  # noqa: BLE001 — degrade, never break retrieval
+                if strict():
+                    raise
                 last_err = e
                 if not _retryable(e) or attempt + 1 >= retries:
                     break

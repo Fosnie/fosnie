@@ -90,12 +90,12 @@ fn validate(req: &ResearchRequest) -> Result<()> {
 /// A resolved report template: a built-in (spec None, the research service owns
 /// its body) or a user-defined one (spec = the snapshot sent inline to the
 /// service). `scope` labels which, for the audit trail.
-struct ResolvedTemplate {
+pub(crate) struct ResolvedTemplate {
     /// The value stored in `chats.research_params.template` (a built-in id or the
     /// custom template's UUID string).
     id: String,
     /// The inline snapshot for a user-defined template; None for a built-in.
-    spec: Option<serde_json::Value>,
+    pub(crate) spec: Option<serde_json::Value>,
     /// "builtin" | "personal" | "global".
     scope: &'static str,
 }
@@ -104,7 +104,7 @@ struct ResolvedTemplate {
 /// user-defined template in the store (archived rows included, so a Refine on an
 /// archived template still runs); anything else must be one of the built-ins.
 /// Foreign personal templates answer "not found" (no existence oracle).
-async fn resolve_template(
+pub(crate) async fn resolve_template(
     state: &AppState,
     ctx: &crate::auth::AuthContext,
     template: &str,
@@ -516,7 +516,7 @@ mod tests {
     async fn db_state() -> Option<(sqlx::PgPool, AppState)> {
         let db_url = std::env::var("DATABASE_URL").ok()?;
         let redis_url =
-            std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+            std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
         let pg = crate::db::connect(&db_url, 5).await.ok()?;
         let redis = crate::cache::create_pool(&redis_url).ok()?;
         let boot = crate::config::BootConfig { database_url: db_url, redis_url, ..Default::default() };

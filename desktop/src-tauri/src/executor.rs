@@ -434,7 +434,7 @@ fn cap(text: &str) -> String {
 /// this client starts. The client's own configuration and anything shaped like a
 /// credential for the instance: a command run in a folder acts for the person,
 /// but it has no business inheriting the means to act *as* the instance.
-const WITHHELD_PREFIXES: [&str; 3] = ["FOSNIE_", "PAI__", "TAURI_"];
+const WITHHELD_PREFIXES: [&str; 3] = ["FOSNIE_", "FOSNIE__", "TAURI_"];
 const WITHHELD_NAMES: [&str; 2] = ["DATABASE_URL", "REDIS_URL"];
 
 /// True when a variable is one the child must not see.
@@ -538,7 +538,7 @@ mod tests {
     fn the_clients_own_configuration_never_reaches_a_command() {
         assert!(withheld("FOSNIE_TOKEN"));
         assert!(withheld("fosnie_token"));
-        assert!(withheld("PAI__DATABASE_URL"));
+        assert!(withheld("FOSNIE__DATABASE_URL"));
         assert!(withheld("TAURI_SIGNING_PRIVATE_KEY"));
         assert!(withheld("DATABASE_URL"));
         // Third-party credentials the client never had a reason to hold, but might

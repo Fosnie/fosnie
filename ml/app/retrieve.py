@@ -33,9 +33,24 @@ from prometheus_client import Counter
 from . import chunker, embeddings, guided, llm, qdrant_store, reranker, sparse
 from .config import settings
 from .rag_ctx import cfg
+from .inference_target import strict
 from .web import dedup  # shingle/Jaccard primitives — reused for gap-query near-dup detection
 
-_log = logging.getLogger("pai-ml.retrieve")
+_log = logging.getLogger("fosnie-ml.retrieve")
+
+async def _gather(*awaitables, return_exceptions=False):
+    """Strict fan-out owns all children, including cancellation and failures."""
+    if not strict():
+        return await asyncio.gather(*awaitables, return_exceptions=return_exceptions)
+    tasks = [asyncio.ensure_future(work) for work in awaitables]
+    try:
+        return await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
 
 # Progress streaming. Same ContextVar shape as web/progress.py: the streaming endpoint
 # installs an emitter for its request context; everywhere else `emit()` is a no-op, so the
@@ -424,6 +439,8 @@ async def _decompose(prompt: str) -> tuple[list[dict], dict]:
     try:
         out = await llm.complete(_DECOMPOSE_SYSTEM, prompt, max_tokens=2048)
     except Exception as e:  # noqa: BLE001 — never fail retrieval on a decompose hiccup
+        if strict():
+            raise
         _log.warning("decompose LLM call failed (%s); using whole-prompt query", e)
         # Even on failure the deterministic guardrail salvages a multi-part prompt:
         # inject each numbered part rather than collapse to one diluted whole-prompt query.
@@ -558,7 +575,7 @@ async def _resolve_subq(
         with _timed(f"{tag} r{r} embed"):
             dense = await embeddings.embed(queries) if queries else []
         with _timed(f"{tag} r{r} search+rerank"):
-            results = await asyncio.gather(
+            results = await _gather(
                 *[_search_one(q, kb_ids, sem, qdense=dv) for q, dv in zip(queries, dense)]
             )
         for hits in results:
@@ -739,6 +756,8 @@ async def _anchor_complete(subq: str, original: str, payloads: list[dict], kb_id
     try:
         fetched = await qdrant_store.fetch_by_sections(kb_ids, missing[:allow], limit=max(8, allow * 3))
     except Exception as e:  # noqa: BLE001 — expansion is best-effort insurance
+        if strict():
+            raise
         _log.info("anchor lookup failed for %.60s: %s", subq, e)
         return payloads
     seen = {p["chunk_text"] for p in payloads}
@@ -788,6 +807,8 @@ async def _expand_sections(subq: str, ranked: list[dict], kb_ids: list[str]) -> 
             if est is not None:
                 est.neighbors_fetched += len(nb)
     except Exception as e:  # noqa: BLE001 — expansion is best-effort insurance
+        if strict():
+            raise
         _log.info("section expansion failed for %.60s: %s", subq, e)
     return out
 
@@ -806,6 +827,8 @@ async def _toc_expand(subq: str, kb_ids: list[str]) -> list[dict]:
     try:
         rows = await qdrant_store.toc_search(kb_ids, subq, limit=2)
     except Exception as e:  # noqa: BLE001 — the TOC channel is best-effort
+        if strict():
+            raise
         _log.info("toc search failed for %.60s: %s", subq, e)
         return []
     sweep = max(1, cfg("toc_max_sections", settings.toc_max_sections))
@@ -830,6 +853,8 @@ async def _toc_expand(subq: str, kb_ids: list[str]) -> list[dict]:
     try:
         hits = await qdrant_store.fetch_neighbours(kb_ids, sorted(rank), 0, limit=len(rank) * 2)
     except Exception as e:  # noqa: BLE001
+        if strict():
+            raise
         _log.info("toc fetch failed for %.60s: %s", subq, e)
         return []
     hits.sort(key=lambda p: (rank.get(p.get("section_num"), 1 << 30), p.get("chunk_index") or 0))
@@ -862,6 +887,8 @@ async def _answer_over(subq: str, original: str, payloads: list[dict], sem: asyn
                 timeout=timeout,
             )
     except Exception as e:  # noqa: BLE001 — fail-soft: a failed sub-answer is reported, not fatal
+        if strict():
+            raise
         _log.info("mini-answer failed for sub-question %.60s: %s", subq, e)
         return None
     answer = (answer or "").strip()
@@ -876,6 +903,8 @@ async def _answer_over(subq: str, original: str, payloads: list[dict], sem: asyn
                 await llm.complete(_SUBCHECK_SYSTEM, f"Sub-question: {subq}\n\nAnswer: {answer}", max_tokens=4)
             ).strip().lower().startswith("yes")
         except Exception:  # noqa: BLE001 — a failed check must never drop a good answer
+            if strict():
+                raise
             ok = True
         if not ok:
             return None
@@ -926,6 +955,8 @@ async def _mini_answer(
         try:
             rehits = await _search_one(_targeted_query(subq), kb_ids, sem)
         except Exception as e:  # noqa: BLE001 — the retry is best-effort insurance
+            if strict():
+                raise
             _log.info("targeted retry search failed for %.60s: %s", subq, e)
             rehits = []
         if rehits:
@@ -950,6 +981,8 @@ async def _floor_retrieve(prompt: str, kb_ids: list[str], sem: asyncio.Semaphore
     try:
         hits = await _search_one(prompt, kb_ids, sem)
     except Exception as e:  # noqa: BLE001 — the floor is best-effort insurance
+        if strict():
+            raise
         _log.info("floor retrieve failed: %s", e)
         return []
     return _dedup_ranked(hits, n)
@@ -1154,6 +1187,8 @@ async def _late_anchor_slices(
                 try:
                     fetched = await qdrant_store.fetch_by_sections(kb_ids, [anchor], limit=cap)
                 except Exception as e:  # noqa: BLE001 — best-effort insurance
+                    if strict():
+                        raise
                     _log.info("late-anchor fetch failed for s%s: %s", anchor, e)
                     continue
                 pick = _best_owning(fetched, anchor)
@@ -1165,6 +1200,8 @@ async def _late_anchor_slices(
                 citations.append(_citation_of(pick))
                 pooled_block[key] = block  # a later part can now attribute, not refetch
         except Exception as e:  # noqa: BLE001 — one part's guardrail never fails the turn
+            if strict():
+                raise
             _log.info("late-anchor guardrail error on part %.40s: %s", p.get("title", ""), e)
 
 
@@ -1231,6 +1268,8 @@ async def _gap_check(title: str, census: str) -> dict:
             llm.complete(_GAP_SYSTEM, f"{title}\n\n{census}", max_tokens=512), timeout=15
         )
     except Exception as e:  # noqa: BLE001 — a gap-check hiccup never fails retrieval
+        if strict():
+            raise
         _log.info("gap-check failed for %.40s: %s", title, e)
         return {"sufficient": True, "missing": []}
     return _parse_gap(out)
@@ -1275,7 +1314,7 @@ async def _gap_fetch(item: dict, kb_ids: list[str], sem: asyncio.Semaphore) -> l
     async def _by_toc() -> list[dict]:
         return await _gap_toc(toc_text, kb_ids) if toc_text else []
 
-    results = await asyncio.gather(_by_sections(), _by_query(), _by_toc(), return_exceptions=True)
+    results = await _gather(_by_sections(), _by_query(), _by_toc(), return_exceptions=True)
     payloads: list[dict] = []
     for r in results:
         if not isinstance(r, Exception) and r:
@@ -1410,6 +1449,8 @@ async def _gap_escalate_fetch(item: dict, kb_ids: list[str], sem: asyncio.Semaph
         try:
             rq = await _reformulate(query)
         except Exception:  # noqa: BLE001 — reformulation is best-effort
+            if strict():
+                raise
             return []
         if not rq or _norm_query(rq) == _norm_query(query):
             return []
@@ -1426,7 +1467,7 @@ async def _gap_escalate_fetch(item: dict, kb_ids: list[str], sem: asyncio.Semaph
             return []
         return await qdrant_store.fetch_neighbours(kb_ids, sorted(set(nums)), 1, limit=len(nums) * 3 or 12)
 
-    results = await asyncio.gather(_hybrid_need(), _reformulated(), _neighbours(), return_exceptions=True)
+    results = await _gather(_hybrid_need(), _reformulated(), _neighbours(), return_exceptions=True)
     payloads: list[dict] = []
     for r in results:
         if not isinstance(r, Exception) and r:
@@ -1510,8 +1551,10 @@ async def _gap_round(
             for t in targets
         ]
         try:
-            checks = await asyncio.gather(*[_gap_check(title, cen) for _, title, cen in censuses])
+            checks = await _gather(*[_gap_check(title, cen) for _, title, cen in censuses])
         except Exception as e:  # noqa: BLE001 — a whole-round gap-check hiccup only stops early
+            if strict():
+                raise
             _log.info("gap-check round failed: %s", e)
             st.stop_reason = "no_added"
             break
@@ -1567,6 +1610,8 @@ async def _gap_round(
                 payloads = await (_gap_escalate_fetch(item, kb_ids, sem) if esc
                                   else _gap_fetch(item, kb_ids, sem))
             except Exception as e:  # noqa: BLE001 — fill is best-effort insurance
+                if strict():
+                    raise
                 _log.info("gap fetch failed: %s", e)
                 if rec["attempts"] >= 2 and not rec.get("found_fresh"):
                     rec["exhausted"] = True
@@ -1799,7 +1844,7 @@ async def retrieve(prompt: str, kb_ids: list[str], deny_doc_ids: list[str] | Non
 
     # Sub-questions resolve concurrently (each fans its variants out concurrently);
     # the semaphore caps total in-flight search pipelines.
-    per_subq = await asyncio.gather(
+    per_subq = await _gather(
         *[_resolve_subq(item, kb_ids, sem, rounds) for item in decomposed]
     )
 
@@ -1818,8 +1863,8 @@ async def retrieve(prompt: str, kb_ids: list[str], deny_doc_ids: list[str] | Non
     # decomposition). Then synthesise from the labelled sub-answers over ONE [D#] pool.
     total = len(decomposed)
     with _timed("mini-answers"):
-        sub_results, floor_payloads = await asyncio.gather(
-            asyncio.gather(
+        sub_results, floor_payloads = await _gather(
+            _gather(
                 *[
                     _mini_answer(item, hits, prompt, sem, i, total, kb_ids)
                     for i, (item, hits) in enumerate(zip(decomposed, per_subq))
@@ -1832,7 +1877,7 @@ async def retrieve(prompt: str, kb_ids: list[str], deny_doc_ids: list[str] | Non
     # follow its top chunks' cross-references + pull ±N neighbours (pure Qdrant filters,
     # concurrent, fail-soft). Feeds a dedicated "cross-referenced" pool tier below.
     with _timed("expand"):
-        crossref_lists = await asyncio.gather(
+        crossref_lists = await _gather(
             *[
                 _expand_sections(decomposed[i]["subq"], sub_results[i].get("ranked", []), kb_ids)
                 for i in range(len(sub_results))

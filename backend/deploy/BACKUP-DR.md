@@ -1,8 +1,8 @@
 # Backup & Disaster Recovery
 
-How the PAI Platform is backed up and restored. The scripts live in
+How Fosnie is backed up and restored. The scripts live in
 [`scripts/backup.sh`](scripts/backup.sh) and [`scripts/restore.sh`](scripts/restore.sh);
-the schedule is [`systemd/pai-backup.timer`](systemd/pai-backup.timer).
+the schedule is [`systemd/fosnie-backup.timer`](systemd/fosnie-backup.timer).
 
 ## What is backed up
 
@@ -13,32 +13,32 @@ the schedule is [`systemd/pai-backup.timer`](systemd/pai-backup.timer).
 | **Storage** | On-disk files: `documents/ workspace/ artefacts/ exports/ branding/ skills/ prompts/` | `tar -z` | if files stored |
 | Redis | sessions, WS tickets, presence — **ephemeral** | not backed up | — |
 
-A bundle is a timestamped directory `pai-backup-<UTC>/` containing
+A bundle is a timestamped directory `fosnie-backup-<UTC>/` containing
 `postgres.dump`, `qdrant/<collection>.snapshot`, `storage.tar.gz`, a
 `manifest.json`, and `sha256sums` (the integrity anchor). With
-`PAI_BACKUP_AGE_RECIPIENT` set the whole bundle is `age`-encrypted to a single
+`FOSNIE_BACKUP_AGE_RECIPIENT` set the whole bundle is `age`-encrypted to a single
 `.tar.age` (the key stays inside the perimeter — zero-egress).
 
 ## Configure
 
-Create `/etc/pai/backup.env` (read by the systemd unit):
+Create `/etc/fosnie/backup.env` (read by the systemd unit):
 
 ```sh
-PAI_DB_URL=postgres://pai:PASS@127.0.0.1:5432/pai
-PAI_QDRANT_URL=http://127.0.0.1:6333
-PAI_STORAGE_DIRS="/var/lib/pai/documents /var/lib/pai/workspace /var/lib/pai/artefacts /var/lib/pai/exports /var/lib/pai/branding /var/lib/pai/skills /var/lib/pai/prompts"
-PAI_BACKUP_DIR=/var/backups/pai
-PAI_BACKUP_RETAIN=14
-# PAI_BACKUP_AGE_RECIPIENT=age1...      # optional encryption
+FOSNIE_DB_URL=postgres://pai:PASS@127.0.0.1:5432/pai
+FOSNIE_QDRANT_URL=http://127.0.0.1:6333
+FOSNIE_STORAGE_DIRS="/var/lib/fosnie/documents /var/lib/fosnie/workspace /var/lib/fosnie/artefacts /var/lib/fosnie/exports /var/lib/fosnie/branding /var/lib/fosnie/skills /var/lib/fosnie/prompts"
+FOSNIE_BACKUP_DIR=/var/backups/fosnie
+FOSNIE_BACKUP_RETAIN=14
+# FOSNIE_BACKUP_AGE_RECIPIENT=age1...      # optional encryption
 ```
 
 Enable the schedule:
 
 ```sh
-install -m 0755 deploy/scripts/backup.sh deploy/scripts/restore.sh /opt/pai/deploy/scripts/
-cp deploy/systemd/pai-backup.{service,timer} /etc/systemd/system/
-systemctl enable --now pai-backup.timer
-systemctl start pai-backup.service        # take one now; check `journalctl -u pai-backup`
+install -m 0755 deploy/scripts/backup.sh deploy/scripts/restore.sh /opt/fosnie/deploy/scripts/
+cp deploy/systemd/fosnie-backup.{service,timer} /etc/systemd/system/
+systemctl enable --now fosnie-backup.timer
+systemctl start fosnie-backup.service        # take one now; check `journalctl -u fosnie-backup`
 ```
 
 ## Targets
@@ -55,9 +55,9 @@ Restore order is **Postgres → Qdrant → storage** — the script enforces it.
 
 ```sh
 # (decrypt first if encrypted:  age -d -i key.txt bundle.tar.age | tar -x)
-PAI_DB_URL=postgres://pai:PASS@HOST:5432/pai \
-PAI_QDRANT_URL=http://HOST:6333 \
-  deploy/scripts/restore.sh /var/backups/pai/pai-backup-<UTC>   # add --force to overwrite a populated DB
+FOSNIE_DB_URL=postgres://pai:PASS@HOST:5432/pai \
+FOSNIE_QDRANT_URL=http://HOST:6333 \
+  deploy/scripts/restore.sh /var/backups/fosnie/fosnie-backup-<UTC>   # add --force to overwrite a populated DB
 ```
 
 The script **verifies `sha256sums` first** and refuses a populated database

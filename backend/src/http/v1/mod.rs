@@ -35,10 +35,13 @@
 //! sit behind that provider's request layer.
 
 pub mod agent;
+pub mod agent_routed;
 pub mod chat;
 pub mod error;
 pub mod models;
 pub mod passthrough;
+pub mod routed;
+pub mod alias;
 pub mod sse;
 
 use axum::Router;
@@ -61,6 +64,7 @@ const RATE_WINDOW_SECS: u64 = 60;
 pub fn router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/v1/models", axum::routing::get(models::list_models))
+        .route("/v1/routing", axum::routing::get(routed::capabilities))
         .route("/v1/chat/completions", axum::routing::post(chat::completions))
         // The availability check runs as a layer, ahead of routing and therefore
         // ahead of key authentication: an instance with the surface switched off

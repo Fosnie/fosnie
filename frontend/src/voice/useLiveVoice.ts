@@ -37,6 +37,8 @@ export type VoiceState =
 export type VoiceMode = "ptt" | "vad";
 
 export interface UseLiveVoiceOpts {
+  /** Explicit opt-in; requires voice-live routing gate. Never inferred from a legacy provider label. */
+  modelSelection?: import("@/api/workflowRouting").WorkflowSelection;
   chatId: string | null;
   agentId: string | null;
   projectId?: string | null;
@@ -145,7 +147,11 @@ export function useLiveVoice(opts: UseLiveVoiceOpts): LiveVoice {
     setPartial("");
     setVState("connecting");
     const o = optsRef.current;
-    wsStore.send({
+    if (o.modelSelection) wsStore.send({
+      type: "voice.routed.start", chat_id: o.chatId ?? null, project_id: o.projectId ?? null,
+      agent_id: o.agentId ?? null, model_selection: o.modelSelection, aec: true,
+    });
+    else wsStore.send({
       type: "voice.stream.start",
       chat_id: o.chatId ?? null,
       project_id: o.projectId ?? null,
@@ -224,6 +230,7 @@ export function useLiveVoice(opts: UseLiveVoiceOpts): LiveVoice {
           const s = f as { state?: string; retrieving?: boolean };
           setVState(s.state as VoiceState);
           setRetrieving(s.retrieving === true);
+          if (s.state === "interrupted") { playerRef.current?.stop(); playerRef.current = null; }
           break;
         }
         case "voice.partial":
@@ -248,6 +255,7 @@ export function useLiveVoice(opts: UseLiveVoiceOpts): LiveVoice {
           playerRef.current?.end();
           break;
         case "voice.error":
+          playerRef.current?.stop(); playerRef.current = null;
           setError((f as { message?: string }).message ?? "Voice error.");
           setVState("error");
           break;
@@ -262,6 +270,7 @@ export function useLiveVoice(opts: UseLiveVoiceOpts): LiveVoice {
   // Teardown on unmount.
   useEffect(
     () => () => {
+      if (activeRef.current && optsRef.current.modelSelection) wsStore.send({ type: "voice.stream.end" });
       activeRef.current = false;
       if (tailTimer.current) clearTimeout(tailTimer.current);
       captureRef.current?.stop();

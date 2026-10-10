@@ -21,7 +21,7 @@ site → update NS at your registrar). Free plan is fine.
 
 ### 2. Create the tunnel
 Cloudflare dashboard → **Zero Trust → Networks → Tunnels → Create a tunnel**
-(`cloudflared` type). Name it e.g. `pai-demo`. Copy the **tunnel token** it shows.
+(`cloudflared` type). Name it e.g. `fosnie-demo`. Copy the **tunnel token** it shows.
 
 Add two **public hostnames** to the tunnel (same screen):
 

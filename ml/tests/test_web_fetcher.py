@@ -136,3 +136,25 @@ def test_blocked_url_never_reaches_transport(fast_pacing, mock_transport):
     mock_transport["handler"] = handler
     with pytest.raises(ssrf.SsrfBlocked):
         _run(fetcher.fetch_page("http://127.0.0.1/admin"))
+
+
+def test_research_redirect_rechecks_domain_policy_before_transport(fast_pacing, fake_dns, mock_transport):
+    from app import rag_ctx
+    hosts = []
+    def handler(request):
+        hosts.append(request.headers["host"])
+        return httpx.Response(302, headers={"location": "https://blocked.test/secret"})
+    mock_transport["handler"] = handler
+    with rag_ctx.scoped_overrides({"bounded_research_web": True, "web_domain_allowlist": "example.com", "web_allowlist_only": True}):
+        with pytest.raises(FetchError, match="domain policy"):
+            _run(fetcher.fetch_page("https://example.com/start"))
+    assert hosts == ["example.com"]
+
+
+def test_research_byte_cap_cannot_be_widened_by_environment(fast_pacing, fake_dns, mock_transport, monkeypatch):
+    from app import rag_ctx
+    monkeypatch.setattr(settings, "web_fetch_max_bytes", 16*1024*1024)
+    mock_transport["handler"] = lambda req: httpx.Response(200, headers={"content-type": "text/plain"}, content=b"x"*(4*1024*1024+1))
+    with rag_ctx.scoped_overrides({"bounded_research_web": True, "web_domain_allowlist": "", "web_domain_blocklist": "", "web_allowlist_only": False}):
+        with pytest.raises(FetchError, match="over 4194304 bytes"):
+            _run(fetcher.fetch_page("https://example.com/large"))

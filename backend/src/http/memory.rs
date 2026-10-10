@@ -84,7 +84,7 @@ pub async fn insert_fact(
 
     // Index for relevance recall (best-effort; Postgres remains source of truth).
     if let Some(key) = scope_key(scope, owner_user_id, owner_project_id) {
-        let providers = crate::ml::provider_overrides(state, ctx.user_id).await;
+        let providers = crate::ml::provider_overrides(state, ctx.user_id).await?;
         let _ = crate::ml::memory_upsert(&state.http, &state.boot.ml.base_url, &key, &id.to_string(), content, providers).await;
     }
     // Project-scoped facts post a system notice to the project chat so a power
@@ -113,6 +113,15 @@ pub async fn recall(
     project_id: Option<Uuid>,
     query: &str,
 ) -> Result<Vec<String>> {
+    recall_inner(state,ctx,project_id,query,false).await
+}
+
+/// SQL-only recall is compatible with routed execution. Large-memory vector
+/// ranking requires attested index provenance and must not call legacy ML.
+pub(crate) async fn recall_routed(state:&AppState,ctx:&AuthContext,project_id:Option<Uuid>,query:&str) -> Result<Vec<String>> {
+    recall_inner(state,ctx,project_id,query,true).await
+}
+async fn recall_inner(state:&AppState,ctx:&AuthContext,project_id:Option<Uuid>,query:&str,routed:bool) -> Result<Vec<String>> {
     const SMALL: i64 = 20;
     const CAP: i64 = 30;
     let uid = ctx.user_id;
@@ -152,7 +161,8 @@ pub async fn recall(
         .await?
     } else {
         // Large memory → relevance-rank via Qdrant across both scopes.
-        let providers = crate::ml::provider_overrides(state, ctx.user_id).await;
+        if routed { return Err(crate::model_routing::RoutingError::Incompatible("memory index provenance is required").into()); }
+        let providers = crate::ml::provider_overrides(state, ctx.user_id).await?;
         let mut ids: Vec<Uuid> = Vec::new();
         if let Some(u) = uid {
             if let Ok(v) = crate::ml::memory_search(&state.http, &state.boot.ml.base_url, &format!("user_{u}"), query, 15, providers.clone()).await {
@@ -337,7 +347,7 @@ pub async fn update_fact(
     .await
     {
         if let Some(key) = scope_key(&row.scope, row.owner_user_id, row.owner_project_id) {
-            let providers = crate::ml::provider_overrides(&state, ctx.user_id).await;
+            let providers = crate::ml::provider_overrides(&state, ctx.user_id).await?;
             let _ = crate::ml::memory_upsert(&state.http, &state.boot.ml.base_url, &key, &id.to_string(), &row.content, providers).await;
         }
     }

@@ -1,0 +1,290 @@
+{
+  "case_count": 420,
+  "cases_sha256": "6f766b61477b79b762517c4d5f86cfe2d8cbb432147e8ff0af8b96257f74f90c",
+  "data_origin": "synthetic",
+  "ids": {
+    "advanced_cloud": "1fc58e4e-7a17-50c3-acd5-f478127def48",
+    "advanced_local": "cc852534-f8f0-5431-8619-da45e8daf7e8",
+    "balanced_cloud": "8d49626d-b7e5-5580-9c74-818b10c36b0a",
+    "economy_local": "5272a434-c3b2-5eb2-a481-d490bed0bc64",
+    "judge_local": "e09c2549-d419-599f-b014-0af68d2d672e",
+    "unknown": "f9033805-8e65-5bf1-a7ab-6fbd38029198"
+  },
+  "model_quality": "not_run",
+  "policies": {
+    "classifier": {
+      "classifier_provider_id": "e09c2549-d419-599f-b014-0af68d2d672e",
+      "constraints": {
+        "max_calls": 5,
+        "max_total_tokens": 100000
+      },
+      "default_provider_id": "1fc58e4e-7a17-50c3-acd5-f478127def48",
+      "id": "c02685f3-68d1-59c6-a525-5a8a96422760",
+      "objective": "economy",
+      "revision": 1,
+      "rollout": "active",
+      "rules": [],
+      "strategy": "classifier",
+      "technical_fallback": true,
+      "utility_assignments": {}
+    },
+    "hybrid": {
+      "classifier_provider_id": "e09c2549-d419-599f-b014-0af68d2d672e",
+      "constraints": {
+        "max_calls": 5,
+        "max_total_tokens": 100000
+      },
+      "default_provider_id": "1fc58e4e-7a17-50c3-acd5-f478127def48",
+      "id": "4475ffa4-0595-5d55-a0c6-44d8c756a54a",
+      "objective": "economy",
+      "revision": 1,
+      "rollout": "active",
+      "rules": [
+        {
+          "action": {
+            "kind": "select",
+            "provider_id": "5272a434-c3b2-5eb2-a481-d490bed0bc64"
+          },
+          "conditions": {
+            "max_input_tokens": 7000,
+            "tasks": [
+              "general",
+              "editing",
+              "extraction",
+              "current_fact"
+            ]
+          },
+          "id": "5020b076-fd7f-555d-8af1-5e42aea91139",
+          "priority": 20
+        }
+      ],
+      "strategy": "hybrid",
+      "technical_fallback": true,
+      "utility_assignments": {}
+    },
+    "rules": {
+      "classifier_provider_id": null,
+      "constraints": {
+        "max_calls": 5,
+        "max_total_tokens": 100000
+      },
+      "default_provider_id": "1fc58e4e-7a17-50c3-acd5-f478127def48",
+      "id": "b589f3f1-05e0-5313-b667-fe08a82e0374",
+      "objective": "economy",
+      "revision": 1,
+      "rollout": "active",
+      "rules": [
+        {
+          "action": {
+            "kind": "select",
+            "provider_id": "5272a434-c3b2-5eb2-a481-d490bed0bc64"
+          },
+          "conditions": {
+            "max_input_tokens": 7000,
+            "tasks": [
+              "general",
+              "editing",
+              "extraction",
+              "current_fact"
+            ]
+          },
+          "id": "5020b076-fd7f-555d-8af1-5e42aea91139",
+          "priority": 20
+        }
+      ],
+      "strategy": "rules",
+      "technical_fallback": true,
+      "utility_assignments": {}
+    }
+  },
+  "profiles": [
+    {
+      "adapter": "openai_chat",
+      "auto_enabled": true,
+      "capabilities": {
+        "context_tokens": 8192,
+        "efforts": [],
+        "max_output_tokens": 8192,
+        "structured_output": "declared",
+        "tools": "declared",
+        "vision": "unknown"
+      },
+      "evaluation_samples": 0,
+      "evaluation_version": null,
+      "latency_ms": null,
+      "locality": "local",
+      "locality_trusted": true,
+      "model": "synthetic-economy_local",
+      "pricing": {
+        "checked_at": null,
+        "input_microusd_per_million": 50000,
+        "output_microusd_per_million": 50000,
+        "source": "synthetic fixture tariff; not a provider price"
+      },
+      "provider_id": "5272a434-c3b2-5eb2-a481-d490bed0bc64",
+      "provider_revision": 1,
+      "quality_status": "declared",
+      "revision": 1,
+      "task_tiers": {},
+      "tier": "economy"
+    },
+    {
+      "adapter": "openai_chat",
+      "auto_enabled": true,
+      "capabilities": {
+        "context_tokens": 65536,
+        "efforts": [],
+        "max_output_tokens": 8192,
+        "structured_output": "declared",
+        "tools": "declared",
+        "vision": "unknown"
+      },
+      "evaluation_samples": 0,
+      "evaluation_version": null,
+      "latency_ms": null,
+      "locality": "cloud",
+      "locality_trusted": true,
+      "model": "synthetic-balanced_cloud",
+      "pricing": {
+        "checked_at": null,
+        "input_microusd_per_million": 500000,
+        "output_microusd_per_million": 500000,
+        "source": "synthetic fixture tariff; not a provider price"
+      },
+      "provider_id": "8d49626d-b7e5-5580-9c74-818b10c36b0a",
+      "provider_revision": 1,
+      "quality_status": "declared",
+      "revision": 1,
+      "task_tiers": {},
+      "tier": "balanced"
+    },
+    {
+      "adapter": "openai_chat",
+      "auto_enabled": true,
+      "capabilities": {
+        "context_tokens": 65536,
+        "efforts": [
+          "high"
+        ],
+        "max_output_tokens": 8192,
+        "structured_output": "declared",
+        "tools": "declared",
+        "vision": "unknown"
+      },
+      "evaluation_samples": 0,
+      "evaluation_version": null,
+      "latency_ms": null,
+      "locality": "cloud",
+      "locality_trusted": true,
+      "model": "synthetic-advanced_cloud",
+      "pricing": {
+        "checked_at": null,
+        "input_microusd_per_million": 3000000,
+        "output_microusd_per_million": 3000000,
+        "source": "synthetic fixture tariff; not a provider price"
+      },
+      "provider_id": "1fc58e4e-7a17-50c3-acd5-f478127def48",
+      "provider_revision": 1,
+      "quality_status": "declared",
+      "revision": 1,
+      "task_tiers": {},
+      "tier": "advanced"
+    },
+    {
+      "adapter": "openai_chat",
+      "auto_enabled": true,
+      "capabilities": {
+        "context_tokens": 65536,
+        "efforts": [
+          "high"
+        ],
+        "max_output_tokens": 8192,
+        "structured_output": "declared",
+        "tools": "declared",
+        "vision": "unknown"
+      },
+      "evaluation_samples": 0,
+      "evaluation_version": null,
+      "latency_ms": null,
+      "locality": "local",
+      "locality_trusted": true,
+      "model": "synthetic-advanced_local",
+      "pricing": {
+        "checked_at": null,
+        "input_microusd_per_million": 1500000,
+        "output_microusd_per_million": 1500000,
+        "source": "synthetic fixture tariff; not a provider price"
+      },
+      "provider_id": "cc852534-f8f0-5431-8619-da45e8daf7e8",
+      "provider_revision": 1,
+      "quality_status": "declared",
+      "revision": 1,
+      "task_tiers": {},
+      "tier": "advanced"
+    },
+    {
+      "adapter": "openai_chat",
+      "auto_enabled": true,
+      "capabilities": {
+        "context_tokens": 8192,
+        "efforts": [],
+        "max_output_tokens": 8192,
+        "structured_output": "declared",
+        "tools": "declared",
+        "vision": "unknown"
+      },
+      "evaluation_samples": 0,
+      "evaluation_version": null,
+      "latency_ms": null,
+      "locality": "local",
+      "locality_trusted": true,
+      "model": "synthetic-unknown",
+      "pricing": {
+        "checked_at": null,
+        "input_microusd_per_million": null,
+        "output_microusd_per_million": null,
+        "source": "synthetic fixture tariff; not a provider price"
+      },
+      "provider_id": "f9033805-8e65-5bf1-a7ab-6fbd38029198",
+      "provider_revision": 1,
+      "quality_status": "unknown",
+      "revision": 1,
+      "task_tiers": {},
+      "tier": "economy"
+    },
+    {
+      "adapter": "openai_chat",
+      "auto_enabled": false,
+      "capabilities": {
+        "context_tokens": 8192,
+        "efforts": [],
+        "max_output_tokens": 8192,
+        "structured_output": "declared",
+        "tools": "declared",
+        "vision": "unknown"
+      },
+      "evaluation_samples": 0,
+      "evaluation_version": null,
+      "latency_ms": null,
+      "locality": "local",
+      "locality_trusted": true,
+      "model": "synthetic-judge_local",
+      "pricing": {
+        "checked_at": null,
+        "input_microusd_per_million": 50000,
+        "output_microusd_per_million": 50000,
+        "source": "synthetic fixture tariff; not a provider price"
+      },
+      "provider_id": "e09c2549-d419-599f-b014-0af68d2d672e",
+      "provider_revision": 1,
+      "quality_status": "declared",
+      "revision": 1,
+      "task_tiers": {},
+      "tier": "economy"
+    }
+  ],
+  "schema_version": 1,
+  "seed": 0,
+  "split_policy": "entire semantic template categories stay in one split; language/objective/parameter variants never cross",
+  "version": "fosnie-routing-fixtures-v1"
+}

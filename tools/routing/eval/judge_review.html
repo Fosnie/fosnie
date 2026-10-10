@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Fosnie — разметка судьи</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#e9eef7;background:#101724;color-scheme:dark}
+body{margin:0 auto;max-width:1080px;padding:26px}h1{font-size:25px;margin:0 0 8px}p{line-height:1.5;color:#bfcadd}
+.top,.card{background:#192438;border:1px solid #304158;border-radius:12px;padding:20px;margin:16px 0}
+.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}button,input,select,textarea{font:inherit;border:1px solid #536782;border-radius:6px;padding:9px;background:#101724;color:inherit}
+button{cursor:pointer}button:disabled{opacity:.4;cursor:default}button.primary{background:#335eb5;border-color:#4777d0}
+main{display:grid;grid-template-columns:230px 1fr;gap:18px}nav{display:flex;flex-direction:column;gap:6px;align-self:start;max-height:70vh;overflow:auto}nav button{text-align:left}nav button[aria-current=true]{border-color:#94baff}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5;background:#101724;padding:16px;border-radius:6px;max-height:360px;overflow:auto}
+fieldset{border:0;padding:8px 0;margin:0}legend{font-weight:600}label{display:inline-block;margin:6px 14px 6px 0}label.block{display:block}textarea{width:100%;box-sizing:border-box;min-height:80px}select[multiple]{min-height:160px;width:100%}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}.muted{font-size:13px;color:#bfcadd}.error{color:#ffb1b1}#status{min-height:24px}details p{margin:6px 0}
+@media(max-width:760px){main{grid-template-columns:1fr}.fields{grid-template-columns:1fr}nav{max-height:170px}body{padding:14px}}
+</style>
+<h1>Независимая разметка судьи Fosnie</h1>
+<p>Читайте исходный вопрос и отмечайте требуемые возможности. Ответы судьи и предложенные метки здесь не показаны. Форма работает в этом файле; сетевых запросов нет.</p>
+<section class="top">
+  <div class="toolbar"><label>Идентификатор проверяющего <input id="reviewer" maxlength="128" placeholder="reviewer-01" autocomplete="off"></label><span id="progress" role="status"></span></div>
+  <label class="block"><input id="blind" type="checkbox"> Я проверяю метки как человек и не смотрел ответы судьи по этой выборке.</label>
+  <p id="provenance" class="muted"></p>
+  <details><summary>Как выбирать метки</summary>
+    <p>Задача: general — обычный вопрос; editing — правка; extraction — извлечение; coding — код; reasoning — доказательство или многошаговый вывод; research — исследование; current_fact — актуальный внешний факт; unknown — недостаточно контекста. Можно выбрать несколько допустимых задач.</p>
+    <p>Минимальная сложность описывает запрос: economy — простой; balanced — средний; advanced — сложный. Не оценивайте известность конкретной модели.</p>
+    <p>Свежие данные нужны для текущих внешних фактов. Инструменты нужны для поиска или действий, а не для чтения уже предоставленного текста. Vision — обязательное чтение изображения. Structured output — явно требуемый машинный формат. Неопределённость — нельзя надёжно понять запрос без уточнения.</p>
+    <p>Все поля требуют выбора. Для unknown включите неопределённость. Объяснение фиксирует основания и спорные места. Черновик не является законченной разметкой; сохраняйте его до закрытия страницы.</p>
+  </details>
+  <div class="toolbar"><button id="draft">Сохранить черновик</button><button id="download" class="primary" disabled>Скачать завершённую разметку</button><label>Загрузить черновик <input id="restore" type="file" accept="application/json,.json"></label></div>
+  <p id="status" class="error" role="alert"></p>
+</section>
+<main><nav id="cases" aria-label="Примеры"></nav><section class="card">
+  <h2 id="case-title"></h2><p id="case-meta" class="muted"></p><pre id="conversation"></pre>
+  <div class="fields">
+    <fieldset><legend>Допустимые задачи</legend><select id="tasks" multiple aria-label="Допустимые задачи"><option value="general">Обычный вопрос</option><option value="editing">Правка</option><option value="extraction">Извлечение</option><option value="coding">Код</option><option value="reasoning">Рассуждение</option><option value="research">Исследование</option><option value="current_fact">Актуальный факт</option><option value="unknown">Недостаточно контекста</option></select><p class="muted">Ctrl/Command для нескольких вариантов.</p></fieldset>
+    <fieldset><legend>Минимальная сложность</legend><select id="tier" aria-label="Минимальная сложность"><option value="">Выберите</option><option value="economy">Простая</option><option value="balanced">Средняя</option><option value="advanced">Сложная</option></select><div id="flags"></div></fieldset>
+  </div>
+  <label class="block">Основания выбора (10–2048 символов)<textarea id="rationale" maxlength="2048"></textarea></label>
+  <div class="toolbar"><button id="previous">Предыдущий</button><button id="next">Следующий</button></div>
+</section></main>
+<script id="payload" type="application/json">FROZEN_REVIEW_PAYLOAD</script>
+<script>
+'use strict';
+const frozen=JSON.parse(document.getElementById('payload').textContent);
+const cases=frozen.dataset.cases, flags=['fresh_information','tools','vision','structured_output','uncertain'];
+const labels={fresh_information:'Нужны свежие данные',tools:'Нужны инструменты',vision:'Нужно изображение',structured_output:'Требуется машинный формат',uncertain:'Нужны уточнения'};
+const allowedTasks=new Set(['general','editing','extraction','coding','reasoning','research','current_fact','unknown']);
+let review=structuredClone(frozen.review), position=0;
+const $=id=>document.getElementById(id);
+for(const flag of flags){
+  const group=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=labels[flag];group.append(legend);
+  for(const [text,value] of [['Да','true'],['Нет','false']]){const label=document.createElement('label'),input=document.createElement('input');input.type='radio';input.name=flag;input.value=value;input.addEventListener('change',save);label.append(input,document.createTextNode(' '+text));group.append(label);}
+  $('flags').append(group);
+}
+const buttons=cases.map((item,index)=>{const button=document.createElement('button');button.addEventListener('click',()=>show(index));$('cases').append(button);return button;});
+$('provenance').textContent=frozen.dataset.source.kind==='synthetic'?'Синтетическая выборка. Проверка человеком не превращает её в независимое подтверждение качества.':'Источник заявлен как независимый. Разметка и результаты моделей оцениваются отдельно; эта форма не подтверждает качество.';
+function valid(item){const label=item.label;return item.rationale.trim().length>=10&&item.rationale.trim().length<=2048&&label.tasks.length>0&&new Set(label.tasks).size===label.tasks.length&&label.tasks.every(t=>allowedTasks.has(t))&&['economy','balanced','advanced'].includes(label.minimum_tier)&&flags.every(f=>typeof label[f]==='boolean')&&(!label.tasks.includes('unknown')||(label.tasks.length===1&&label.uncertain===true));}
+function summary(){const done=review.case_reviews.filter(valid).length;$('progress').textContent=`Готово ${done} / ${cases.length}`;
+  const identity=/^[A-Za-z0-9_.:/-]{1,128}$/.test(review.reviewer_id);$('download').disabled=done!==cases.length||!identity||!review.blinded_to_observations;
+  buttons.forEach((button,index)=>{button.textContent=(valid(review.case_reviews[index])?'✓ ':'○ ')+cases[index].id;button.setAttribute('aria-current',String(position===index));});
+}
+function save(){const item=review.case_reviews[position];item.label.tasks=Array.from($('tasks').selectedOptions,o=>o.value);item.label.minimum_tier=$('tier').value||null;item.rationale=$('rationale').value;
+  for(const flag of flags){const selected=document.querySelector(`input[name="${flag}"]:checked`);item.label[flag]=selected?selected.value==='true':null;}
+  review.reviewer_id=$('reviewer').value.trim();review.blinded_to_observations=$('blind').checked;summary();
+}
+function show(index){position=index;const item=cases[index],row=review.case_reviews[index];$('case-title').textContent=item.id;$('case-meta').textContent=`Семейство ${item.family_id} · ${item.language.toUpperCase()}`;$('conversation').textContent=item.conversation;
+  for(const option of $('tasks').options)option.selected=row.label.tasks.includes(option.value);$('tier').value=row.label.minimum_tier||'';$('rationale').value=row.rationale;
+  for(const flag of flags)for(const input of document.getElementsByName(flag))input.checked=typeof row.label[flag]==='boolean'&&input.value===String(row.label[flag]);
+  $('previous').disabled=index===0;$('next').disabled=index===cases.length-1;summary();
+}
+function download(complete){save();if(complete&&$('download').disabled)return;const data={...review,complete};const blob=new Blob([JSON.stringify(data,null,2)+'\n'],{type:'application/json'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=complete?'judge-review-complete.json':'judge-review-draft.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+for(const id of ['tasks','tier','rationale','reviewer','blind'])$(id).addEventListener('input',save);
+$('previous').addEventListener('click',()=>show(position-1));$('next').addEventListener('click',()=>show(position+1));$('draft').addEventListener('click',()=>download(false));$('download').addEventListener('click',()=>download(true));
+$('restore').addEventListener('change',async event=>{
+  try{const file=event.target.files[0];if(!file||file.size>4194304)throw Error();const data=JSON.parse(await file.text());
+    const keys=['schema_version','dataset_sha256','manifest_sha256','reviewer_id','review_kind','blinded_to_observations','complete','case_reviews'];
+    if(Object.keys(data).sort().join('|')!==keys.sort().join('|')||data.schema_version!==1||data.dataset_sha256!==review.dataset_sha256||data.manifest_sha256!==review.manifest_sha256||data.review_kind!=='human'||typeof data.reviewer_id!=='string'||typeof data.blinded_to_observations!=='boolean'||typeof data.complete!=='boolean'||!Array.isArray(data.case_reviews)||data.case_reviews.length!==cases.length)throw Error();
+    for(let i=0;i<cases.length;i++){const row=data.case_reviews[i];if(Object.keys(row).sort().join('|')!=='case_id|label|rationale'||row.case_id!==cases[i].id||typeof row.rationale!=='string'||row.rationale.length>2048||Object.keys(row.label).sort().join('|')!==['tasks','minimum_tier',...flags].sort().join('|')||!Array.isArray(row.label.tasks)||row.label.tasks.some(t=>!allowedTasks.has(t))||new Set(row.label.tasks).size!==row.label.tasks.length||![null,'economy','balanced','advanced'].includes(row.label.minimum_tier)||flags.some(f=>row.label[f]!==null&&typeof row.label[f]!=='boolean'))throw Error();}
+    review=data;$('reviewer').value=review.reviewer_id;$('blind').checked=review.blinded_to_observations;show(position);$('status').textContent='';
+  }catch{ $('status').textContent='Черновик отклонён: неверный формат или другая замороженная выборка.'; }
+});
+show(0);
+</script>
+</html>

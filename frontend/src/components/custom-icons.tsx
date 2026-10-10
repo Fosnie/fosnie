@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-// Bespoke PAI glyphs that replace generic lucide stand-ins. Same API surface as
+// Bespoke Fosnie glyphs that replace generic lucide stand-ins. Same API surface as
 // lucide-react (LucideProps), so they drop straight into the `G` map in icons.tsx:
 //
 //   import { Agents, Skills, ThinkingEffort, LiveVoice, Workspace } from "./custom-icons";

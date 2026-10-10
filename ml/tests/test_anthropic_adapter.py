@@ -141,7 +141,7 @@ def test_build_body_required_fields_and_param_handling():
     assert body["temperature"] == 0.5
     assert body["top_p"] == 0.9
     assert "frequency_penalty" not in body  # unsupported -> dropped
-    assert "thinking" not in body  # Phase 1
+    assert "thinking" not in body  # extended thinking is opt-in, not the default
 
 
 def test_build_body_clamps_temperature():
@@ -259,7 +259,7 @@ def test_handle_stream_event_drops_malformed_tool_args():
     assert aa._handle_stream_event({"type": "content_block_stop", "index": 0}, state) == []
 
 
-# --- Phase 2: extended thinking ----------------------------------------------
+# --- Extended thinking --------------------------------------------------------
 
 
 def test_thinking_config_off():

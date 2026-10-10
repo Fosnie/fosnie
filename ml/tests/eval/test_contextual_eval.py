@@ -1,13 +1,13 @@
 """Fixed-eval-set check for L3 contextual retrieval (chunker-strategy §8).
 
-Gated on PAI_EVAL=1 — needs the real stack (Qdrant + embeddings + the local LLM
+Gated on FOSNIE_EVAL=1 — needs the real stack (Qdrant + embeddings + the local LLM
 for blurb generation). Ingests a small corpus whose answer chunk is only
 *implicitly* about the subject (a bare pronoun: "It may be terminated …"), buried
 among distractors so top-k cannot return everything. With contextual retrieval
 ON, the situating blurb pulls the subject ("Acme … MSA … termination") into the
 embedded text, so the answer chunk is retrieved; with it OFF it tends to miss.
 
-Run: `PAI_EVAL=1 .venv/Scripts/python -m pytest tests/eval/ -q`
+Run: `FOSNIE_EVAL=1 .venv/Scripts/python -m pytest tests/eval/ -q`
 """
 
 import asyncio
@@ -21,7 +21,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 pytestmark = pytest.mark.skipif(
-    os.getenv("PAI_EVAL") != "1", reason="eval set requires the real stack (set PAI_EVAL=1)"
+    os.getenv("FOSNIE_EVAL") != "1", reason="eval set requires the real stack (set FOSNIE_EVAL=1)"
 )
 
 ANSWER = "It may be terminated by either party upon ninety days written notice."

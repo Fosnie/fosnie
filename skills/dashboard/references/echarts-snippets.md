@@ -1,13 +1,13 @@
 # ECharts option snippets
 
 Ready `setOption({…})` blocks. Write the **data + options**; the library is inlined
-at `<!-- pai:echarts -->`. Always set `color: palette` (read from the theme variables
-`--pai-c1…--pai-c6`) so charts match the house palette. Each chart needs a sized
-container (`<div class="pai-chart" id="…"></div>`) and one `echarts.init(el)`.
+at `<!-- fosnie:echarts -->`. Always set `color: palette` (read from the theme variables
+`--fosnie-c1…--fosnie-c6`) so charts match the house palette. Each chart needs a sized
+container (`<div class="fosnie-chart" id="…"></div>`) and one `echarts.init(el)`.
 
 ```js
 const css = getComputedStyle(document.documentElement);
-const palette = ['--pai-c1','--pai-c2','--pai-c3','--pai-c4','--pai-c5','--pai-c6']
+const palette = ['--fosnie-c1','--fosnie-c2','--fosnie-c3','--fosnie-c4','--fosnie-c5','--fosnie-c6']
   .map(v => css.getPropertyValue(v).trim() || '#2f6db5');
 ```
 

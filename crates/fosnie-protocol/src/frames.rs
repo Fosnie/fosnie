@@ -29,6 +29,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientFrame {
+    #[serde(rename = "chat.routed.send")]
+    ChatRoutedSend { request: crate::RoutedChatRequest },
     #[serde(rename = "chat.send")]
     ChatSend {
         #[serde(default)]
@@ -78,6 +80,9 @@ pub enum ClientFrame {
         #[serde(default)]
         content: Option<String>,
     },
+    /// Repeat a completed routed answer in a new branch, preserving saved intent.
+    #[serde(rename = "chat.routed.regenerate")]
+    ChatRoutedRegenerate { chat_id: Uuid, from_message_id: Uuid },
     /// In-band session refresh: the client pushes a (renewed) token to keep the
     /// socket's session + resume window alive past the original token's expiry.
     #[serde(rename = "auth")]
@@ -123,6 +128,16 @@ pub enum ClientFrame {
         mode: Option<String>,
         #[serde(default)]
         aec: bool,
+    },
+    /// Explicit bounded browser voice. PCM16 mono is always 16 kHz. No legacy
+    /// fallback when selection, permissions or the routing gate are invalid.
+    #[serde(rename = "voice.routed.start")]
+    VoiceRoutedStart {
+        #[serde(default)] chat_id: Option<Uuid>,
+        #[serde(default)] project_id: Option<Uuid>,
+        #[serde(default)] agent_id: Option<Uuid>,
+        model_selection: serde_json::Value,
+        #[serde(default)] aec: bool,
     },
     /// Live voice: one captured PCM16-mono frame (base64), with a monotonic seq.
     #[serde(rename = "voice.audio.chunk")]
@@ -219,6 +234,9 @@ pub enum ServerFrame {
     /// the answer from the DB. Replayable (low-volume).
     #[serde(rename = "chat.started")]
     ChatStarted { turn_id: Uuid, chat_id: Uuid, message_id: Uuid },
+    /// The routed request is admitted, before any judge call or message row.
+    #[serde(rename = "chat.routing_started")]
+    ChatRoutingStarted { turn_id: Uuid, chat_id: Uuid },
     #[serde(rename = "chat.token")]
     ChatToken { turn_id: Uuid, delta: String },
     /// A reasoning-trace delta on the dedicated channel —
@@ -281,6 +299,8 @@ pub enum ServerFrame {
         message_id: Uuid,
         delta: String,
     },
+    #[serde(rename = "chat.routing_failure")]
+    ChatRoutingFailure {turn_id:Uuid,chat_id:Option<Uuid>,message_id:Option<Uuid>,failure:serde_json::Value},
     #[serde(rename = "chat.error")]
     ChatError {
         turn_id: Option<Uuid>,

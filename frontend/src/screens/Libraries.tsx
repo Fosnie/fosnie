@@ -23,8 +23,9 @@ import { Dropzone } from "@/components/Dropzone";
 import { ACCEPT_ATTR } from "@/lib/files";
 import { useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  apiFetch,
   createLibrary,
   deleteLibrary,
   deleteLibraryDocument,
@@ -189,6 +190,9 @@ export function Libraries() {
 function LibraryDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const qc = useQueryClient();
   const lib = useLibrary(id);
+  const ingestionGate=useQuery({queryKey:["connector-ingestion-routing-capabilities"],retry:false,
+    queryFn:()=>apiFetch<{enabled:boolean}>("/api/routing/connector-ingestion")});
+  const [reindexing,setReindexing]=useState<string|null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [sharing, setSharing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -208,6 +212,16 @@ function LibraryDetail({ id, onBack }: { id: string; onBack: () => void }) {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = "";
     }
+  }
+
+  async function reindexDoc(docId:string) {
+    setReindexing(docId);
+    try {
+      await apiFetch(`/api/routing/connector-ingestion/${docId}/queue`,{method:"POST"});
+      await qc.invalidateQueries({queryKey:["kb",id]});
+      toast("Document queued for indexing.");
+    } catch(error) {toast(`Indexing could not start: ${(error as Error).message}`);}
+    finally {setReindexing(null);}
   }
 
   async function removeDoc(docId: string) {
@@ -290,6 +304,11 @@ function LibraryDetail({ id, onBack }: { id: string; onBack: () => void }) {
                 <span className={"index-badge " + (TERMINAL.includes(d.status) ? (d.status === "ready" ? "ready" : "error") : "indexing")}>
                   {!TERMINAL.includes(d.status) && <span className="cs-spin" />} {d.status}
                 </span>
+                {k.can_manage && d.source==="connector_import" && ingestionGate.data?.enabled && TERMINAL.includes(d.status) && (
+                  <button className="btn btn-line sm" disabled={busy || reindexing!==null}
+                    title="Index this saved copy using your current model policy. Current source access is required."
+                    onClick={()=>void reindexDoc(d.id)}><Icon.Refresh size={14} /> {reindexing===d.id ? "Queueing…" : "Reindex"}</button>
+                )}
                 {k.can_manage && (
                   <button className="icon-btn" title="Remove" onClick={() => removeDoc(d.id)}><Icon.Trash size={14} /></button>
                 )}

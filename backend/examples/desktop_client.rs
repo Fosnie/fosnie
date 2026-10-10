@@ -388,7 +388,7 @@ async fn terminal(
     // whatever it starts: a command run in a folder has no business inheriting a
     // credential for the account that asked for it.
     for (key, _) in std::env::vars() {
-        if key.starts_with("FOSNIE_") || key.starts_with("PAI__") || key == "DATABASE_URL" {
+        if key.starts_with("FOSNIE_") || key.starts_with("FOSNIE__") || key == "DATABASE_URL" {
             cmd.env_remove(key);
         }
     }

@@ -32,7 +32,7 @@ from . import chunker, contextual, embeddings, extract, metadata, qdrant_store, 
 from .config import settings
 
 _EMBED_BATCH = 64
-_log = logging.getLogger("pai.ingest")
+_log = logging.getLogger("fosnie.ingest")
 
 
 async def ingest_document(
@@ -44,12 +44,21 @@ async def ingest_document(
     dual: dict | None = None,
 ) -> dict:
     from .rag_ctx import cfg
+    from .inference_target import strict
+
+    desired = embeddings.desired_target() if strict() and dual else None
+    if desired is not None:
+        if (dual.get("model") != desired.model or dual.get("dim") != desired.embedding_dimension
+                or (dual.get("base_url") or "").rstrip("/") != desired.base_url or dual.get("api_key") != desired.api_key):
+            raise ValueError("dual-write config differs from desired embedding assignment")
+    active = embeddings.active_target(require_grant=True) if strict() else None
+    if active is not None:
+        if dimension != active.embedding_dimension or (desired is not None and desired.embedding_collection == active.embedding_collection):
+            raise ValueError("ingest dimensions/collections conflict with pinned index provenance")
+        if await qdrant_store.alias_target(qdrant_store.COLLECTION, strict=True) != active.embedding_collection:
+            raise ValueError("active embedding alias changed; replan ingest")
 
     pages = await extract.extract_pages_ocr(path, mime)
-
-    # The document's own effective date (best-effort) — lets retrieval filter by
-    # the document's date, not just when it was ingested.
-    effective_date = await metadata.extract_effective_date(pages, mime, path)
 
     # Per-KB parent–child chunking: the backend passes the KB's
     # flag as a `parent_child` override; unset ⇒ the service default (settings).
@@ -65,20 +74,22 @@ async def ingest_document(
     else:
         parents, children = [], chunker.chunk_pages(pages)
     if not children:
-        return {"chunks": 0, "effective_date": effective_date}
+        return {"chunks": 0, "effective_date": None}
 
-    await qdrant_store.ensure_collection(dimension)
-    await qdrant_store.delete_doc(kb_id, doc_id)  # replace on re-index
-
-    # L3: per-child situating blurb (bounded by a cost guard). The blurb is
-    # prepended only to the EMBEDDED text; the stored chunk_text is the original.
+    # Validate the whole known fan-out before starting summaries/embeddings.
+    # Strict ingestion must not silently omit a requested contextual stage.
     use_ctx = settings.contextual_retrieval
     if use_ctx and len(children) > settings.contextual_max_chunks:
-        _log.warning(
-            "contextual_retrieval skipped for doc %s: %d chunks > cap %d",
-            doc_id, len(children), settings.contextual_max_chunks,
-        )
+        if strict():
+            from .inference_budget import BudgetExhausted
+            raise BudgetExhausted("contextual ingestion exceeds configured chunk cap")
+        _log.warning("contextual_retrieval skipped for doc %s: %d chunks > cap %d",
+                     doc_id, len(children), settings.contextual_max_chunks)
         use_ctx = False
+    if strict():
+        _preflight_calls(len(children), use_ctx, desired is not None)
+
+    effective_date = await metadata.extract_effective_date(pages, mime, path)
     doc_text = "\n\n".join(t for _, t in pages)
 
     # Contextualise concurrently (bounded) instead of one awaited LLM round-trip
@@ -90,7 +101,16 @@ async def ingest_document(
             async with ctx_sem:
                 return await contextual.contextualise(doc_text, text)
 
-        contexts: list[str] = list(await asyncio.gather(*[_ctx(ch["text"]) for ch in children]))
+        tasks = [asyncio.create_task(_ctx(ch["text"])) for ch in children]
+        try:
+            contexts: list[str] = list(await asyncio.gather(*tasks))
+        except BaseException:
+            # A failed/cancelled sibling must not continue spending a sealed or
+            # abandoned grant after the owning ingestion request has returned.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
     else:
         contexts = ["" for _ in children]
     embed_texts: list[str] = [
@@ -104,42 +124,77 @@ async def ingest_document(
         dense.extend(await embeddings.embed(embed_texts[i : i + _EMBED_BATCH]))
     sp = sparse.sparse_embed(embed_texts)
 
-    if parent_child and parents:
-        await qdrant_store.ensure_parents()
-        await qdrant_store.upsert_parents(
-            [
-                {"parent_id": p["parent_id"], "doc_id": doc_id, "knowledge_base_id": kb_id, "text": p["text"]}
-                for p in parents
-            ]
-        )
+    # Finish every model request before replacing an existing published corpus.
+    # A helper, active embedding or desired embedding failure leaves old chunks
+    # and parent texts untouched. Qdrant writes across collections are not atomic.
+    new_coll = None
+    dense2: list[list[float]] = []
+    if dual:
+        from . import reindex
+        new_coll = desired.embedding_collection if desired is not None else reindex.collection_name(int(dual["dim"]), dual["model"])
+        if active is None and new_coll == qdrant_store.COLLECTION:
+            raise ValueError("dual-write collection must differ from active collection")
+        for i in range(0, len(embed_texts), _EMBED_BATCH):
+            dense2.extend(await embeddings.embed_with(
+                embed_texts[i:i + _EMBED_BATCH], dual.get("base_url"), dual.get("model"), dual.get("api_key")))
+    if active is not None and await qdrant_store.alias_target(qdrant_store.COLLECTION, strict=True) != active.embedding_collection:
+        raise ValueError("active embedding alias changed during ingestion")
+    if active is None:
+        await qdrant_store.ensure_collection(dimension)
+    if new_coll is not None:
+        await qdrant_store.create_kb_collection(new_coll, int(dual["dim"]))
+    from . import storage_writes
+    primary_collection=active.embedding_collection if active is not None else await qdrant_store.alias_target(qdrant_store.COLLECTION,strict=True)
+    collections=[primary_collection]+([new_coll] if new_coll is not None else [])
+    async with storage_writes.replacement(kb_id,doc_id,collections,expected_active=primary_collection):
+        await qdrant_store.delete_doc(kb_id, doc_id, collection=active.embedding_collection if active is not None else None)
+        if new_coll is not None:
+            # Delete both collections before writing shared parents, otherwise the
+            # second deletion would remove the new parents just written by this run.
+            await qdrant_store.delete_doc(kb_id, doc_id, collection=new_coll)
 
-    rows = []
-    for i, ch in enumerate(children):
-        payload = {
-            "knowledge_base_id": kb_id,  # immutable; the only access key (no grants in payload)
-            "doc_id": doc_id,
-            "chunk_index": i,
-            "page_number": ch["page_number"],
-            "clause_section_ref": ch["clause_section_ref"],
-            "chunk_text": ch["text"],  # verbatim original — citations quote this
-        }
-        # Deterministic retrieval expansion: the cross-reference set
-        # and the numeric section for ±N neighbour ranges. Absent when the chunk names none.
-        if ch.get("refs_out"):
-            payload["refs_out"] = ch["refs_out"]
-        if ch.get("section_num") is not None:
-            payload["section_num"] = ch["section_num"]
-        # follow-up: all sections this chunk owns (incl. a mid-chunk inner
-        # section like s564 inside the s563 chunk) — for exact by-number fetch/neighbour matching.
-        if ch.get("section_nums"):
-            payload["section_nums"] = ch["section_nums"]
-        if contexts[i]:
-            payload["context"] = contexts[i]
-        if ch.get("parent_id"):
-            payload["parent_id"] = ch["parent_id"]
-        rows.append({"id": str(uuid.uuid4()), "payload": payload})
+        if parent_child and parents:
+            await qdrant_store.ensure_parents()
+            await qdrant_store.upsert_parents(
+                [
+                    {"parent_id": p["parent_id"], "doc_id": doc_id, "knowledge_base_id": kb_id, "text": p["text"]}
+                    for p in parents
+                ]
+            )
 
-    await qdrant_store.upsert(rows, dense, sp)
+        rows = []
+        for i, ch in enumerate(children):
+            payload = {
+                "knowledge_base_id": kb_id,  # immutable; the only access key (no grants in payload)
+                "doc_id": doc_id,
+                "chunk_index": i,
+                "page_number": ch["page_number"],
+                "clause_section_ref": ch["clause_section_ref"],
+                "chunk_text": ch["text"],  # verbatim original — citations quote this
+            }
+            # Deterministic retrieval expansion: the cross-reference set
+            # and the numeric section for ±N neighbour ranges. Absent when the chunk names none.
+            if ch.get("refs_out"):
+                payload["refs_out"] = ch["refs_out"]
+            if ch.get("section_num") is not None:
+                payload["section_num"] = ch["section_num"]
+            # follow-up: all sections this chunk owns (incl. a mid-chunk inner
+            # section like s564 inside the s563 chunk) — for exact by-number fetch/neighbour matching.
+            if ch.get("section_nums"):
+                payload["section_nums"] = ch["section_nums"]
+            if contexts[i]:
+                payload["context"] = contexts[i]
+            if ch.get("parent_id"):
+                payload["parent_id"] = ch["parent_id"]
+            rows.append({"id": str(uuid.uuid4()), "payload": payload})
+
+        if active is None:
+            await qdrant_store.upsert(rows, dense, sp)
+        else:
+            await qdrant_store.upsert_named(active.embedding_collection, rows, dense, sp)
+
+        if new_coll is not None:
+            await qdrant_store.upsert_named(new_coll, rows, dense2, sp)
 
     # build the topic→section TOC index for this doc's chapters from
     # the running headers (chapter title → section-number range). Statute-only; a non-statute
@@ -169,19 +224,24 @@ async def ingest_document(
     except Exception as e:  # noqa: BLE001 — the TOC index is an optional retrieval aid
         _log.warning("TOC index build failed for doc %s: %s", doc_id, e)
 
-    # Dual-write during a blue-green re-index: also embed with
-    # the NEW model and upsert into the rebuilt collection, so a doc uploaded mid-
-    # migration is present in both indexes (BM25 is model-independent → reuse `sp`).
-    if dual:
-        from . import reindex
-
-        new_coll = reindex.collection_name(int(dual["dim"]), dual["model"])
-        await qdrant_store.create_kb_collection(new_coll, int(dual["dim"]))
-        dense2: list[list[float]] = []
-        for i in range(0, len(embed_texts), _EMBED_BATCH):
-            dense2.extend(await embeddings.embed_with(
-                embed_texts[i : i + _EMBED_BATCH], dual.get("base_url"), dual.get("model"), dual.get("api_key")
-            ))
-        await qdrant_store.upsert_named(new_coll, rows, dense2, sp)
-
     return {"chunks": len(children), "effective_date": effective_date}
+
+
+def _preflight_calls(chunks: int, contextualised: bool, dual: bool) -> None:
+    """Inspect remaining Core grants; actual per-call reservations stay atomic."""
+    from .rag_ctx import cfg
+    from .inference_budget import BudgetExhausted
+    batches = (chunks + _EMBED_BATCH - 1) // _EMBED_BATCH
+    stages = [("_routing_budget", "utility_summary", 1 + (chunks if contextualised else 0)),
+              ("_routing_fixed_budget", "embed", batches)]
+    if dual:
+        stages.append(("_routing_fixed_budget", "embed_desired", batches))
+    for key, role, needed in stages:
+        budget = cfg(key, None)
+        if budget is None:
+            raise BudgetExhausted("ingestion requires a bounded stage grant")
+        with budget.lock:
+            budget.remaining()
+            allowance = budget.grant.allowances.get(role)
+            if budget.closed or allowance is None or needed > allowance.max_calls - budget.counts.get(role, 0):
+                raise BudgetExhausted("ingestion fan-out exceeds remaining stage allowance")

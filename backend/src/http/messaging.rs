@@ -172,6 +172,24 @@ async fn post_message(
     Ok((id, seq, ts))
 }
 
+/// Stage a workflow link without committing or emitting a live notification.
+pub(crate) async fn stage_workflow_link(
+    state:&AppState,tx:&mut sqlx::Transaction<'_,sqlx::Postgres>,group:Uuid,chat:Uuid,content:&str,
+) -> Result<(Uuid,i32,String)> {
+    // Caller owns the transaction: message, share, receipt and workflow audit
+    // must commit together. Live notification is emitted only after that commit.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(group.to_string()).execute(&mut **tx).await?;
+    let seq:i32=sqlx::query_scalar("SELECT COALESCE(MAX(sequence_number),0)+1 FROM group_chat_messages WHERE group_chat_id=$1")
+        .bind(group).fetch_one(&mut **tx).await?;
+    let kind:String=sqlx::query_scalar("SELECT kind::text FROM group_chats WHERE id=$1").bind(group).fetch_one(&mut **tx).await?;
+    let encrypted=should_encrypt_message(state.message_key.is_some(),&kind,state.boot.encrypt_group_messages);
+    let stored=if encrypted {crate::crypto::encrypt_at_rest(content)?} else {content.to_owned()};
+    let id=Uuid::now_v7();
+    let created:OffsetDateTime=sqlx::query_scalar("INSERT INTO group_chat_messages(id,group_chat_id,message_type,sequence_number,content,content_encrypted,shared_resources) VALUES($1,$2,'system',$3,$4,$5,$6) RETURNING created_at")
+        .bind(id).bind(group).bind(seq).bind(stored).bind(encrypted).bind(serde_json::json!({"chat_id":chat})).fetch_one(&mut **tx).await?;
+    Ok((id,seq,created.format(&Rfc3339).unwrap_or_default()))
+}
+
 /// Is `user_id` a member of `chat_id`? (Cheap membership probe for callers
 /// outside this module — e.g. automation delivery targets.)
 pub async fn is_member(state: &AppState, user_id: Uuid, chat_id: Uuid) -> Result<bool> {

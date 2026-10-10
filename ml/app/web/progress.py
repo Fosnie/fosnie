@@ -21,7 +21,7 @@ import logging
 from contextvars import ContextVar
 from typing import Awaitable, Callable
 
-_log = logging.getLogger("pai.web.progress")
+_log = logging.getLogger("fosnie.web.progress")
 
 _emitter: ContextVar[Callable[[dict], None] | None] = ContextVar("web_progress_emitter", default=None)
 # Synthesis tokens (deep path) are RELIABLE, unlike best-effort progress: a dropped

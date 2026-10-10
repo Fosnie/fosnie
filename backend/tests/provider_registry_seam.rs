@@ -4,7 +4,7 @@
 //! a fixed provider for the `llm` role; `ml::provider_overrides` must then build
 //! that provider into the override map the backend ships in the ML request body.
 //! Proves the slot is consumed and the `pub` surface suffices for a future
-//! `fosnie-enterprise` org-policy wrapper. No live ML/DB needed.
+//! `fosnie-enterprise` org-policy wrapper. Requires the isolated routing test DB.
 
 use std::sync::Arc;
 
@@ -38,8 +38,12 @@ impl ProviderRegistry for FakeProviderRegistry {
     }
 }
 
-fn state_with(providers: Option<Arc<dyn ProviderRegistry>>) -> AppState {
-    let pg = PgPoolOptions::new().connect_lazy("postgres://localhost/pai_test").expect("lazy pg pool");
+fn state_with(providers: Option<Arc<dyn ProviderRegistry>>, unavailable: bool) -> AppState {
+    let url = if unavailable { "postgres://routing_test:routing_test_only@127.0.0.1:1/routing_unavailable".into() }
+        else { std::env::var("FOSNIE_ROUTING_TEST_DATABASE_URL").expect("set FOSNIE_ROUTING_TEST_DATABASE_URL to the isolated routing test DB") };
+    let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+    assert!(options.get_database().is_some_and(|db| db.starts_with("routing_")));
+    let pg = PgPoolOptions::new().acquire_timeout(std::time::Duration::from_millis(300)).connect_lazy_with(options);
     let redis = fosnie_backend::cache::create_pool("redis://localhost:6379").expect("redis pool");
     let mut b = AppStateBuilder::new(pg, redis, Arc::new(BootConfig::default()));
     if let Some(p) = providers {
@@ -50,8 +54,8 @@ fn state_with(providers: Option<Arc<dyn ProviderRegistry>>) -> AppState {
 
 #[tokio::test]
 async fn injected_provider_is_built_into_overrides() {
-    let state = state_with(Some(Arc::new(FakeProviderRegistry)));
-    let map = fosnie_backend::ml::provider_overrides(&state, None).await;
+    let state = state_with(Some(Arc::new(FakeProviderRegistry)), false);
+    let map = fosnie_backend::ml::provider_overrides(&state, None).await.unwrap();
     assert_eq!(map.get("llm_base_url").and_then(|v| v.as_str()), Some("https://api.anthropic.example/v1"));
     assert_eq!(map.get("llm_model").and_then(|v| v.as_str()), Some("claude-test"));
     assert_eq!(map.get("llm_api_key").and_then(|v| v.as_str()), Some("sk-secret"));
@@ -60,10 +64,21 @@ async fn injected_provider_is_built_into_overrides() {
 }
 
 #[tokio::test]
-async fn default_registry_yields_empty_overrides() {
-    // No override → Core DbProviderRegistry. With no rows (the lazy pool yields no
-    // results / errors, both swallowed) the map is empty ⇒ behaviour-identical.
-    let state = state_with(None);
-    let map = fosnie_backend::ml::provider_overrides(&state, None).await;
-    assert!(map.is_empty(), "no provider rows ⇒ no overrides ⇒ ML uses its .env defaults");
+async fn r24_database_failure_never_becomes_environment_fallback() {
+    let state = state_with(None, true);
+    assert!(fosnie_backend::ml::provider_overrides(&state, None).await.is_err());
+}
+
+#[tokio::test]
+async fn r32_explicit_selection_cannot_bypass_injected_registry() {
+    let state = state_with(Some(Arc::new(FakeProviderRegistry)), true);
+    assert!(fosnie_backend::providers::resolve_llm(&state, None, None, Some(Uuid::now_v7())).await.is_err());
+}
+
+#[test]
+fn provider_debug_redacts_credentials() {
+    let provider = ResolvedProvider { base_url: Some("https://secret-host.example".into()), model: Some("test".into()), api_key: Some("sk-secret".into()), enabled: true, reasoning_mode: None };
+    let debug = format!("{provider:?}");
+    assert!(!debug.contains("sk-secret"));
+    assert!(!debug.contains("secret-host"));
 }

@@ -1,13 +1,13 @@
 //! Real gVisor (`runsc`) sandbox smoke — **Linux, KVM-less**, and only when
 //! `runsc` + the OCI rootfs (deploy/firecracker/build-rootfs.sh -> gvisor_rootfs)
-//! are deployed. Gated on PAI_GVISOR=1 and `#[cfg(target_os = "linux")]`; it never
+//! are deployed. Gated on FOSNIE_GVISOR=1 and `#[cfg(target_os = "linux")]`; it never
 //! runs (or compiles a body) on the Windows/macOS dev boxes. This is the deploy-box
 //! check for the KVM-less backend that cannot be exercised in dev.
 //!
 //! Point the sandbox at the built artefacts via env, e.g.:
-//!   PAI__CODE_INTERPRETER__GVISOR_ROOTFS=/opt/pai/firecracker/rootfs
-//!   PAI__CODE_INTERPRETER__RUNSC_BIN=/usr/local/bin/runsc
-//!   PAI_GVISOR=1 cargo test --test gvisor -- --nocapture
+//!   FOSNIE__CODE_INTERPRETER__GVISOR_ROOTFS=/opt/fosnie/firecracker/rootfs
+//!   FOSNIE__CODE_INTERPRETER__RUNSC_BIN=/usr/local/bin/runsc
+//!   FOSNIE_GVISOR=1 cargo test --test gvisor -- --nocapture
 
 #![cfg(target_os = "linux")]
 
@@ -19,20 +19,20 @@ use fosnie_backend::state::AppState;
 use fosnie_backend::{cache, db};
 
 fn enabled() -> bool {
-    std::env::var("PAI_GVISOR").as_deref() == Ok("1")
+    std::env::var("FOSNIE_GVISOR").as_deref() == Ok("1")
 }
 
 async fn state() -> AppState {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 2).await.unwrap();
     let redis = cache::create_pool(&redis_url).unwrap();
     let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };
     boot.features.code_interpreter = true;
     boot.code_interpreter.backend = "gvisor".into(); // force gVisor (box has no KVM anyway)
     boot.code_interpreter_vm.wall_secs = 5; // keep the timeout test snappy
-    // gvisor_rootfs / runsc_bin / gvisor_state_dir come from PAI__CODE_INTERPRETER__*.
+    // gvisor_rootfs / runsc_bin / gvisor_state_dir come from FOSNIE__CODE_INTERPRETER__*.
     AppState::new(pg, redis, Arc::new(boot))
 }
 

@@ -1,5 +1,8 @@
 node_modules/
 dist/
+dist-enterprise-routing/
+test-results/
+playwright-report/
 *.local
 .vite/
 

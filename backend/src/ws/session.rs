@@ -191,14 +191,19 @@ pub async fn issue_resume(
     user_id: Uuid,
     device_id: Option<Uuid>,
 ) -> Result<String, AppError> {
+    issue_bound_resume(pool,user_id,device_id,None).await
+}
+pub async fn issue_bound_resume(pool:&deadpool_redis::Pool,user_id:Uuid,device_id:Option<Uuid>,key_id:Option<Uuid>)->Result<String,AppError> {
     let token = Uuid::now_v7().to_string();
     let mut c = conn(pool).await?;
-    redis::cmd("SET")
+    let mut pipe=redis::pipe();pipe.atomic();pipe.cmd("SET")
         .arg(resume_key(&token))
         .arg(encode_principal(user_id, device_id))
         .arg("EX")
         .arg(RESUME_TTL_SECS)
-        .query_async::<()>(&mut c)
+        .ignore();
+    if let Some(key)=key_id {pipe.cmd("SET").arg(format!("{}:credential",resume_key(&token))).arg(key.to_string()).arg("EX").arg(RESUME_TTL_SECS).ignore();}
+    pipe.query_async::<()>(&mut c)
         .await
         .map_err(redis_err)?;
     Ok(token)
@@ -210,14 +215,20 @@ pub async fn lookup_resume(
     pool: &deadpool_redis::Pool,
     token: &str,
 ) -> Result<Option<(Uuid, Option<Uuid>)>, AppError> {
-    let mut c = conn(pool).await?;
-    let val: Option<String> = redis::cmd("GET")
-        .arg(resume_key(token))
-        .query_async(&mut c)
-        .await
-        .map_err(redis_err)?;
-    Ok(val.as_deref().and_then(decode_principal))
+    Ok(lookup_bound_resume(pool,token).await?.map(|p|(p.user_id,p.device_id)))
 }
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct Principal {pub user_id:Uuid,pub device_id:Option<Uuid>,pub device_key_id:Option<Uuid>}
+/// Keep the old principal value intact for rolling servers. The companion value
+/// is server-owned, shares its TTL and is read/deleted in the same Redis transaction.
+async fn bound_principal(pool:&deadpool_redis::Pool,key:String,consume:bool)->Result<Option<Principal>,AppError> {
+    let mut c=conn(pool).await?;let op=if consume {"GETDEL"} else {"GET"};
+    let (raw,credential):(Option<String>,Option<String>)=redis::pipe().atomic().cmd(op).arg(&key).cmd(op).arg(format!("{key}:credential")).query_async(&mut c).await.map_err(redis_err)?;
+    let Some((user_id,device_id))=raw.as_deref().and_then(decode_principal) else {return Ok(None);};
+    let device_key_id=match credential {Some(raw)=>match Uuid::parse_str(&raw) {Ok(id) if device_id.is_some()=>Some(id),_=>return Ok(None)},None=>None};
+    Ok(Some(Principal {user_id,device_id,device_key_id}))
+}
+pub async fn lookup_bound_resume(pool:&deadpool_redis::Pool,token:&str)->Result<Option<Principal>,AppError> {bound_principal(pool,resume_key(token),false).await}
 
 /// Mint a single-use WS connect ticket bound to the principal (TTL =
 /// `TICKET_TTL_SECS`). Issued by `POST /api/ws-ticket` over the authenticated
@@ -228,14 +239,19 @@ pub async fn issue_ticket(
     user_id: Uuid,
     device_id: Option<Uuid>,
 ) -> Result<String, AppError> {
+    issue_bound_ticket(pool,user_id,device_id,None).await
+}
+pub async fn issue_bound_ticket(pool:&deadpool_redis::Pool,user_id:Uuid,device_id:Option<Uuid>,key_id:Option<Uuid>)->Result<String,AppError> {
     let token = Uuid::now_v7().to_string();
     let mut c = conn(pool).await?;
-    redis::cmd("SET")
+    let mut pipe=redis::pipe();pipe.atomic();pipe.cmd("SET")
         .arg(ticket_key(&token))
         .arg(encode_principal(user_id, device_id))
         .arg("EX")
         .arg(TICKET_TTL_SECS)
-        .query_async::<()>(&mut c)
+        .ignore();
+    if let Some(key)=key_id {pipe.cmd("SET").arg(format!("{}:credential",ticket_key(&token))).arg(key.to_string()).arg("EX").arg(TICKET_TTL_SECS).ignore();}
+    pipe.query_async::<()>(&mut c)
         .await
         .map_err(redis_err)?;
     Ok(token)
@@ -247,14 +263,9 @@ pub async fn redeem_ticket(
     pool: &deadpool_redis::Pool,
     token: &str,
 ) -> Result<Option<(Uuid, Option<Uuid>)>, AppError> {
-    let mut c = conn(pool).await?;
-    let val: Option<String> = redis::cmd("GETDEL")
-        .arg(ticket_key(token))
-        .query_async(&mut c)
-        .await
-        .map_err(redis_err)?;
-    Ok(val.as_deref().and_then(decode_principal))
+    Ok(redeem_bound_ticket(pool,token).await?.map(|p|(p.user_id,p.device_id)))
 }
+pub async fn redeem_bound_ticket(pool:&deadpool_redis::Pool,token:&str)->Result<Option<Principal>,AppError> {bound_principal(pool,ticket_key(token),true).await}
 
 /// Refresh presence TTL on heartbeat.
 pub async fn refresh_presence(

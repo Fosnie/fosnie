@@ -38,7 +38,7 @@ async fn mint_token(username: &str, password: &str) -> Option<String> {
 async fn state() -> Option<AppState> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 5).await.ok()?;
     let redis = cache::create_pool(&redis_url).ok()?;
 

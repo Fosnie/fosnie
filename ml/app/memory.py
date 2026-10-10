@@ -29,7 +29,16 @@ def _name(scope_key: str) -> str:
     return f"pai_mem_{scope_key}"
 
 
+def _require_index_provenance() -> None:
+    # These legacy per-scope collections do not attest model/revision/dimension.
+    # A KB active-index pin is not evidence that a memory index uses that model.
+    from .inference_target import strict
+    if strict():
+        raise ValueError("routed memory requires an attested memory index")
+
+
 async def ensure(scope_key: str) -> str:
+    _require_index_provenance()
     c = client()
     name = _name(scope_key)
     if not await c.collection_exists(name):
@@ -51,6 +60,7 @@ async def upsert(scope_key: str, fact_id: str, content: str) -> None:
 
 
 async def search(scope_key: str, query: str, limit: int = 10) -> list[str]:
+    _require_index_provenance()
     c = client()
     name = _name(scope_key)
     if not await c.collection_exists(name):

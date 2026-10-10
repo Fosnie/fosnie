@@ -5,7 +5,8 @@ import asyncio
 
 import pytest
 
-from app import contextual, embeddings, extract, ingest, qdrant_store, sparse
+from app import contextual, embeddings, extract, ingest, metadata, qdrant_store, sparse
+from test_inference_target import clean_context
 from app.config import settings
 
 
@@ -25,6 +26,14 @@ def _patch_common(monkeypatch, captured):
     async def noop(*a, **k):
         return None
 
+    async def active_alias(*args, **kwargs):
+        return "layer-fixture"
+
+    # This module tests layer wiring only. Metadata and alias lookup must use
+    # doubles just like embedding/upsert, without contacting a local service.
+    monkeypatch.setattr(settings, "storage_root", "")
+    monkeypatch.setattr(metadata, "extract_effective_date", noop)
+    monkeypatch.setattr(qdrant_store, "alias_target", active_alias)
     monkeypatch.setattr(qdrant_store, "ensure_collection", noop)
     monkeypatch.setattr(qdrant_store, "delete_doc", noop)
     monkeypatch.setattr(qdrant_store, "ensure_parents", noop)

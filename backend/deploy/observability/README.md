@@ -10,7 +10,7 @@ API (below). Everything stays inside the perimeter — no egress.
   it is **disabled (404) until `observability.metrics_token` is set**, then requires it
   (Bearer or `?token=`, constant-time checked). The **ML service** exposes `GET /metrics`
   on `:8090`, gated by its shared secret — a scraper presents it as `Authorization: Bearer
-  <ml.shared_secret>` (Prometheus can't send the `X-PAI-ML-Key` header the backend uses).
+  <ml.shared_secret>` (Prometheus can't send the `X-Fosnie-ML-Key` header the backend uses).
   Both ports are loopback-only; **never proxy `/metrics`** to the public gateway.
 - Add [`prometheus-scrape.yml`](./prometheus-scrape.yml) to your `prometheus.yml`
   `scrape_configs:`.

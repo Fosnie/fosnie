@@ -95,10 +95,10 @@ pub async fn run(
     // Resolve through the platform's own precedence so a user's own key for
     // this provider is honoured exactly as it would be in the application.
     let selected =
-        crate::providers::resolve_llm(&state.pg, state.message_key, Some(uid), None, Some(provider_id))
+        crate::providers::resolve_llm(state, Some(uid), None, Some(provider_id))
             .await
             .map_err(ApiError::from)?;
-    let overrides = ml::provider_overrides_with_llm(state, Some(uid), selected.as_ref()).await;
+    let overrides = ml::provider_overrides_with_llm(state, Some(uid), selected.as_ref()).await?;
 
     let gen = ml::GenerateRequest {
         messages: req.ml_messages(),
@@ -175,6 +175,7 @@ async fn next_emit(src: &mut Source) -> Option<Emit> {
                     finish_reason: src.finish_reason.clone().unwrap_or_else(|| "stop".into()),
                     usage: src.usage.clone(),
                     citations: None,
+                    routing: None,
                 });
             }
             Some(GenEvent::Error { message }) => {
@@ -191,6 +192,7 @@ async fn next_emit(src: &mut Source) -> Option<Emit> {
                     finish_reason: "stop".into(),
                     usage: src.usage.clone(),
                     citations: sse::citations_value(&[]),
+                    routing: None,
                 });
             }
         }

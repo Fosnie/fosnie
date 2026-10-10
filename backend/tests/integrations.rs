@@ -1,7 +1,7 @@
 //! Integrations dual-mode framework: dormant-by-default, admin-only activation,
 //! the zero-egress gate (audited), and the DMS connector-adapter surface. One
 //! sequential test — the connector enabled-flags are global `config_settings`
-//! rows, so parallel test fns would race on them. No LLM. Gated on PAI_E2E=1.
+//! rows, so parallel test fns would race on them. No LLM. Gated on FOSNIE_E2E=1.
 //! alice=admin, carol=user (dev realm).
 
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use uuid::Uuid;
 const KC: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 /// Mint an authorisation witness through the real seam, then dispatch — the only
@@ -75,13 +75,13 @@ async fn token(user: &str) -> Option<String> {
 async fn setup() -> (sqlx::PgPool, AppState, u16) {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 5).await.unwrap();
     let redis = cache::create_pool(&redis_url).unwrap();
     let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };
     // Allow pointing at an ML service on a non-default port (the dev box's
     // 8045-8144 band is sometimes WinNAT-reserved, forcing ML onto e.g. 9090).
-    if let Ok(ml) = std::env::var("PAI__ML__BASE_URL") {
+    if let Ok(ml) = std::env::var("FOSNIE__ML__BASE_URL") {
         boot.ml.base_url = ml;
     }
     boot.keycloak.url = "http://localhost:8081".into();
@@ -102,11 +102,11 @@ async fn setup() -> (sqlx::PgPool, AppState, u16) {
 
 /// Deep web search runs as a background job that posts its digest + citations
 /// back into the chat. Drives the handler directly
-/// (the scheduler arm just calls it) against the live ML loop. Gated on PAI_E2E
-/// + a reachable ML service (PAI__ML__BASE_URL, e.g. http://localhost:9090).
+/// (the scheduler arm just calls it) against the live ML loop. Gated on FOSNIE_E2E
+/// + a reachable ML service (FOSNIE__ML__BASE_URL, e.g. http://localhost:9090).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deep_web_search_posts_result_back_into_chat() {
-    if !enabled() || std::env::var("PAI__ML__BASE_URL").is_err() {
+    if !enabled() || std::env::var("FOSNIE__ML__BASE_URL").is_err() {
         return;
     }
     let (pg, state, _port) = setup().await;

@@ -15,7 +15,7 @@
 # --- Generated release artefacts (SBOMs via deploy/scripts/generate-sbom.sh) ---
 /sbom/
 
-# --- Frontend (when it lands) ---
+# --- Frontend ---
 /frontend/node_modules/
 /frontend/dist/
 
@@ -67,3 +67,9 @@ target-test/
 # one careless `git add .` in a public repository is unrecoverable.
 *updater*.key
 *updater*.key.pub
+
+# Reproducible evaluation outputs; versioned synthetic cases remain tracked.
+/tools/routing/eval/reports/
+/tools/routing/eval/__pycache__/
+/tools/routing/reports/
+/tools/routing/__pycache__/

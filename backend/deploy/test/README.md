@@ -1,4 +1,4 @@
-# PAI Platform — Test Deploy on 2× A100 80GB
+# Fosnie — Test Deploy on 2× A100 80GB
 
 A **containerised, fast-redeploy** bring-up of the *whole* platform — backend +
 ML/RAG + React SPA + Keycloak + the full **prod-version** model stack on an
@@ -21,7 +21,7 @@ groundedness, web-search, workflows, code-interpreter), not a stripped core.
 | Layer | Service | Port | GPU | Notes |
 |---|---|---|---|---|
 | Platform | `fosnie-backend` (Rust + SPA) | 8080 | — | API + WebSocket + React bundle; orchestrates Firecracker |
-| Platform | `pai-ml` (Python ML/RAG) | 8090 | — | HTTP client of the inference stack — small image |
+| Platform | `fosnie-ml` (Python ML/RAG) | 8090 | — | HTTP client of the inference stack — small image |
 | Inference | `vllm-main` — **Huihui-Qwen3.6-27B-abliterated-AWQ** | 8000 | **GPU 0+1** | `--tensor-parallel-size 2`, util 0.75 |
 | Inference | `vllm-ocr` — **zai-org/GLM-OCR** | 8002 | GPU 1 | document extraction (0.9B, MIT) |
 | Inference | `vllm-embed` — **Qwen3-Embedding-4B** | 8001 | GPU 1 | `/v1/embeddings`, `--runner pooling` |
@@ -296,7 +296,7 @@ For the real thing, follow the systemd profile and the production-hardening chec
   redirect URIs are `http://localhost/*`.
 - **`reranker` rejects long chunks.** `-b/-ub` are already raised to the 8192
   context in the compose; if you raise context further, raise them to match.
-- **Backend `database_url is required` / won't boot.** The `PAI__DATABASE_URL`
+- **Backend `database_url is required` / won't boot.** The `FOSNIE__DATABASE_URL`
   env is set in compose — check the `.env` was passed (`--env-file .env`).
 - **A model re-downloads every restart.** It shouldn't — weights live in the
   `pai_hf_cache` volume. Don't `docker compose down -v` (that wipes volumes).

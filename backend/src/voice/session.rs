@@ -753,7 +753,10 @@ impl Session {
                 if streaming {
                     tts_stream::stream_clause(&self.ext_http, &vc.tts_stream_url, &vc.tts_model, &text, voice_opt, vc.tts_api_key.as_deref(), tts_stream::ClauseFormat::Mp3).await
                 } else {
-                    tts_stream::batch_clause(&self.state.http, &self.state.boot.ml.base_url, &text, voice_opt, crate::ml::provider_overrides(&self.state, self.ctx.user_id).await).await
+                    async {
+                        let overrides = crate::ml::provider_overrides(&self.state, self.ctx.user_id).await?;
+                        tts_stream::batch_clause(&self.state.http, &self.state.boot.ml.base_url, &text, voice_opt, overrides).await
+                    }.await
                 }
             }
             AudioDelivery::Samples { rate } => {
@@ -1002,10 +1005,9 @@ impl Session {
 
         let chat_id = { *self.chat_id.lock().unwrap() };
         let llm_sel =
-            crate::providers::resolve_llm(&self.state.pg, self.state.message_key, self.ctx.user_id, chat_id, None)
+            crate::providers::resolve_llm(&self.state, self.ctx.user_id, chat_id, None)
                 .await
-                .ok()
-                .flatten();
+                .ok()?;
 
         let stream = crate::ml::retrieve_stream(
             &self.state.http,
@@ -1014,7 +1016,7 @@ impl Session {
             &kb_ids,
             &deny_doc_ids,
             &overrides,
-            crate::ml::provider_overrides_with_llm(&self.state, self.ctx.user_id, llm_sel.as_ref()).await,
+            crate::ml::provider_overrides_with_llm(&self.state, self.ctx.user_id, llm_sel.as_ref()).await.ok()?,
             Some(std::time::Duration::from_secs(self.knobs.spec_timeout_secs)),
         )
         .await;
@@ -1580,12 +1582,20 @@ async fn capture_loop(session: Arc<Session>, mut pcm_rx: mpsc::Receiver<Vec<u8>>
                     let text = if !u.text.trim().is_empty() {
                         u.text.trim().to_string()
                     } else {
+                        let overrides = match crate::ml::provider_overrides(&session.state, session.ctx.user_id).await {
+                            Ok(overrides) => overrides,
+                            Err(e) => {
+                                session.emit_error(format!("transcription provider unavailable: {e}")).await;
+                                u.reset(&mut spec);
+                                continue;
+                            }
+                        };
                         match crate::ml::transcribe(
                             &session.state.http,
                             &session.state.boot.ml.base_url,
                             &stt_stream::pcm_to_wav(&u.audio, sr),
                             "audio/wav",
-                            crate::ml::provider_overrides(&session.state, session.ctx.user_id).await,
+                            overrides,
                         )
                         .await
                         {

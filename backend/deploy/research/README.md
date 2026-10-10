@@ -17,7 +17,7 @@ Gated (slow on a local LLM). It measures the **deployed LLM + pipeline on this
 fixture set** — honest only when scoped + dated; never "no hallucinations".
 
 ```sh
-PAI_RESEARCH_EVAL=1 \
+FOSNIE_RESEARCH_EVAL=1 \
 LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen3 \
 ML_BASE_URL=http://localhost:8090 \
 python backend/deploy/research/benchmark.py --date 2026-06-11 --limit 2

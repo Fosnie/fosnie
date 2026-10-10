@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Private AI Ltd (SC881079)
+# Copyright 2026 Private AI Ltd (SC881079)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""pai-ml — generation-only slice. The platform's LLM client; Rust composes the
-seven-layer prompt and streams generation through here (it never calls the LLM
-directly — topology). RAG, extraction, etc. land in later slices."""
+"""The platform's LLM client. Rust composes the seven-layer prompt and streams
+generation through here; it never calls a model directly, which is what keeps every
+provider credential and every model decision on this side of the wire. Retrieval,
+extraction, research and the document toolchain hang off the same service."""
 
 import asyncio
 import hmac
@@ -24,13 +25,16 @@ import pkgutil
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from .inference_target import with_report, report_events
+from .inference_budget import BudgetExhausted
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from .output_schema import OutputSchemaError
 
 from . import http_client
 from . import ingest as ingest_mod
@@ -46,14 +50,14 @@ def _setup_logging() -> None:
     """Persist INFO+ logs to a rotating file. uvicorn ships
     console-only, so a diagnostic run (whose `rag turn …` summary is INFO) is lost when
     the process restarts. Attach a RotatingFileHandler to the
-    ROOT logger so every `pai*`/`pai-ml*` logger propagates to it; the console stays.
+    ROOT logger so every `fosnie*` logger propagates to it; the console stays.
     Idempotent (guarded so uvicorn's reloader can't stack handlers). Empty log_dir or
     an unwritable path disables the file sink rather than crashing boot."""
     if not settings.log_dir:
         return
     root = logging.getLogger()
-    marker = "pai-ml-file"
-    if any(getattr(h, "_pai_marker", None) == marker for h in root.handlers):
+    marker = "fosnie-ml-file"
+    if any(getattr(h, "_fosnie_marker", None) == marker for h in root.handlers):
         return
     try:
         log_path = Path(settings.log_dir)
@@ -61,20 +65,20 @@ def _setup_logging() -> None:
         from logging.handlers import RotatingFileHandler
 
         handler = RotatingFileHandler(
-            log_path / "pai-ml.log",
+            log_path / "fosnie-ml.log",
             maxBytes=settings.log_max_bytes,
             backupCount=settings.log_backups,
             encoding="utf-8",
         )
-        handler._pai_marker = marker  # type: ignore[attr-defined]
+        handler._fosnie_marker = marker  # type: ignore[attr-defined]
         handler.setLevel(logging.INFO)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         root.addHandler(handler)
         if root.level > logging.INFO or root.level == logging.NOTSET:
             root.setLevel(logging.INFO)  # ensure INFO records reach the handler
-        logging.getLogger("pai-ml.main").info("file logging → %s", log_path / "pai-ml.log")
+        logging.getLogger("fosnie-ml.main").info("file logging → %s", log_path / "fosnie-ml.log")
     except OSError as e:
-        logging.getLogger("pai-ml.main").warning("file logging disabled (%s)", e)
+        logging.getLogger("fosnie-ml.main").warning("file logging disabled (%s)", e)
 
 
 _setup_logging()
@@ -87,15 +91,20 @@ async def lifespan(app: FastAPI):
     client = http_client.build_client()
     http_client.set_client(client)
     try:
+        from . import storage_writes
+        await storage_writes.recover()
         yield
     finally:
         await client.aclose()
         http_client.set_client(None)
 
 
-app = FastAPI(title="pai-ml", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="fosnie-ml", version="0.1.0", lifespan=lifespan)
 
-_ML_KEY_HEADER = "x-pai-ml-key"
+_ML_KEY_HEADER = "x-fosnie-ml-key"
+# The pre-rename spelling. Still read so a backend from before the rename — or a
+# deployment that pins an older image on one side of the pair — still authenticates.
+_ML_KEY_HEADER_LEGACY = "x-pai-ml-key"
 
 
 @app.middleware("http")
@@ -104,12 +113,15 @@ async def guard(request: Request, call_next):
     size. Only `/health` is open (liveness probes need no secret). `/metrics` is
     gated too — fail-closed, so system telemetry is not readable by anything that
     cannot present the secret. The Rust backend authenticates with the
-    `X-PAI-ML-Key` header; a Prometheus scraper (which cannot send arbitrary
-    headers) uses `Authorization: Bearer <secret>` — both are accepted."""
+    `X-Fosnie-ML-Key` header (`X-PAI-ML-Key` before the rename, still accepted); a
+    Prometheus scraper (which cannot send arbitrary headers) uses
+    `Authorization: Bearer <secret>` — all three are accepted."""
     if request.url.path != "/health":
         secret = settings.shared_secret
         if secret:
-            presented = request.headers.get(_ML_KEY_HEADER, "")
+            presented = request.headers.get(_ML_KEY_HEADER, "") or request.headers.get(
+                _ML_KEY_HEADER_LEGACY, ""
+            )
             if not presented:
                 authz = request.headers.get("authorization", "")
                 if authz.startswith("Bearer "):
@@ -153,6 +165,14 @@ async def metrics() -> Response:
 
 
 class Sampling(BaseModel):
+    response_schema: dict[str, Any] | None = None
+
+    @field_validator("response_schema")
+    @classmethod
+    def bounded_output_schema(cls, value):
+        from .output_schema import validate_schema
+        return validate_schema(value) if value is not None else None
+
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
@@ -235,12 +255,20 @@ async def generate(req: GenerateRequest) -> StreamingResponse:
     sampling = req.sampling.model_dump(exclude_none=True)
 
     async def ndjson():
+        emitted = False
         try:
             llm.set_stage("generate")
-            async for event in llm.stream_chat(messages, sampling, req.model, tools=req.tools):
+            async for event in report_events(llm.stream_chat(messages, sampling, req.model, tools=req.tools)):
+                emitted = True
                 yield json.dumps(event) + "\n"
         except Exception as e:  # surface upstream failures as a terminal event
-            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+            from .inference_target import strict
+            from .inference_failure import failure_detail
+            event = {"type": "error", "message": "routed inference failed" if strict() else str(e)}
+            failure = failure_detail(e, emitted=emitted) if strict() else None
+            if failure is not None:
+                event["routing_failure"] = failure
+            yield json.dumps(with_report(event)) + "\n"
 
     return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
@@ -264,6 +292,7 @@ class IngestRequest(BaseModel):
     pdfplumber: bool | None = None
     # Per-KB parent–child chunking; None ⇒ the service default.
     parent_child: bool | None = None
+    storage_recovery: bool | None = None
     # Provider overrides: {role}_base_url/_model/_api_key.
     overrides: dict | None = None
     # Dual-write target during a blue-green re-index: also
@@ -324,15 +353,21 @@ async def ensure_collection(req: EnsureCollectionRequest) -> dict:
 
 
 @app.post("/ingest")
-async def ingest(req: IngestRequest) -> dict:
+async def ingest(req: IngestRequest, request: Request = None) -> dict:
     from . import rag_ctx
     from .ocr import OcrUnavailable
 
-    rag_ctx.set_overrides({"chunk_size": req.chunk_size, "chunk_overlap": req.chunk_overlap, "pdfplumber": req.pdfplumber, "parent_child": req.parent_child, **(req.overrides or {})})
+    rag_ctx.set_overrides({"chunk_size": req.chunk_size, "chunk_overlap": req.chunk_overlap, "pdfplumber": req.pdfplumber, "parent_child": req.parent_child,"storage_recovery":req.storage_recovery, **(req.overrides or {})})
     try:
-        return await ingest_mod.ingest_document(
-            req.doc_id, req.kb_id, safe_path(req.path), req.mime, req.dimension, dual=req.dual
-        )
+        async def work():
+            result = await ingest_mod.ingest_document(req.doc_id, req.kb_id, safe_path(req.path), req.mime, req.dimension, dual=req.dual)
+            # Collect/seal reports in the same task that owns the ContextVars.
+            return with_report(result)
+        from .inference_target import strict
+        if strict() and request is not None:
+            from .routed_document import connected
+            return await connected(request, work(), operation="ingestion")
+        return await work()
     except OcrUnavailable as e:
         # A scanned PDF / image that could not be OCR'd. Surface a clear 422 so
         # the backend marks the document `error` (never index empty content).
@@ -380,17 +415,21 @@ async def retrieve(req: RetrieveRequest) -> dict:
         from . import retrieve_stream
 
         async def lines():
-            async for event in retrieve_stream.stream_events(req.prompt, req.kb_ids, req.deny_doc_ids):
+            async for event in report_events(retrieve_stream.stream_events(req.prompt, req.kb_ids, req.deny_doc_ids)):
                 yield json.dumps(event) + "\n"
 
         return StreamingResponse(lines(), media_type="application/x-ndjson")
-    return await retrieve_mod.retrieve(req.prompt, req.kb_ids, req.deny_doc_ids)
+    return with_report(await retrieve_mod.retrieve(req.prompt, req.kb_ids, req.deny_doc_ids))
 
 
 class WebSearchRequest(BaseModel):
     query: str
+    # Evidence ranking only; never sent to a search engine. Core supplies
+    # the original current question, separately from model-authored tool args.
+    ranking_question: str | None = Field(default=None, max_length=2048, strict=True, repr=False)
     recency: str | None = None  # any | year | month | week | day
     depth: str | None = None    # quick | standard | deep
+    quick_snippets_only: bool = Field(default=False, strict=True)
     # Runtime/admin + per-Agent overrides (None ⇒ the service's env defaults).
     # A present-but-empty list string means "list off" — it still overrides env.
     domain_allowlist: str | None = None
@@ -421,21 +460,26 @@ async def web_search(req: WebSearchRequest):
         "web_allowlist_only": req.allowlist_only,
         "web_robots_policy": req.robots_policy,
         "web_max_fetches": req.max_fetches,
+        "web_ranking_question": req.ranking_question,
+        "web_quick_snippets_only": req.quick_snippets_only,
         **(req.overrides or {}),
     })
     if req.stream:
         from .web import stream as web_stream
 
         async def lines():
-            async for event in web_stream.stream_events(
+            async for event in report_events(web_stream.stream_events(
                 req.query, recency=req.recency or "any", depth=req.depth or "standard"
-            ):
+            )):
                 yield json.dumps(event) + "\n"
 
         return StreamingResponse(lines(), media_type="application/x-ndjson")
-    return await web_pipeline.web_search(
+    return with_report(await web_pipeline.web_search(
         req.query, recency=req.recency or "any", depth=req.depth or "standard"
-    )
+    ))
+
+
+from .research.routed import LimitsV1 as ResearchLimits
 
 
 class ResearchDoc(BaseModel):
@@ -445,6 +489,7 @@ class ResearchDoc(BaseModel):
     path: str
     mime: str | None = None
     filename: str | None = None
+    sha256: str | None = None
 
 
 class DeepResearchRequest(BaseModel):
@@ -485,6 +530,8 @@ class DeepResearchRequest(BaseModel):
     max_fetches: int | None = None
     # Provider overrides: {role}_base_url/_model/_api_key.
     overrides: dict | None = None
+    research_limits: ResearchLimits | None = None
+    deny_doc_ids: list[str] = []
 
 
 @app.post("/deep_research")
@@ -515,6 +562,17 @@ async def deep_research(req: DeepResearchRequest):
         **(req.overrides or {}),
     })
 
+    from .inference_target import strict
+    from .research import routed as routed_research
+    bounded_template = None
+    if strict():
+        try:
+            bounded_template = routed_research.validate(req)
+        except (ValueError, TypeError, KeyError):
+            raise HTTPException(status_code=422, detail="Unsupported or invalid bounded research request") from None
+    elif req.research_limits is not None:
+        raise HTTPException(status_code=422, detail="Bounded research requires routing")
+
     docs = [
         {
             "doc_id": d.doc_id,
@@ -523,12 +581,14 @@ async def deep_research(req: DeepResearchRequest):
             "path": safe_path(d.path),
             "mime": d.mime,
             "filename": d.filename or d.doc_id,
+            "sha256": d.sha256,
         }
         for d in req.docs
     ]
 
     async def lines():
-        async for event in research_stream.stream_events(
+        from contextlib import aclosing
+        events = routed_research.stream(req, docs, bounded_template) if bounded_template is not None else research_stream.stream_events(
             req.question,
             template=req.template or "exploration",
             source=req.source or "web",
@@ -538,8 +598,10 @@ async def deep_research(req: DeepResearchRequest):
             refinements=req.refinements,
             verify=req.verify,
             template_spec=req.template_spec,
-        ):
-            yield json.dumps(event) + "\n"
+        )
+        async with aclosing(report_events(events)) as reported:
+            async for event in reported:
+                yield json.dumps(event) + "\n"
 
     return StreamingResponse(lines(), media_type="application/x-ndjson")
 
@@ -559,6 +621,22 @@ class ResearchTriageRequest(BaseModel):
     question: str
     source: str | None = None
     scope: list[dict] = []  # [{index, name, kind, doc_count}]
+
+
+from .research.routed_triage import Request as RoutedTriageRequest
+
+
+@app.post("/research/routed-triage")
+async def routed_research_triage(req: RoutedTriageRequest, request: Request):
+    from . import rag_ctx
+    from .research import routed_triage
+    from .routed_document import connected
+    try:
+        rag_ctx.set_overrides(req.overrides)
+        routed_triage.validate(req)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="invalid bounded research clarification") from None
+    return await connected(request, routed_triage.run(req), "research clarification")
 
 
 @app.post("/research/triage")
@@ -585,7 +663,7 @@ class VerifyRequest(BaseModel):
 
 
 @app.post("/verify")
-async def verify(req: VerifyRequest) -> dict:
+async def verify(req: VerifyRequest, request: Request = None) -> dict:
     """Mode A (live) groundedness: flag spans of `answer` unsupported by `context`.
     Off the hot path — the Rust backend
     calls this from a spawned task post-stream, never inline with generation.
@@ -596,12 +674,17 @@ async def verify(req: VerifyRequest) -> dict:
 
     rag_ctx.set_overrides(req.overrides or {})
 
-    return await verify_mod.verify_live(
+    work = verify_mod.verify_live(
         req.context, req.question, req.answer, req.model,
         strictness=req.strictness or "strict",
         threshold=req.threshold or 0.0,
         hhem_filter=bool(req.hhem_filter),
     )
+    from .inference_target import strict
+    if strict() and request is not None:
+        from .routed_document import connected
+        return with_report(await connected(request, work, "verification"))
+    return with_report(await work)
 
 
 class EmbedDimensionRequest(BaseModel):
@@ -618,7 +701,13 @@ async def embed_dimension(req: EmbedDimensionRequest | None = None) -> dict:
 
     rag_ctx.set_overrides((req.overrides if req else None) or {})
     model = rag_ctx.cfg("embed_model", settings.embed_model)
-    return {"model": model, "dimension": await embeddings.dimension()}
+    if rag_ctx.cfg("routing", None) is not None:
+        from .inference_target import InferenceEnvelope
+        target = InferenceEnvelope.model_validate(rag_ctx.cfg("routing", None)).fixed_assignments.get("embed")
+        if target is None:
+            raise HTTPException(status_code=400, detail="embedding assignment missing")
+        model = target.model
+    return with_report({"model": model, "dimension": await embeddings.dimension()})
 
 
 class ReindexRequest(BaseModel):
@@ -627,6 +716,9 @@ class ReindexRequest(BaseModel):
     new_model: str
     new_base_url: str | None = None
     new_api_key: str | None = None
+    overrides: dict | None = None
+    source_kbs: list[str] | None = None
+    source_docs: list[str] | None = None
 
 
 @app.post("/reindex-embeddings")
@@ -639,15 +731,24 @@ async def reindex_embeddings(req: ReindexRequest) -> StreamingResponse:
     async def ndjson():
         # The new model drives `embeddings.embed` during the build.
         rag_ctx.set_overrides({
+            **(req.overrides or {}),
             "embed_base_url": req.new_base_url,
             "embed_model": req.new_model,
             "embed_api_key": req.new_api_key,
         })
         try:
-            async for ev in reindex.reindex_stream(req.new_dim, req.new_model):
-                yield json.dumps(ev) + "\n"
+            if rag_ctx.cfg("routing",None) is not None:
+                from .embeddings import desired_target
+                target=desired_target()
+                if (req.new_base_url is not None and req.new_base_url.rstrip("/") != target.base_url
+                        or req.new_api_key is not None and req.new_api_key != target.api_key):
+                    raise ValueError("reindex endpoint/credential differs from assignment")
+            from contextlib import aclosing
+            async with aclosing(reindex.reindex_stream(req.new_dim, req.new_model, req.source_kbs, req.source_docs)) as events:
+                async for ev in events:
+                    yield json.dumps(with_report(ev) if ev.get("type")=="built" else ev) + "\n"
         except Exception as e:  # surface as a terminal event; backend marks failed
-            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+            yield json.dumps(with_report({"type": "error", "message": str(e)})) + "\n"
 
     return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
@@ -655,16 +756,32 @@ async def reindex_embeddings(req: ReindexRequest) -> StreamingResponse:
 class SwapAliasRequest(BaseModel):
     new_collection: str
     old_collection: str | None = None
+    expected_old_collection: str | None = None
+    expected_source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    publication_authorised: bool = Field(default=True, strict=True)
 
 
 @app.post("/swap-embedding-alias")
 async def swap_embedding_alias(req: SwapAliasRequest) -> dict:
-    """Atomically point the `pai_kb` alias at the rebuilt collection + drop the
-    superseded one (step 5)."""
+    """Confirm publication under the shared fence; retain the source index."""
+    from . import reindex, storage_writes
+    try:
+        return await reindex.swap(req.new_collection, req.old_collection, req.expected_old_collection,
+                                  req.expected_source_sha256, req.publication_authorised)
+    except reindex.PublicationRefused:
+        raise HTTPException(status_code=409, detail="embedding_publication_refused")
+    except storage_writes.StorageRecoveryRequired:
+        raise HTTPException(status_code=503, detail="embedding_publication_storage_busy")
+
+
+class CleanupEmbeddingRequest(BaseModel):
+    collection:str
+    expected_active:str
+
+@app.post("/cleanup-embedding-index")
+async def cleanup_embedding_index(req:CleanupEmbeddingRequest):
     from . import reindex
-
-    return await reindex.swap(req.new_collection, req.old_collection)
-
+    return await reindex.cleanup_retired(req.collection,req.expected_active)
 
 class ProviderTestRequest(BaseModel):
     role: str  # llm | embed | rerank | ocr | stt | tts | verify
@@ -703,16 +820,29 @@ async def chat_step(req: ChatStepRequest) -> dict[str, Any]:
 
     rag_ctx.set_overrides(req.overrides or {})
     sampling = req.sampling.model_dump(exclude_none=True)
-    llm.set_stage("tool_loop")
+    # /chat-step is one primitive call. Its explicit envelope purpose also covers
+    # primary evaluations and final answers; it must not be remapped to tool_loop.
+    routing = rag_ctx.cfg("routing", None)
+    llm.set_stage(routing["purpose"] if routing is not None else "tool_loop")
     # A non-streaming reasoning step can run for minutes; surface a timeout / upstream
     # failure as a clean status instead of a raw 500 after a long wait.
     try:
-        return await llm.chat_step(req.messages, req.tools, sampling, req.model)
-    except httpx.TimeoutException as e:
-        logging.getLogger("pai-ml.main").warning("chat-step timed out: %s", e)
+        return with_report(await llm.chat_step(req.messages, req.tools, sampling, req.model))
+    except OutputSchemaError as e:
+        raise HTTPException(status_code=422, detail="output schema contract rejected", headers={"X-Fosnie-Output-Contract": e.reason}) from e
+    except llm.LlmError as e:
+        from .inference_target import strict
+        from .inference_failure import failure_detail
+        if strict():
+            return with_report({"content":"","finish_reason":"error","routing_failure":failure_detail(e,emitted=False)})
+        raise HTTPException(status_code=502,detail="LLM upstream error") from e
+    except BudgetExhausted as e:
+        raise HTTPException(status_code=429, detail="routing budget exhausted") from e
+    except (httpx.TimeoutException, TimeoutError) as e:
+        logging.getLogger("fosnie-ml.main").warning("chat-step timed out: %s", e)
         raise HTTPException(status_code=504, detail="reasoning timed out") from e
     except httpx.HTTPError as e:
-        logging.getLogger("pai-ml.main").warning("chat-step upstream error: %s", e)
+        logging.getLogger("fosnie-ml.main").warning("chat-step upstream error: %s", e)
         raise HTTPException(status_code=502, detail="LLM upstream error") from e
 
 
@@ -726,6 +856,8 @@ class ReadDocumentRequest(BaseModel):
     max_chars: int = 0
     # Provider overrides: {role}_base_url/_model/_api_key.
     overrides: dict | None = None
+    # Required only for explicit routed execution; never inferred from ML defaults.
+    document_limits: dict | None = None
 
 
 def _est_tokens(s: str) -> int:
@@ -733,7 +865,7 @@ def _est_tokens(s: str) -> int:
 
 
 @app.post("/read-document")
-async def read_document(req: ReadDocumentRequest) -> dict[str, Any]:
+async def read_document(req: ReadDocumentRequest, request: Request = None) -> dict[str, Any]:
     """Three whole-document modes (.md). Deterministic
     token routing on the *exact* extracted size: STUFF the whole document when it
     fits a safe fraction of the context window; otherwise (and given a task to
@@ -743,6 +875,11 @@ async def read_document(req: ReadDocumentRequest) -> dict[str, Any]:
 
     rag_ctx.set_overrides(req.overrides or {})
     sp = safe_path(req.path)
+    from .inference_target import strict
+    if strict():
+        from .routed_document import Limits, read, connected
+        work = read(sp, req.mime, req.prompt, Limits.model_validate(req.document_limits))
+        return await connected(request, work) if request is not None else await work
     is_image = (req.mime or "").startswith("image/") or Path(sp).suffix.lower() in extract._IMAGE_SUFFIXES
     if is_image:
         # Images have no native text layer — OCR them. The sync extract() has no
@@ -764,7 +901,7 @@ async def read_document(req: ReadDocumentRequest) -> dict[str, Any]:
         # against, cap to the stuff budget — never silently feed an over-long doc.
         cap = stuff_budget_tokens * 4 if not fits else (req.max_chars or len(text))
         out = text[:cap] if cap and len(text) > cap else text
-        return {"mode": "stuff", "text": out, "truncated": len(out) < len(text)}
+        return with_report({"mode": "stuff", "text": out, "truncated": len(out) < len(text)})
 
     # MAP-REDUCE (exhaustive, structured accumulation). Bounded: cap the text so an
     # agent pointed at a huge document can't trigger hundreds of LLM calls (minutes,
@@ -775,7 +912,7 @@ async def read_document(req: ReadDocumentRequest) -> dict[str, Any]:
     digest = result["text"]
     if req.max_chars and len(digest) > req.max_chars:
         digest = digest[: req.max_chars]
-    return {"mode": "map_reduce", "text": digest, "sections": len(result["sections"]), "truncated": mr_truncated}
+    return with_report({"mode": "map_reduce", "text": digest, "sections": len(result["sections"]), "truncated": mr_truncated})
 
 
 class VerifyDraftRequest(BaseModel):
@@ -788,10 +925,11 @@ class VerifyDraftRequest(BaseModel):
     hhem_filter: bool | None = None  # HHEM second opinion
     # Provider overrides: {role}_base_url/_model/_api_key.
     overrides: dict | None = None
+    deny_doc_ids: list[str] = []
 
 
 @app.post("/verify-draft")
-async def verify_draft(req: VerifyDraftRequest) -> dict[str, Any]:
+async def verify_draft(req: VerifyDraftRequest, request: Request = None) -> dict[str, Any]:
     """Mode B: decompose a draft into
     atomic claims, bind each to evidence retrieved from the caller's KBs, verify
     each claim, and score. Per-claim windowing → N bounded verifier calls
@@ -803,6 +941,14 @@ async def verify_draft(req: VerifyDraftRequest) -> dict[str, Any]:
     from . import verify as verify_mod
 
     rag_ctx.set_overrides(req.overrides or {})
+    from .inference_target import strict
+    if strict():
+        if req.hhem_filter or req.max_claims not in (None, 16) or req.threshold not in (None, 0):
+            raise ValueError("unsupported routed draft options")
+        from . import routed_draft
+        from .routed_document import connected
+        work = routed_draft.verify_draft(safe_path(req.path), req.mime, req.kb_ids, req.deny_doc_ids, req.strictness or "strict")
+        return await connected(request, work, "draft verification") if request is not None else await work
     empty = {"claims": [], "score": None, "total": 0,
              "supported": 0, "contradicted": 0, "not_mentioned": 0}
     text = await asyncio.to_thread(extract.extract, safe_path(req.path), req.mime)
@@ -885,10 +1031,12 @@ class RepairDraftRequest(BaseModel):
     claims: list[RepairClaimIn] = []
     kb_ids: list[str] = []
     strictness: str | None = None
+    overrides: dict | None = None
+    deny_doc_ids: list[str] = []
 
 
 @app.post("/repair-draft")
-async def repair_draft(req: RepairDraftRequest) -> dict[str, Any]:
+async def repair_draft(req: RepairDraftRequest, request: Request = None) -> dict[str, Any]:
     """Ground-or-cut repair: regenerate or cut each flagged claim, re-verify
     the new citation, and return per-claim actions for the backend to surface as
     tracked-change proposals. Consumes a finished run's flagged claims — it does not
@@ -896,6 +1044,14 @@ async def repair_draft(req: RepairDraftRequest) -> dict[str, Any]:
     from . import repair as repair_mod
 
     claims = [c.model_dump() for c in req.claims]
+    from . import rag_ctx
+    from .inference_target import strict
+    rag_ctx.set_overrides(req.overrides or {})
+    if strict():
+        from . import routed_draft
+        from .routed_document import connected
+        work = routed_draft.repair_draft(claims, req.kb_ids, req.deny_doc_ids, req.strictness or "strict")
+        return await connected(request, work, "draft repair") if request is not None else await work
     results = await repair_mod.repair_claims(claims, req.kb_ids, req.strictness or "strict")
     return {"results": results}
 
@@ -1066,6 +1222,20 @@ async def export_review(req: ExportReviewRequest) -> dict[str, Any]:
 # --- Generated artefacts -----------------------------------------------------
 
 
+from .routed_artefact import RenderRequest
+
+
+@app.post("/render-routed-artefact")
+async def render_routed_artefact(req: RenderRequest) -> dict[str, Any]:
+    from .routed_artefact import render
+    try:
+        return await asyncio.to_thread(render, req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="routed renderer unavailable") from e
+
+
 class GenerateArtefactRequest(BaseModel):
     kind: str  # docx | pdf | md
     title: str = ""
@@ -1143,6 +1313,8 @@ async def memory_delete(req: MemDeleteRequest) -> dict[str, Any]:
 class SpeechRequest(BaseModel):
     text: str
     voice: str | None = None
+    # Explicit container for the routed PCM adapter; absent preserves clip callers.
+    response_format: Literal["wav"] | None = None
     # Provider overrides: tts_base_url/_model/_api_key.
     overrides: dict | None = None
 
@@ -1156,23 +1328,25 @@ async def voice_available() -> dict[str, bool]:
 
 
 @app.post("/transcribe")
-async def transcribe(request: Request) -> dict[str, str]:
+async def transcribe(request: Request) -> dict:
     """Raw audio bytes (Content-Type = the audio mime) → {text}. Rust posts the
     captured audio here; we re-package as the OpenAI multipart contract. Provider
-    overrides ride the `X-PAI-Overrides` header (the body is audio)."""
+    overrides ride the `X-Fosnie-Overrides` header (the body is audio)."""
     import json as _json
 
     from . import rag_ctx
     from . import stt as stt_mod
+    from .inference_target import strict
 
-    ov_header = request.headers.get("x-pai-overrides")
-    if ov_header:
-        try:
-            rag_ctx.set_overrides(_json.loads(ov_header))
-        except ValueError:
-            pass
+    ov_header = request.headers.get("x-fosnie-overrides") or request.headers.get(
+        "x-pai-overrides"
+    )
+    try:
+        rag_ctx.set_overrides(_json.loads(ov_header) if ov_header else {})
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="invalid inference overrides") from None
 
-    if not stt_mod.available():
+    if not strict() and not stt_mod.available():
         raise HTTPException(status_code=503, detail="STT unavailable")
     audio = await request.body()
     if not audio:
@@ -1181,9 +1355,13 @@ async def transcribe(request: Request) -> dict[str, str]:
     language = request.query_params.get("language")
     try:
         text = await stt_mod.transcribe(audio, mime, language)
+    except BudgetExhausted as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="STT routing deadline exceeded") from None
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"STT failed: {e}") from e
-    return {"text": text}
+    return with_report({"text": text})
 
 
 @app.post("/speech")
@@ -1191,17 +1369,28 @@ async def speech(req: SpeechRequest) -> Response:
     """{text, voice?} → audio bytes (Content-Type from the engine)."""
     from . import rag_ctx
     from . import tts as tts_mod
+    from .inference_target import strict
 
     rag_ctx.set_overrides(req.overrides or {})
-    if not tts_mod.available():
+    if not strict() and not tts_mod.available():
         raise HTTPException(status_code=503, detail="TTS unavailable")
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="empty text")
     try:
-        audio, mime = await tts_mod.synthesize(req.text, req.voice)
+        if req.response_format is None:
+            audio, mime = await tts_mod.synthesize(req.text, req.voice)
+        else:
+            audio, mime = await tts_mod.synthesize(req.text, req.voice, response_format=req.response_format)
+    except BudgetExhausted as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="TTS routing deadline exceeded") from None
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"TTS failed: {e}") from e
-    return Response(content=audio, media_type=mime)
+    import json as _json
+    report = with_report({}).get("fixed_routing_report")
+    headers = {"X-Fosnie-Fixed-Routing-Report": _json.dumps(report, separators=(",", ":"))} if report else {}
+    return Response(content=audio, media_type=mime, headers=headers)
 
 
 # --- Optional routers ----------------------

@@ -34,10 +34,10 @@ This measures the DEPLOYED LLM + pipeline on THIS fixture set — honest only wh
 scoped + dated; never a claim of "no hallucinations". Swap in your own fixtures
 for a representative number.
 
-Stdlib only (urllib). Gated — set PAI_RESEARCH_EVAL=1 to run (it drives the live
+Stdlib only (urllib). Gated — set FOSNIE_RESEARCH_EVAL=1 to run (it drives the live
 stack and is slow on a local LLM):
 
-    PAI_RESEARCH_EVAL=1 LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen3 \
+    FOSNIE_RESEARCH_EVAL=1 LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen3 \
     ML_BASE_URL=http://localhost:8090 \
     python backend/deploy/research/benchmark.py --date 2026-06-11 --limit 2
 """
@@ -193,8 +193,8 @@ def score_fixture(fix: dict, limit_words_floor: int = 400) -> dict:
 
 
 def main() -> None:
-    if os.environ.get("PAI_RESEARCH_EVAL") != "1":
-        print("PAI_RESEARCH_EVAL != 1 — skipping the live Deep Research benchmark.")
+    if os.environ.get("FOSNIE_RESEARCH_EVAL") != "1":
+        print("FOSNIE_RESEARCH_EVAL != 1 — skipping the live Deep Research benchmark.")
         sys.exit(0)
     ap = argparse.ArgumentParser(description="Deep Research RACE+FACT benchmark.")
     ap.add_argument("--data", default=os.path.join(_HERE, "fixtures.jsonl"))

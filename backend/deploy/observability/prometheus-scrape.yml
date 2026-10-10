@@ -1,4 +1,4 @@
-# PAI Platform — Prometheus scrape config (a snippet for your prometheus.yml
+# Fosnie — Prometheus scrape config (a snippet for your prometheus.yml
 # `scrape_configs:`). Both /metrics endpoints are FAIL-CLOSED: the backend serves
 # /metrics only when `observability.metrics_token` is set (empty ⇒ 404), and the
 # ML service requires its shared secret. Both are loopback-only — keep the scrape
@@ -13,27 +13,27 @@ scrape_configs:
     # set. Use the same high-entropy token here.
     authorization:
       type: Bearer
-      credentials_file: /etc/pai/metrics_token   # the same token as the config
+      credentials_file: /etc/fosnie/metrics_token   # the same token as the config
 
     static_configs:
       - targets: ["127.0.0.1:8080"]
 
-  - job_name: pai-ml
+  - job_name: fosnie-ml
     metrics_path: /metrics
     scheme: http
     scrape_interval: 15s
     # REQUIRED when the ML service has a shared secret (always, in prod): the
     # scraper presents it as a Bearer token (Prometheus cannot send the
-    # X-PAI-ML-Key header the Rust backend uses). Same value as ml.shared_secret.
+    # X-Fosnie-ML-Key header the Rust backend uses). Same value as ml.shared_secret.
     authorization:
       type: Bearer
-      credentials_file: /etc/pai/ml_shared_secret
+      credentials_file: /etc/fosnie/ml_shared_secret
     static_configs:
       - targets: ["127.0.0.1:8090"]
 
 # Optional liveness/readiness via the blackbox exporter (probes /health/ready and
 # alarms when Postgres/Redis are down). Wire it if you run blackbox_exporter:
-#  - job_name: pai-health
+#  - job_name: fosnie-health
 #    metrics_path: /probe
 #    params: { module: [http_2xx] }
 #    static_configs: [{ targets: ["http://127.0.0.1:8080/health/ready"] }]

@@ -26,6 +26,7 @@
 pub mod codec;
 pub mod pace;
 pub mod record;
+pub mod routed_audio;
 pub mod sink;
 
 pub use sink::{Control, TelephonySink, Wire};

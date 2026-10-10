@@ -1,7 +1,7 @@
 //! In-crate mock authorisation-server suite for the MCP OAuth flow. Exercises
 //! discovery, the authorize leg, DCR, every refusal fork, AND the token REFRESH leg
 //! against a LOCAL self-signed TLS authorisation server. No internet, no OAuth app, no
-//! `PAI_E2E`, no ML - only `DATABASE_URL` + Redis.
+//! `FOSNIE_E2E`, no ML - only `DATABASE_URL` + Redis.
 //!
 //! Compiled only under `--features test-mocks`, which enables a hook in
 //! `mcp::client::build_hardened_client` that trusts one extra root cert (the mock's).
@@ -384,7 +384,7 @@ async fn spawn_mock(config: MockConfig, callback: String) -> Mock {
 async fn app_state() -> Option<(AppState, sqlx::PgPool)> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 5).await.ok()?;
     let redis = cache::create_pool(&redis_url).ok()?;
     let mut boot = BootConfig {

@@ -44,7 +44,7 @@ from . import progress
 from .bank import Bank, DocSource, Note
 from .budgets import ResearchBudgets, est_tokens
 
-_log = logging.getLogger("pai.research.census")
+_log = logging.getLogger("fosnie.research.census")
 
 SCHEMA_VERSION = 1
 

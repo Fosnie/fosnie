@@ -945,7 +945,7 @@ mod tests {
     async fn authz_state() -> Option<(sqlx::PgPool, AppState)> {
         let db_url = std::env::var("DATABASE_URL").ok()?;
         let redis_url =
-            std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+            std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
         let pg = crate::db::connect(&db_url, 5).await.ok()?;
         let redis = crate::cache::create_pool(&redis_url).ok()?;
         let boot = crate::config::BootConfig {

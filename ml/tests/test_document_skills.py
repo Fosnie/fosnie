@@ -1,5 +1,5 @@
-"""Beautiful-documents (Phase 1): validators, capability routing/fallback, the
-PDF HTML composition, and the zero-egress URL scan over the skill library."""
+"""Document generation: validators, capability routing/fallback, the PDF HTML
+composition, and the zero-egress URL scan over the skill library."""
 
 import re
 import zipfile
@@ -127,23 +127,38 @@ def test_skill_library_ships_phase1_skills():
     assert {"docx-report", "pdf-report", "doc-tables"} <= slugs
 
 
-# --- HTML artefacts (Phase 2) ------------------------------------------------
+# --- HTML artefacts -----------------------------------------------------------
 
 
 def test_html_engine_inlines_echarts_and_injects_csp(tmp_path):
     out = str(tmp_path / "a.html")
     content = (
         "<!DOCTYPE html><html><head><title>T</title>"
-        "<!-- pai:theme --><!-- pai:echarts --></head>"
+        "<!-- fosnie:theme --><!-- fosnie:echarts --></head>"
         "<body><div id='c'></div><script>echarts.init(document.getElementById('c'))</script></body></html>"
     )
     res = generate.generate_artefact("html", "T", content, out)
     assert res["mime"] == "text/html"
     doc = Path(res["path"]).read_text(encoding="utf-8")
-    assert "<!-- pai:echarts -->" not in doc                      # marker consumed
+    assert "<!-- fosnie:echarts -->" not in doc                   # marker consumed
     assert "Apache Software Foundation" in doc                    # echarts inlined
     assert "Content-Security-Policy" in doc and "default-src 'none'" in doc
-    assert "--pai-bg" in doc                                      # theme inlined
+    assert "--fosnie-bg" in doc                                   # theme inlined
+
+
+def test_html_engine_still_accepts_the_pre_rename_marker(tmp_path):
+    """`pai:` was the marker spelling before the rename. An artefact written then —
+    or a skill a deployment has customised — must still build."""
+    out = str(tmp_path / "legacy.html")
+    content = (
+        "<!DOCTYPE html><html><head><title>T</title>"
+        "<!-- pai:theme --><!-- pai:echarts --></head>"
+        "<body><div id='c'></div><script>echarts.init(document.getElementById('c'))</script></body></html>"
+    )
+    doc = Path(generate.generate_artefact("html", "T", content, out)["path"]).read_text(encoding="utf-8")
+    assert "<!-- pai:echarts -->" not in doc                      # marker consumed
+    assert "Apache Software Foundation" in doc                    # echarts inlined
+    assert "--fosnie-bg" in doc                                   # theme inlined
 
 
 def test_html_engine_wraps_a_bare_fragment(tmp_path):
@@ -157,7 +172,7 @@ def test_html_engine_wraps_a_bare_fragment(tmp_path):
 def test_html_engine_echarts_marker_without_vendor_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(html_engine, "_ECHARTS", Path(tmp_path / "missing.js"))
     with pytest.raises(RuntimeError):
-        html_engine.build("<html><head><!-- pai:echarts --></head><body></body></html>", "T", str(tmp_path / "x.html"))
+        html_engine.build("<html><head><!-- fosnie:echarts --></head><body></body></html>", "T", str(tmp_path / "x.html"))
 
 
 def test_validate_html_rejects_external_script(tmp_path):
@@ -204,7 +219,7 @@ def test_validate_html_accepts_inlined_echarts_page(tmp_path):
     # The real round-trip: an inlined ECharts page (with its namespace URIs and
     # license links) must pass — those are not loading-context URLs.
     out = str(tmp_path / "ok.html")
-    content = "<!DOCTYPE html><html><head><!-- pai:echarts --></head><body><div id='c'></div></body></html>"
+    content = "<!DOCTYPE html><html><head><!-- fosnie:echarts --></head><body><div id='c'></div></body></html>"
     res = generate.generate_artefact("html", "Chart", content, out)
     validators.validate_html(res["path"])  # no raise
 
@@ -271,7 +286,7 @@ def test_generate_pipeline_is_deterministic(tmp_path):
     # The generate→validate pipeline is stable across runs (the no-LLM half of the
     # eval harness). Canned good content; every run must build + validate.
     cases = [
-        ("html", "<!DOCTYPE html><html><head><!-- pai:echarts --></head><body><div id='c'></div></body></html>"),
+        ("html", "<!DOCTYPE html><html><head><!-- fosnie:echarts --></head><body><div id='c'></div></body></html>"),
         ("xlsx", '{"sheets":[{"name":"S","columns":[{"header":"A"}],"rows":[[1],["=A2"]]}]}'),
         ("pptx", '{"slides":[{"layout":"title","title":"T"},'
                  '{"layout":"bullets","title":"B","bullets":["one","two"]}]}'),

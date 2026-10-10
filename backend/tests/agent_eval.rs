@@ -8,8 +8,8 @@
 //! ~20 tasks extend `fixtures/agent_eval_tasks.json` — data only.
 //!
 //! Heavy: needs the full stack (Postgres + Redis + ML + served LLM). Gated on
-//! `PAI_E2E=1`; trials per task via `EVAL_K` (default 2). Run:
-//!   PAI_E2E=1 DATABASE_URL=… cargo test --test agent_eval -- --nocapture
+//! `FOSNIE_E2E=1`; trials per task via `EVAL_K` (default 2). Run:
+//!   FOSNIE_E2E=1 DATABASE_URL=… cargo test --test agent_eval -- --nocapture
 
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ struct Task {
 }
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 struct TaskResult {
@@ -55,12 +55,12 @@ struct TaskResult {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agent_quality_eval() {
     if !enabled() {
-        eprintln!("skipping agent_eval (set PAI_E2E=1 with the full stack up)");
+        eprintln!("skipping agent_eval (set FOSNIE_E2E=1 with the full stack up)");
         return;
     }
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
-    let redis_url = std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
-    let ml_url = std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+    let redis_url = std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+    let ml_url = std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let k: usize = std::env::var("EVAL_K").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
 
     let pg = db::connect(&db_url, 5).await.unwrap();

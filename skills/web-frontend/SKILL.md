@@ -17,7 +17,7 @@ downloads), the **dashboard** skill governs and its rules are absolute:
 
 - **No external resources** — never `<script src>`/`<link href>` to a CDN, no web-font
   URLs, no remote images. The platform inlines vendored libraries at the
-  `<!-- pai:echarts -->` / `<!-- pai:theme -->` markers; everything else is inline.
+  `<!-- fosnie:echarts -->` / `<!-- fosnie:theme -->` markers; everything else is inline.
 - **Plain CSS variables**, no Tailwind/build step — a self-contained single file that
   opens offline. (This is a deliberate platform decision for artefacts.)
 

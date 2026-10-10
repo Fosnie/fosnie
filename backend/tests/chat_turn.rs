@@ -1,6 +1,6 @@
 //! End-to-end chat turn over WebSocket. Exercises stream → cancel → persistence
 //! → audit in one fast pass (cancelling after the first token avoids waiting on
-//! a full completion). Gated on `PAI_E2E=1` and needs Postgres + Redis +
+//! a full completion). Gated on `FOSNIE_E2E=1` and needs Postgres + Redis +
 //! Keycloak + the ML service + Ollama all up.
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use fosnie_backend::{auth, cache, db, http};
 const KC_ISSUER: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 async fn mint_token() -> Option<String> {
@@ -45,13 +45,13 @@ async fn mint_token() -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ws_chat_turn_streams_then_cancels_and_persists() {
     if !enabled() {
-        eprintln!("skipping ws_chat_turn (set PAI_E2E=1 with full stack up)");
+        eprintln!("skipping ws_chat_turn (set FOSNIE_E2E=1 with full stack up)");
         return;
     }
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
-    let ml_url = std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+    let ml_url = std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let token = mint_token().await.expect("keycloak token");
 
     // Build state + router with auth + ws layers, serve on an ephemeral port.

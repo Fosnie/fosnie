@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# PAI Platform SBOM generator. Emits a CycloneDX software bill of materials per
+# Fosnie SBOM generator. Emits a CycloneDX software bill of materials per
 # ecosystem (Rust backend / React frontend / Python ML) for a release, into an
 # output directory, plus a SHA-256 manifest of the produced files. Part of the
 # signed-release supply-chain story (signed tarball + SHA-256 manifest + SBOM per release).

@@ -20,10 +20,10 @@ The page must work with **no network**. Therefore:
 - **Never** point `<script src>` or `<link href>` at an external URL, and never use
   `@import`, web-font URLs, or external `<img>` sources. A page that references a CDN
   is **rejected** by the validator.
-- For charts, write the marker `<!-- pai:echarts -->` once — the platform inlines the
+- For charts, write the marker `<!-- fosnie:echarts -->` once — the platform inlines the
   vendored Apache ECharts build there. You never paste library code.
-- For the house styling, write `<!-- pai:theme -->` in `<head>` — the platform inlines
-  the theme variables there. Use the `.pai-*` classes below.
+- For the house styling, write `<!-- fosnie:theme -->` in `<head>` — the platform inlines
+  the theme variables there. Use the `.fosnie-*` classes below.
 - Images: omit, or embed as a `data:` URI only.
 - A strict Content-Security-Policy is injected automatically; you do not add one.
 
@@ -35,34 +35,34 @@ The page must work with **no network**. Therefore:
 <head>
   <meta charset="utf-8">
   <title>Quarterly Risk Review</title>
-  <!-- pai:theme -->
-  <!-- pai:echarts -->
+  <!-- fosnie:theme -->
+  <!-- fosnie:echarts -->
 </head>
 <body>
-  <main class="pai-wrap">
-    <header class="pai-header">
+  <main class="fosnie-wrap">
+    <header class="fosnie-header">
       <h1>Quarterly Risk Review</h1>
-      <div class="pai-sub">Q2 2026 · prepared for the Board</div>
+      <div class="fosnie-sub">Q2 2026 · prepared for the Board</div>
     </header>
 
-    <section class="pai-kpis">
-      <div class="pai-kpi"><div class="pai-kpi-val">£4.2m</div><div class="pai-kpi-label">Exposure</div></div>
-      <div class="pai-kpi"><div class="pai-kpi-val">12</div><div class="pai-kpi-label">Open matters</div></div>
-      <div class="pai-kpi"><div class="pai-kpi-val">3</div><div class="pai-kpi-label">High risk</div></div>
+    <section class="fosnie-kpis">
+      <div class="fosnie-kpi"><div class="fosnie-kpi-val">£4.2m</div><div class="fosnie-kpi-label">Exposure</div></div>
+      <div class="fosnie-kpi"><div class="fosnie-kpi-val">12</div><div class="fosnie-kpi-label">Open matters</div></div>
+      <div class="fosnie-kpi"><div class="fosnie-kpi-val">3</div><div class="fosnie-kpi-label">High risk</div></div>
     </section>
 
-    <section class="pai-grid">
-      <div class="pai-card pai-half">
+    <section class="fosnie-grid">
+      <div class="fosnie-card fosnie-half">
         <h2>Exposure by category</h2>
-        <div class="pai-chart" id="chart-exposure"></div>
+        <div class="fosnie-chart" id="chart-exposure"></div>
       </div>
-      <div class="pai-card pai-half">
+      <div class="fosnie-card fosnie-half">
         <h2>Trend</h2>
-        <div class="pai-chart" id="chart-trend"></div>
+        <div class="fosnie-chart" id="chart-trend"></div>
       </div>
     </section>
 
-    <footer class="pai-sources">
+    <footer class="fosnie-sources">
       Sources
       <ol><li>Internal risk register, May 2026 [1]</li></ol>
     </footer>
@@ -76,7 +76,7 @@ The page must work with **no network**. Therefore:
   <script>
     const DATA = JSON.parse(document.getElementById('data').textContent);
     const css = getComputedStyle(document.documentElement);
-    const palette = ['--pai-c1','--pai-c2','--pai-c3','--pai-c4','--pai-c5','--pai-c6']
+    const palette = ['--fosnie-c1','--fosnie-c2','--fosnie-c3','--fosnie-c4','--fosnie-c5','--fosnie-c6']
       .map(v => css.getPropertyValue(v).trim() || '#2f6db5');
 
     echarts.init(document.getElementById('chart-exposure')).setOption({
@@ -101,16 +101,16 @@ The page must work with **no network**. Therefore:
 - **Data lives in a JSON island** (`<script type="application/json">`), parsed once.
   Keep data and presentation separate; the island must be valid JSON (it is checked).
 - **Charts**: one `echarts.init(el).setOption({…})` per chart. Pull colours from the
-  theme variables (`--pai-c1…--pai-c6`) so the page matches the house palette. See
+  theme variables (`--fosnie-c1…--fosnie-c6`) so the page matches the house palette. See
   `references/echarts-snippets.md` for ready option blocks (bar, line, pie, gauge,
   stacked, treemap).
 - **Archetypes**: pick a layout that fits the content — *executive summary*,
   *comparison*, or *timeline infographic*. See `references/archetypes.md`.
 - **Carry citations**: keep the source numbers `[1]`, `[2]` from the underlying
-  material and list them in the `.pai-sources` footer.
-- Use the `.pai-*` classes (`pai-wrap`, `pai-header`, `pai-kpis`/`pai-kpi`,
-  `pai-grid`, `pai-card`/`pai-card.pai-half`, `pai-chart`, `pai-table`,
-  `pai-sources`, `pai-badge good|warn|bad`). Add small extra CSS inline if needed.
+  material and list them in the `.fosnie-sources` footer.
+- Use the `.fosnie-*` classes (`fosnie-wrap`, `fosnie-header`, `fosnie-kpis`/`fosnie-kpi`,
+  `fosnie-grid`, `fosnie-card`/`fosnie-card.fosnie-half`, `fosnie-chart`, `fosnie-table`,
+  `fosnie-sources`, `fosnie-badge good|warn|bad`). Add small extra CSS inline if needed.
 
 ## Why this matters
 

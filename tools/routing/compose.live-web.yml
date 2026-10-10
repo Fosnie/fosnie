@@ -1,0 +1,17 @@
+# Optional, disposable live-search dependency. Never started by the test queue.
+services:
+  searxng:
+    image: ${FOSNIE_ROUTING_SEARXNG_IMAGE:-searxng/searxng:latest}
+    profiles: [live-web]
+    ports:
+      - "127.0.0.1:18888:8080"
+    environment:
+      SEARXNG_BASE_URL: "http://127.0.0.1:18888/"
+    volumes:
+      - ./searxng-pilot.yml:/etc/searxng/settings.yml:ro
+    tmpfs:
+      - /tmp:size=64m
+      - /var/cache/searxng:size=64m
+    mem_limit: 512m
+    cpus: 1
+    restart: "no"

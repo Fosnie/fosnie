@@ -27,7 +27,7 @@ from .bank import Bank
 from .budgets import ResearchBudgets
 from .outline import Outline
 
-_log = logging.getLogger("pai.research.writer")
+_log = logging.getLogger("fosnie.research.writer")
 
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+.*$", re.MULTILINE)
 

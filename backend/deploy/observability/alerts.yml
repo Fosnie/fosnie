@@ -1,26 +1,26 @@
-# PAI Platform — Prometheus alerting rules (the golden signals + platform specifics).
+# Fosnie — Prometheus alerting rules (the golden signals + platform specifics).
 # Load via prometheus.yml `rule_files:`. Tune thresholds to the deployment's SLOs.
-# `job` labels come from the scrape config (fosnie-backend / pai-ml).
+# `job` labels come from the scrape config (fosnie-backend / fosnie-ml).
 
 groups:
   - name: fosnie
     rules:
       # --- Availability ---------------------------------------------------------
-      - alert: PaiBackendDown
+      - alert: FosnieBackendDown
         expr: up{job="fosnie-backend"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:
           summary: "fosnie-backend is not scrapeable (process down or /metrics unreachable)"
-      - alert: PaiMlDown
-        expr: up{job="pai-ml"} == 0
+      - alert: FosnieMlDown
+        expr: up{job="fosnie-ml"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:
-          summary: "pai-ml is not scrapeable (process down)"
+          summary: "fosnie-ml is not scrapeable (process down)"
 
       # --- Errors & latency (golden signals) ------------------------------------
-      - alert: PaiHighErrorRate
+      - alert: FosnieHighErrorRate
         expr: |
           sum(rate(http_requests_total{job="fosnie-backend",status=~"5.."}[5m]))
             / clamp_min(sum(rate(http_requests_total{job="fosnie-backend"}[5m])), 1) > 0.05
@@ -28,7 +28,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: ">5% of backend requests are 5xx over the last 5m"
-      - alert: PaiHighLatencyP95
+      - alert: FosnieHighLatencyP95
         expr: |
           histogram_quantile(0.95,
             sum by (le) (rate(http_request_duration_seconds_bucket{job="fosnie-backend"}[5m]))) > 2
@@ -38,7 +38,7 @@ groups:
           summary: "Backend p95 request latency >2s (10m)"
 
       # --- LLM / inference ------------------------------------------------------
-      - alert: PaiLlmSlowTtft
+      - alert: FosnieLlmSlowTtft
         expr: histogram_quantile(0.95, sum by (le) (rate(llm_ttft_seconds_bucket[5m]))) > 5
         for: 10m
         labels: { severity: warning }
@@ -49,7 +49,7 @@ groups:
       # What the CALLER heard, not what was handed to the line: the two differ by the
       # pacing, the socket and whatever the carrier had buffered, and only the first is a
       # promise anybody made.
-      - alert: PaiVoiceReplySlow
+      - alert: FosnieVoiceReplySlow
         expr: |
           histogram_quantile(0.95,
             sum by (le) (rate(voice_reply_heard_seconds_bucket{transport="phone"}[10m]))) > 0.8
@@ -60,13 +60,13 @@ groups:
       # A turn that had to be ended by the silence timer because the turn detector never
       # agreed the speaker had finished. The fallback worked, which is why this is a warning
       # and not an outage, but a detector that has stopped agreeing is a fault.
-      - alert: PaiVoiceTurnForced
+      - alert: FosnieVoiceTurnForced
         expr: increase(voice_turn_forced_total[15m]) > 0
         for: 5m
         labels: { severity: warning }
         annotations:
           summary: "Turn detector is not agreeing that speakers have finished — turns are ending on silence"
-      - alert: PaiVoiceTurnDetectErrors
+      - alert: FosnieVoiceTurnDetectErrors
         expr: increase(voice_turn_detect_total{outcome="error"}[10m]) > 0
         for: 5m
         labels: { severity: warning }
@@ -75,7 +75,7 @@ groups:
       # Not a failure: the carrier does not report when it has played our audio, so the
       # figures for what the caller actually heard are absent and the reply-latency alert
       # above has nothing to fire on.
-      - alert: PaiTelephonyMarksUnsupported
+      - alert: FosnieTelephonyMarksUnsupported
         expr: increase(telephony_mark_timeout_total[1h]) > 0
         for: 15m
         labels: { severity: info }
@@ -83,13 +83,13 @@ groups:
           summary: "Carrier does not confirm playback — caller-side reply latency is unmeasurable"
 
       # --- Durable task queue ---------------------------------------------------
-      - alert: PaiTaskDeadLetter
+      - alert: FosnieTaskDeadLetter
         expr: task_queue_depth{status="dead_letter"} > 0
         for: 1m
         labels: { severity: warning }
         annotations:
           summary: "{{ $value }} durable task(s) dead-lettered — inspect the tasks table"
-      - alert: PaiTaskBacklog
+      - alert: FosnieTaskBacklog
         expr: task_queue_depth{status="queued"} > 100
         for: 10m
         labels: { severity: warning }
@@ -97,19 +97,19 @@ groups:
           summary: "Task queue backlog: >100 queued for 10m (scheduler keeping up?)"
 
       # --- Datastores -----------------------------------------------------------
-      - alert: PaiDbPoolExhausted
+      - alert: FosnieDbPoolExhausted
         expr: db_pool_connections{state="idle"} == 0 and db_pool_connections{state="size"} > 0
         for: 5m
         labels: { severity: warning }
         annotations:
           summary: "Postgres connection pool has no idle connections (5m)"
-      - alert: PaiDbSlow
+      - alert: FosnieDbSlow
         expr: db_ping_seconds > 0.5
         for: 5m
         labels: { severity: warning }
         annotations:
           summary: "Postgres ping >500ms (5m) — datastore under load?"
-      - alert: PaiRedisSlow
+      - alert: FosnieRedisSlow
         expr: redis_ping_seconds > 0.5
         for: 5m
         labels: { severity: warning }
@@ -117,7 +117,7 @@ groups:
           summary: "Redis ping >500ms (5m)"
 
       # --- Client (SPA) ---------------------------------------------------------
-      - alert: PaiClientErrorSpike
+      - alert: FosnieClientErrorSpike
         expr: increase(client_errors_total[10m]) > 25
         for: 0m
         labels: { severity: warning }
@@ -125,14 +125,14 @@ groups:
           summary: ">25 client-side errors reported in 10m — a broken SPA build/route? (POST /api/telemetry)"
 
       # --- Security / governance ------------------------------------------------
-      - alert: PaiAuditAnomalySpike
+      - alert: FosnieAuditAnomalySpike
         expr: increase(audit_anomaly_total[15m]) > 10
         labels: { severity: warning }
         annotations:
           summary: ">10 audit anomalies in 15m — review GET /api/admin/anomalies"
 
       # --- Saturation -----------------------------------------------------------
-      - alert: PaiHighMemory
+      - alert: FosnieHighMemory
         expr: process_resident_memory_bytes{job="fosnie-backend"} > 4e9
         for: 15m
         labels: { severity: warning }

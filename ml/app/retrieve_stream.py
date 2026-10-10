@@ -30,7 +30,7 @@ from typing import AsyncIterator
 
 from . import retrieve
 
-_log = logging.getLogger("pai-ml.retrieve.stream")
+_log = logging.getLogger("fosnie-ml.retrieve.stream")
 
 _QUEUE_MAX = 256
 _DONE = object()  # queue sentinel: runner finished, drain and stop

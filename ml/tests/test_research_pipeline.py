@@ -311,8 +311,8 @@ def test_hybrid_merges_both_namespaces_segregated(monkeypatch):
 
 
 def test_verify_off_is_byte_identical_and_no_verification(monkeypatch):
-    # The Phase-3 regression guard: with verify=False (the default) the report is
-    # exactly what Phase 2 produced and `verification` is None.
+    # The regression guard on the verifier: with verify=False (the default) the
+    # report is byte-identical to the unverified write and `verification` is None.
     _mock_stack(monkeypatch, writer_cites=["W3", "W1"])
     base = _run(rp.run("the question", "freeform"))
     assert base["verification"] is None, "unverified runs carry no verification"

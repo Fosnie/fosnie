@@ -21,6 +21,9 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useDocumentJobCapabilities } from "@/api/documentJobs";
+import { DocumentVerificationJob } from "@/components/DocumentVerificationJob";
 
 import type { Artefact } from "@/api/client";
 import { railRightVariants, scrimVariants, spring } from "@/app/motion";
@@ -53,6 +56,13 @@ export function ArtefactPanel({
   onInteract: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useSearchParams();
+  const routing = useDocumentJobCapabilities(groundednessOn);
+  const storedJob = search.get("artefactVerification")?.split(":");
+  const routedJob = storedJob?.length === 2 && storedJob[0] === artefact?.id ? storedJob[1] : null;
+  const routedUi = !!routedJob || !!routing.data?.enabled;
+  const legacyVerify = routing.isSuccess && !routing.isError && !routing.data.enabled && !routedJob;
+  const [, setRoutedResult] = useState<string | null>(null);
   const [view, setView] = useState<"preview" | "code">("preview");
   const panelRef = useRef<HTMLDivElement | null>(null);
   const headRef = useRef<HTMLHeadingElement | null>(null);
@@ -157,7 +167,7 @@ export function ArtefactPanel({
               )}
             </>
           )}
-          {groundednessOn && artefact.kind === "md" && (
+          {groundednessOn && legacyVerify && artefact.kind === "md" && (
             <button
               className="btn btn-line sm"
               title="Verify the draft against your sources"
@@ -187,6 +197,12 @@ export function ArtefactPanel({
       )}
 
       <div className="ap-body">
+        {artefact && (groundednessOn || routedJob) && routedUi && ["md", "docx", "pdf"].includes(artefact.kind) &&
+          <DocumentVerificationJob key={`${artefact.id}:${routedJob ?? "new"}`} documentId={artefact.id} targetType="draft" jobId={routedJob}
+            capabilities={groundednessOn && !routing.isError ? routing.data : undefined} docx={false} repairEnabled={false} disabled={false}
+            onResult={setRoutedResult} onJob={job => setSearch(prev => { const next = new URLSearchParams(prev); next.set("artefactVerification", `${artefact.id}:${job}`); return next; })} />}
+        {groundednessOn && routing.isError && <p role="alert" className="ap-pad">Verification options are unavailable.
+          <button className="btn btn-ghost" onClick={() => void routing.refetch()}>Retry</button></p>}
         <ArtefactBody
           artefact={artefact}
           loading={loading}
@@ -196,7 +212,7 @@ export function ArtefactPanel({
           onError={setError}
           onDownload={() => artefact && actions.download(artefact)}
         />
-        {verifyRun && verifyRun !== "starting" && (
+        {!routedJob && verifyRun && verifyRun !== "starting" && (
           <div className="ap-pad">
             <VerificationReport runId={verifyRun} />
           </div>

@@ -154,6 +154,12 @@ describe("the desktop transport", () => {
 
     transport.send('{"version":1,"type":"ping"}');
     expect(wsSend).toHaveBeenCalledWith('{"version":1,"type":"ping"}');
+    // The native bridge forwards new routing frames and unknown future fields
+    // verbatim; it must not turn explicit Auto into a legacy model request.
+    const routed=JSON.stringify({version:1,type:"chat.routed.send",request:{content:"remote",model_selection:{mode:"auto",objective:"economy"},options:{local_only:true,effort:"high"}}});
+    transport.send(routed);expect(wsSend).toHaveBeenLastCalledWith(routed);
+    const actual=JSON.stringify({version:1,type:"chat.completed",message_id:"m",routing:{actual:{model:"selected",effort:"high"}},future_field:{v:2}});
+    handlers["ws:frame"](actual);expect(frames.at(-1)).toBe(actual);
   });
 
   it("stops delivering to a window that has stopped listening", async () => {

@@ -1,7 +1,7 @@
-# PAI Platform backend — boot config, PROFILE B: macOS Mac Studio + llama.cpp.
+# Fosnie backend — boot config, PROFILE B: macOS Mac Studio + llama.cpp.
 # Same binary as Linux (built `--target aarch64-apple-darwin`); ONLY config differs.
-# Copy to /etc/pai/config.macos.toml; selected via PAI_CONFIG_FILE
-# (EnvironmentVariables in launchd/com.pai.backend.plist).
+# Copy to /etc/fosnie/config.macos.toml; selected via FOSNIE_CONFIG_FILE
+# (EnvironmentVariables in launchd/com.fosnie.backend.plist).
 
 database_url = "postgres://pai:pai@localhost:5432/pai"
 redis_url = "redis://localhost:6379"
@@ -14,12 +14,12 @@ max_context_tokens = 0
 [server]
 host = "127.0.0.1"
 port = 8080
-static_dir = "/opt/pai/frontend/dist"
-public_url = "https://pai.local"
+static_dir = "/opt/fosnie/frontend/dist"
+public_url = "https://fosnie.local"
 # WebSocket Origin allow-list (anti cross-site WS hijacking). Empty/unset ⇒ the
 # origin of `public_url` is the sole allowed origin (correct when the SPA is
 # served same-origin). Set explicitly only if the SPA is served from a different
-# origin: allowed_ws_origins = ["https://pai.local"]
+# origin: allowed_ws_origins = ["https://fosnie.local"]
 
 [ml]
 base_url = "http://127.0.0.1:8090"
@@ -37,13 +37,13 @@ voice = true
 voice_live = false
 
 [storage]
-branding_dir = "/opt/pai/data/branding"
-artefacts_dir = "/opt/pai/data/artefacts"
-documents_dir = "/opt/pai/data/documents"
-workspace_dir = "/opt/pai/data/workspace"
-skills_dir = "/opt/pai/data/skills"
-prompts_dir = "/opt/pai/data/prompts"
-exports_dir = "/opt/pai/data/exports"
+branding_dir = "/opt/fosnie/data/branding"
+artefacts_dir = "/opt/fosnie/data/artefacts"
+documents_dir = "/opt/fosnie/data/documents"
+workspace_dir = "/opt/fosnie/data/workspace"
+skills_dir = "/opt/fosnie/data/skills"
+prompts_dir = "/opt/fosnie/data/prompts"
+exports_dir = "/opt/fosnie/data/exports"
 
 [keycloak]
 url = "https://auth.local"

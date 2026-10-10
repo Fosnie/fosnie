@@ -51,17 +51,21 @@ export interface ReasoningSpec {
 }
 
 export type ClientFrame =
+  | { type: "chat.routed.send"; request: { chat_id?: string | null; project_id?: string | null; agent_id?: string | null; content: string;
+      model_selection?: import("@/api/workflowRouting").WorkflowSelection; options?: import("@/api/chatRouting").RoutingOptions } }
   | { type: "chat.send"; chat_id?: string | null; content: string; agent_id?: string | null; project_id?: string | null; attachment_ids?: string[]; thinking?: string | null; reasoning?: ReasoningSpec | null; llm_provider_id?: string | null; workspace_id?: string | null }
   | { type: "chat.cancel"; turn_id: string }
   // Regenerate an answer in place (also drives edit + restart-from-here). The
   // anchoring user message is reused; every message at/after the deletion point
   // is dropped. `content` set on a user anchor edits it before re-running.
   | { type: "chat.regenerate"; chat_id: string; from_message_id: string; content?: string | null }
+  | { type: "chat.routed.regenerate"; chat_id: string; from_message_id: string }
   | { type: "group.send"; chat_id: string; content: string; mentions?: unknown }
   | { type: "auth"; token: string }
   // Live / streaming voice. PCM16 LE 16 kHz mono, base64,
   // 20–40 ms per `voice.audio.chunk`. The turn fires server-side; no `chat.send`.
   | { type: "voice.stream.start"; chat_id?: string | null; project_id?: string | null; agent_id?: string | null; mode?: string; aec?: boolean }
+  | { type: "voice.routed.start"; chat_id?: string | null; project_id?: string | null; agent_id?: string | null; model_selection: import("@/api/workflowRouting").WorkflowSelection; aec?: boolean }
   | { type: "voice.audio.chunk"; audio_base64: string; seq: number }
   | { type: "voice.barge_in" }
   | { type: "voice.stream.end" }
@@ -82,6 +86,7 @@ export type ServerFrame =
   | { type: "hello"; socket_id: string; user_id: string; resume_token: string; server_version?: string; features?: string[] }
   | { type: "chat.created"; chat_id: string }
   | { type: "chat.started"; turn_id: string; chat_id: string; message_id: string }
+  | { type: "chat.routing_started"; turn_id: string; chat_id: string }
   | { type: "chat.token"; turn_id: string; delta: string }
   | { type: "chat.reasoning"; turn_id: string; delta: string }
   | { type: "chat.completed"; turn_id: string; chat_id: string; message_id: string; reasoning_tokens?: number }
@@ -90,6 +95,7 @@ export type ServerFrame =
   | { type: "chat.message_posted"; chat_id: string; message_id: string; citations: Citation[] }
   | { type: "chat.message_started"; chat_id: string; message_id: string; agent?: string }
   | { type: "chat.message_token"; chat_id: string; message_id: string; delta: string }
+  | { type: "chat.routing_failure"; turn_id:string; chat_id?:string|null; message_id?:string|null; failure:unknown }
   | { type: "chat.error"; turn_id: string | null; message: string; chat_id?: string }
   | { type: "chat.tool"; turn_id: string; name: string; phase: string; detail?: string }
   | { type: "web_search.progress"; chat_id: string; turn_id: string; detail: string }

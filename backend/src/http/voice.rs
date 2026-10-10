@@ -68,7 +68,7 @@ pub async fn transcribe(
         return Err(AppError::Validation("empty audio".into()));
     }
     let mime = q.mime.as_deref().unwrap_or("application/octet-stream");
-    let text = crate::ml::transcribe(&state.http, &state.boot.ml.base_url, &body, mime, crate::ml::provider_overrides(&state, ctx.user_id).await).await?;
+    let text = crate::ml::transcribe(&state.http, &state.boot.ml.base_url, &body, mime, crate::ml::provider_overrides(&state, ctx.user_id).await?).await?;
     audit_voice(&state, &ctx, "voice.transcribed", body.len()).await;
     Ok(Json(serde_json::json!({ "text": text })))
 }
@@ -92,7 +92,7 @@ pub async fn speak(
         return Err(AppError::Validation("empty text".into()));
     }
     let (audio, mime) =
-        crate::ml::synthesize(&state.http, &state.boot.ml.base_url, &body.text, body.voice.as_deref(), crate::ml::provider_overrides(&state, ctx.user_id).await)
+        crate::ml::synthesize(&state.http, &state.boot.ml.base_url, &body.text, body.voice.as_deref(), crate::ml::provider_overrides(&state, ctx.user_id).await?)
             .await?;
     audit_voice(&state, &ctx, "voice.synthesized", audio.len()).await;
     Ok((

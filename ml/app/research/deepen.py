@@ -46,7 +46,7 @@ from .bank import Bank, DocSource
 from .budgets import ResearchBudgets, est_tokens
 from .outline import Outline, OutlineSection
 
-_log = logging.getLogger("pai.research.deepen")
+_log = logging.getLogger("fosnie.research.deepen")
 
 # Slack added to the stage's own wall-clock slice for the caller's safety net. The
 # per-dig timeouts below already bound each provider call to the remaining budget;

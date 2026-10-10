@@ -58,7 +58,7 @@ fn ctx(user_id: Uuid) -> AuthContext {
 
 async fn harness(ml_base_url: &str) -> Option<(sqlx::PgPool, AppState)> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
-    let redis_url = std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+    let redis_url = std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     // Skipping is for "no database configured". A database that IS configured but
     // cannot be reached is an environment fault, and quietly reporting a pass for it
     // is how an untested change looks tested.

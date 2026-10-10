@@ -48,7 +48,7 @@ import re
 
 import torch
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
@@ -71,7 +71,7 @@ _FACTCG_TEMPLATE = (
     'that "{text_b}"?\n\nOPTIONS:\n- Yes\n- No\nI think the answer is '
 )
 
-app = FastAPI(title="PAI groundedness verifier", version="1.2")
+app = FastAPI(title="Fosnie groundedness verifier", version="1.2")
 
 # Loaded once at boot. transformer method = token-level span highlighting.
 _detector = HallucinationDetector(method="transformer", model_path=MODEL)
@@ -143,6 +143,7 @@ def _hhem_scores(pairs: list[tuple[str, str]]) -> list[float]:
 
 
 class VerifyRequest(BaseModel):
+    routing_model: str | None = None
     context: list[str]  # the retrieved evidence the answer must rest on
     question: str
     answer: str
@@ -213,6 +214,7 @@ class Claim(BaseModel):
 
 
 class VerifyClaimsRequest(BaseModel):
+    routing_model: str | None = None
     claims: list[Claim]
     hhem_filter: bool = False  # HHEM second opinion: rescue claims HHEM judges supported
 
@@ -246,6 +248,8 @@ def verify_claims(req: VerifyClaimsRequest) -> dict:
     """Per-claim verdict for Mode B (Verify draft). FactCG decides supported vs
     not; for a not-supported claim the NLI cross-encoder splits contradicted vs
     not_mentioned. A claim with no bound evidence cannot be supported."""
+    if req.routing_model is not None and req.routing_model != FACTCG_MODEL:
+        raise HTTPException(status_code=409, detail="routed verification model is unavailable")
     verdicts = []
     for c in req.claims:
         evidence = (c.evidence or "").strip()
@@ -266,13 +270,15 @@ def verify_claims(req: VerifyClaimsRequest) -> dict:
             for i, sc in zip(idx, scores):
                 if sc >= HHEM_KEEP:
                     verdicts[i] = {"verdict": "supported", "score": sc}
-    return {"verdicts": verdicts}
+    return {"verdicts": verdicts, "model": FACTCG_MODEL}
 
 
 @app.post("/v1/verify")
 def verify(req: VerifyRequest) -> dict:
     """Return clean, whole-word spans of `answer` unsupported by `context`, each
     labelled contradicted vs not_mentioned. Empty list = fully grounded."""
+    if req.routing_model is not None and req.routing_model != MODEL:
+        raise HTTPException(status_code=409, detail="routed verification model is unavailable")
     raw = _detector.predict(
         context=req.context,
         question=req.question,
@@ -289,7 +295,7 @@ def verify(req: VerifyRequest) -> dict:
     if req.hhem_filter and spans:
         scores = _hhem_scores([(premise, s["text"]) for s in spans])
         spans = [s for s, sc in zip(spans, scores) if sc < HHEM_KEEP]
-    return {"spans": spans}
+    return {"spans": spans, "model": MODEL}
 
 
 if __name__ == "__main__":

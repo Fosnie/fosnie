@@ -1,5 +1,5 @@
 """Voice STT/TTS availability gating (no audio engine needed). The real
-round-trip is the gated live check (PAI_VOICE=1). Run: `uv run pytest
+round-trip is the gated live check (FOSNIE_VOICE=1). Run: `uv run pytest
 tests/test_voice.py` from ml/."""
 
 import pathlib

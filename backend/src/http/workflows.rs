@@ -26,6 +26,25 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+pub async fn routing_capabilities(State(state):State<AppState>,AuthUser(_):AuthUser)->Result<Json<Value>> {
+    let enabled=crate::config::runtime::get(&state.pg,"routing.workflow_jobs_enabled").await?
+        .is_some_and(|v|matches!(v.value_type,crate::config::runtime::ConfigValueType::Bool) && v.value=="true");
+    Ok(Json(serde_json::json!({"schema_version":1,"enabled":enabled,"selection_modes":["default","manual","auto"],
+        "scope":"agent_delivery_v1","custom_agents":true,"read_tools":["web_search","read_document"],
+        "group_delivery":true,"max_recipients":128,"max_libraries":32,"max_events":32,
+        "event_placeholders":["filename","mime","kb_id","doc_id"],"automatic_replay":false})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingEnabled {pub enabled:bool}
+pub async fn set_routing_enabled(State(state):State<AppState>,AuthUser(actor):AuthUser,Json(body):Json<RoutingEnabled>)->Result<Json<Value>> {
+    if actor.mfa_enroll_only || actor.break_glass {return Err(crate::model_routing::RoutingError::Forbidden.into());}
+    state.rbac.require_permission(&state.pg,&actor,crate::auth::permissions::PROVIDERS_MANAGE).await?;
+    crate::config::runtime::set(&state.pg,"routing.workflow_jobs_enabled",if body.enabled {"true"} else {"false"},
+        crate::config::runtime::ConfigValueType::Bool,"global",actor.user_id,actor.role.as_str()).await?;
+    Ok(Json(serde_json::json!({"enabled":body.enabled})))
+}
+
 use crate::audit::{self, AuditEvent};
 use crate::auth::keycloak::AuthUser;
 use crate::auth::{AuthContext, PlatformRole};
@@ -145,6 +164,7 @@ fn validate_action(action_type: &str, cfg: &Value) -> Result<()> {
             }
         }
         "agent_run" => {
+            crate::workflows::routing::validate(cfg)?;
             if cfg.get("prompt").and_then(|v| v.as_str()).unwrap_or("").trim().is_empty() {
                 return Err(AppError::Validation("agent_run needs action_config.prompt".into()));
             }
@@ -356,6 +376,10 @@ pub async fn update_workflow(
         validate_bounds(c, body.max_runs_per_window.unwrap_or(60))?;
     } else if let Some(m) = body.max_runs_per_window {
         validate_bounds(0, m)?;
+    }
+    if let Some(cfg)=&body.action_config {
+        let kind:String=sqlx::query_scalar("SELECT action_type FROM workflows WHERE id=$1").bind(id).fetch_one(&state.pg).await?;
+        validate_action(&kind,cfg)?;
     }
     // COALESCE: absent field = unchanged. `version` bumps on every edit.
     sqlx::query!(

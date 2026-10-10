@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fast redeploy loop for the PAI test stack.
+# Fast redeploy loop for the Fosnie test stack.
 #
 #   Deploy → click around → find a bug → Claude Code fixes the code → ./redeploy.sh
 #
@@ -22,15 +22,15 @@ COMPOSE=(docker compose --env-file .env -f docker-compose.test.yml)
 TARGET="${1:-platform}"
 
 case "$TARGET" in
-  platform) SERVICES=(fosnie-backend pai-ml) ;;
+  platform) SERVICES=(fosnie-backend fosnie-ml) ;;
   backend)  SERVICES=(fosnie-backend) ;;
-  ml)       SERVICES=(pai-ml) ;;
+  ml)       SERVICES=(fosnie-ml) ;;
   all)
     echo "▶ Full rebuild incl. inference (this unloads + reloads the models)…"
     "${COMPOSE[@]}" up -d --build
     exit $? ;;
   logs)
-    exec "${COMPOSE[@]}" logs -f --tail=120 fosnie-backend pai-ml ;;
+    exec "${COMPOSE[@]}" logs -f --tail=120 fosnie-backend fosnie-ml ;;
   down)
     exec "${COMPOSE[@]}" down ;;
   *)

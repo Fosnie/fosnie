@@ -27,9 +27,11 @@
 //! bytes.
 
 mod frames;
+mod model_selection;
 mod reasoning;
 
 pub use frames::{
     CitationOut, ClientFrame, EditChangeOut, GroundSpanOut, PROTOCOL_VERSION, ServerFrame, StepOut,
 };
 pub use reasoning::ReasoningSpec;
+pub use model_selection::{ModelSelection, RoutingObjective, RoutingOptions, RoutedChatRequest};

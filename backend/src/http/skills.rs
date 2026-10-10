@@ -391,7 +391,7 @@ pub async fn test_skill(
         reasoning_effort: Some("minimal".into()),
         ..Default::default()
     };
-    let step = crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(&state, ctx.user_id).await).await?;
+    let step = crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(&state, ctx.user_id).await?).await?;
     if step.content.trim().is_empty() {
         // A blank box with no message is worse than an explicit failure.
         return Err(AppError::Validation(

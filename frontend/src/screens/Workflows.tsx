@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { confirmDialog, toast } from "@/components/dialogs";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -37,6 +37,8 @@ import { Icon } from "@/components/icons";
 import { Dropdown } from "@/components/Dropdown";
 import { EditorShell, PanelHead, Switch } from "@/components/editor";
 import { useBusy } from "@/components/useBusy";
+import { useWorkflowRouting, workflowSelectionLabel } from "@/api/workflowRouting";
+import { WorkflowModelSelection } from "@/components/WorkflowModelSelection";
 
 // The trigger catalogue is fetched from `GET /api/workflows/triggers` — the single
 // backend source (event constants + `ALLOWED_TRIGGERS`), so the dropdown never
@@ -183,10 +185,17 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
   const [coalesce, setCoalesce] = useState(0);
   const [maxRuns, setMaxRuns] = useState(60);
   const [showErrors, setShowErrors] = useState(false);
+  const [modelSelection, setModelSelection] = useState<unknown>(undefined);
+  const [selectionChanged, setSelectionChanged] = useState(false);
+  const hydrated = useRef<string | undefined>(undefined);
+  const saving = useRef(false);
+  const routing = useWorkflowRouting(modelSelection, actionType === "agent_run", detail.data?.owner_id);
+  const selectionError = actionType === "agent_run" && selectionChanged ? routing.problem : undefined;
 
   useEffect(() => {
     const w = detail.data;
-    if (!id || !w) return;
+    if (!id || !w || hydrated.current === id) return;
+    hydrated.current = id;
     setName(w.name); setDescription(w.description ?? "");
     setTrigger(w.trigger_event_type); setProjectId(w.project_id ?? ""); setOnSystem(w.trigger_on_system_events);
     const c = parseCondition(w.condition); setCondMode(c.mode); setCondRows(c.rows); setCondUnsupported(c.unsupported);
@@ -198,6 +207,7 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
     setAgentId(w.agent_id ?? "");
     setPrompt((cfg.prompt as string) ?? "");
     setKbIds(Array.isArray(cfg.kb_ids) ? (cfg.kb_ids as string[]) : []);
+    setModelSelection(cfg.model_selection); setSelectionChanged(false);
   }, [id, detail.data]);
 
   // For a new workflow, default the trigger to the first emitted catalogue entry
@@ -219,6 +229,8 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
     if (!name.trim()) m.push("Name");
     if (actionType === "agent_run") {
       if (!prompt.trim()) m.push("Prompt");
+      if (selectionError) m.push("Model selection");
+      if (modelSelection !== undefined && new TextEncoder().encode(prompt.trim()).length > 4096) m.push("Prompt (maximum 4096 bytes with routing)");
     } else if (kind === "post_message" && !groupChatId && !projectId) {
       m.push("Target chat (or set a project scope)");
     }
@@ -231,7 +243,9 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
 
   function actionConfig(): Record<string, unknown> {
     if (actionType === "agent_run") {
-      const cfg: Record<string, unknown> = { prompt: prompt.trim() };
+      const cfg: Record<string, unknown> = { ...w?.action_config, prompt: prompt.trim() };
+      delete cfg.model_selection; delete cfg.kb_ids; delete cfg.deliver_group_chat_id;
+      if (modelSelection !== undefined) cfg.model_selection = modelSelection;
       if (kbIds.length) cfg.kb_ids = kbIds;
       if (groupChatId) cfg.deliver_group_chat_id = groupChatId;
       return cfg;
@@ -245,6 +259,7 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
   }
 
   async function save() {
+    if (saving.current) return;
     const miss = missing();
     if (miss.length) {
       setShowErrors(true);
@@ -252,7 +267,9 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
       return;
     }
     setShowErrors(false);
-    const condition = buildCondition(condMode, condRows);
+    const condition = condUnsupported ? w?.condition ?? null : buildCondition(condMode, condRows);
+    saving.current = true;
+    try {
     if (isNew) {
       const body: CreateWorkflowBody = {
         name: name.trim(),
@@ -277,8 +294,9 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
         action_config: actionConfig(),
         coalesce_window_secs: coalesce,
         max_runs_per_window: maxRuns,
-      }).then(refresh), "Workflow saved.");
+      }).then(() => { setSelectionChanged(false); refresh(); }), "Workflow saved.");
     }
+    } finally { saving.current = false; }
   }
 
   const addRow = () => setCondRows((r) => [...r, { field: "", op: "eq", value: "" }]);
@@ -295,7 +313,7 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
           {!isNew && (
             <button className="btn btn-ghost sm" disabled={!!busy} onClick={async () => { if (await confirmDialog({ title: `Delete "${name}"?`, danger: true, confirmLabel: "Delete" })) run("Delete", () => deleteWorkflow(id!).then(() => { qc.invalidateQueries({ queryKey: ["workflows"] }); onBack(); }), "Workflow deleted."); }}>Delete</button>
           )}
-          <button className="btn btn-gold sm" disabled={!!busy} onClick={save}><Icon.Save size={14} /> {busy === "Save" || busy === "Create" ? "Saving…" : "Save"}</button>
+          <button className="btn btn-gold sm" disabled={!!busy || !!selectionError} onClick={save}><Icon.Save size={14} /> {busy === "Save" || busy === "Create" ? "Saving…" : "Save"}</button>
         </>
       }
     >
@@ -406,8 +424,8 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
           <section className="ed-section">
             <label className="form-label">Then (action)</label>
             <div className="seg" style={{ width: "fit-content", marginBottom: 12 }}>
-              <button className={"seg-opt" + (actionType === "system_action" ? " on" : "")} onClick={() => setActionType("system_action")}>System action</button>
-              <button className={"seg-opt" + (actionType === "agent_run" ? " on" : "")} onClick={() => setActionType("agent_run")}>Agent run</button>
+              <button disabled={!isNew} className={"seg-opt" + (actionType === "system_action" ? " on" : "")} onClick={() => setActionType("system_action")}>System action</button>
+              <button disabled={!isNew} className={"seg-opt" + (actionType === "agent_run" ? " on" : "")} onClick={() => setActionType("agent_run")}>Agent run</button>
             </div>
 
             {actionType === "system_action" ? (
@@ -463,6 +481,8 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
 
                 <label className="form-label">Prompt <span className="req">*</span></label>
                 <textarea className={"field" + (badPrompt ? " field-error" : "")} rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="What should the agent do? Use {{filename}} for the event's file." style={{ resize: "vertical" }} />
+                <WorkflowModelSelection value={modelSelection} routing={routing} changed={selectionChanged} disabled={!!busy}
+                  onChange={value => { setModelSelection(value); setSelectionChanged(true); }} />
 
                 <label className="form-label">Libraries</label>
                 {(libraries.data ?? []).length === 0 ? (
@@ -534,6 +554,7 @@ function WorkflowEditor({ id, onBack, onSaved }: { id?: string; onBack: () => vo
                       <div className="run-info">
                         <span className="run-out">{r.status === "failed" ? (r.error ?? "error") : r.status}{r.event_count > 1 ? ` · ${r.event_count} events` : ""}</span>
                         <span className="run-when mono">{fmt(r.created_at)}</span>
+                        {r.outcome?.routing === true && <span className="run-when mono">Requested: {workflowSelectionLabel(r.outcome.selection)}</span>}
                       </div>
                       {chatId && <button className="icon-btn" title="Open output chat" onClick={() => nav(`/c/${chatId}`)}><Icon.ChevronR size={15} /></button>}
                     </div>

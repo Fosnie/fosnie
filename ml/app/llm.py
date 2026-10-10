@@ -28,8 +28,9 @@ from prometheus_client import Counter
 from . import anthropic_adapter, gemini_adapter, http_client
 from .config import settings
 from .rag_ctx import cfg
+from .inference_target import routed, adapter_is, strict, note_usage
 
-logger = logging.getLogger("pai-ml.llm")
+logger = logging.getLogger("fosnie-ml.llm")
 
 # OpenAI's Chat Completions API renamed `max_tokens` → `max_completion_tokens`, and
 # its reasoning models (gpt-5.x, o-series) reject a non-default `temperature`/`top_p`.
@@ -61,7 +62,7 @@ def _reasoning_request(sampling: dict[str, Any]) -> dict[str, Any] | None:
     `None` when nothing was requested ⇒ provider defaults, wire byte-unchanged."""
     explicit = sampling.get("reasoning_effort")
     if explicit:
-        return {"enabled": True, "level": str(explicit), "trace": True}
+        return {"enabled": True, "level": str(explicit), "trace": str(cfg("llm_reasoning_trace", "true")).strip().lower() != "false"}
     enabled = cfg("llm_reasoning_enabled", None)
     if enabled is None:
         return None
@@ -79,6 +80,8 @@ def _openai_reasoning_effort(model: str | None, req: dict[str, Any]) -> str | No
     no-op. Note (gpt-5.x): Chat Completions accepts function tools ONLY when
     reasoning is disabled (`reasoning_effort:"none"`); a call that keeps reasoning
     on while passing tools must use the Responses API instead."""
+    if strict():
+        return cfg("routing_effort", None)
     m = (model or "").strip().lower()
     if not _OPENAI_REASONING_RE.match(m):
         return None  # non-reasoning OpenAI model — never send (else 400)
@@ -107,6 +110,8 @@ def _tool_effort(effort: str | None, base: str, model: str | None, has_tools: bo
     tool-carrying step on gpt-5.x runs reasoning-off; the caller's chosen reasoning
     is preserved for the final answer segment, which carries no tools. Everything
     else keeps its effort unchanged."""
+    if strict():
+        return effort
     if has_tools and _is_openai(base) and (model or "").lower().startswith("gpt-5"):
         return "none"
     return effort
@@ -227,6 +232,7 @@ def _consume_guided() -> dict[str, Any] | None:
 def _record_usage(stage: str | None, usage: dict[str, Any] | None) -> None:
     """Account a call's token usage to its consumed stage. No-op without a stage
     (single-shot calls that skip attribution)."""
+    note_usage(usage)
     if not stage or not usage:
         return
     pt = usage.get("prompt_tokens")
@@ -239,7 +245,23 @@ def _record_usage(stage: str | None, usage: dict[str, Any] | None) -> None:
 
 
 class LlmError(Exception):
-    pass
+    def __init__(self, message, *, upstream_status=None, upstream_code=None, retry_after_seconds=None):
+        super().__init__(message)
+        self.upstream_status = upstream_status
+        from .inference_failure import ALLOWED_CODES
+        self.upstream_code = upstream_code if isinstance(upstream_code,str) and upstream_code in ALLOWED_CODES else None
+        self.retry_after_seconds = retry_after_seconds
+
+    @classmethod
+    async def from_response(cls,response):
+        from .inference_failure import http_metadata
+        body=b''
+        async for chunk in response.aiter_bytes(chunk_size=16385):
+            body+=chunk
+            if len(body)>16384: body=b''; break
+        code,after=http_metadata(response,body=body)
+        return cls("The provider rejected the request.",upstream_status=response.status_code,
+                   upstream_code=code,retry_after_seconds=after)
 
 
 def _tool_call_shape(obj: Any) -> tuple[str | None, dict]:
@@ -339,6 +361,7 @@ def _finalise_stream_tool_calls(acc: dict[int, dict[str, Any]]) -> list[dict[str
     return events
 
 
+@routed()
 async def chat_step(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -350,10 +373,12 @@ async def chat_step(
     streamed tool_calls; the final answer streams via `stream_chat`."""
     sampling = sampling or {}
     base = cfg("llm_base_url", settings.llm_base_url)
-    if anthropic_adapter.is_anthropic(base):
+    if adapter_is("anthropic", base, anthropic_adapter.is_anthropic):
         return await anthropic_adapter.a_chat_step(messages, tools, sampling, model)
-    if gemini_adapter.is_gemini_native(base):
+    if adapter_is("gemini", base, gemini_adapter.is_gemini_native):
         return await gemini_adapter.a_chat_step(messages, tools, sampling, model)
+    if strict() and cfg("llm_adapter", None) == "openai_responses":
+        return await _responses_chat_step(messages, tools, sampling)
     # OpenAI rejects our dotted tool names (desktop.fs_write) in the tool defs and in
     # the history's tool_calls; rewrite them for the wire and restore on the way back.
     remap: dict[str, str] = {}
@@ -379,45 +404,47 @@ async def chat_step(
         if "presence_penalty" in sampling:
             payload["presence_penalty"] = sampling["presence_penalty"]
     req = _reasoning_request(sampling)
-    effort = _openai_reasoning_effort(model, req) if (req and _is_openai(base)) else None
+    effort = cfg("routing_effort", None) if strict() else (_openai_reasoning_effort(model, req) if (req and _is_openai(base)) else None)
     effort = _tool_effort(effort, base, model, bool(tools))
     if effort:
         payload["reasoning_effort"] = effort
     # Local/vLLM qwen models: steer `enable_thinking` from the reasoning toggle (they
     # ignore `reasoning_effort`). Off ⇒ no <think> on the tool-deciding steps too.
-    if req is not None and not _is_openai(base):
+    if req is not None and not _is_openai(base) and not strict():
         _lvl = (req.get("level") or "").strip().lower()
         payload.setdefault("chat_template_kwargs", {})["enable_thinking"] = (
             bool(req.get("enabled")) and _lvl != "minimal"
         )
     if tools:
         payload["tools"] = tools
-    if guided and settings.llm_guided_decoding:
+    if sampling.get("response_schema") is not None:
+        payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "fosnie_output", "strict": True, "schema": sampling["response_schema"]}}
+    elif guided and settings.llm_guided_decoding:
         payload.update(guided)
     url = f"{cfg('llm_base_url', settings.llm_base_url).rstrip('/')}/chat/completions"
-    headers = {"Authorization": f"Bearer {cfg('llm_api_key', settings.llm_api_key)}"}
+    headers = http_client.bearer_headers(cfg('llm_api_key', settings.llm_api_key))
     client = http_client.get_client()
-    r = await client.post(url, json=payload, headers=headers)
+    r = await http_client.post(client, url, json=payload, headers=headers)
     # Graceful degradation: models without a tool template (e.g. small GGUFs
     # via Ollama) reject the `tools` param with a 4xx. Retry once without it so
     # chat still works — the turn just won't make tool calls this round.
-    if tools and r.status_code >= 400:
+    if tools and r.status_code >= 400 and not strict():
         logger.warning("LLM rejected tools (%s); retrying without tools", r.status_code)
         payload.pop("tools", None)
-        r = await client.post(url, json=payload, headers=headers)
+        r = await http_client.post(client, url, json=payload, headers=headers)
     # Graceful degradation: a model may reject our `reasoning_effort` value (the
     # accepted set differs across gpt-5/gpt-5.x/o-series/Gemini). Drop it and retry
     # once — the call still succeeds (reasoning just isn't minimised this turn),
     # so a utility call like chat-title naming never hard-fails on this param.
-    if effort and r.status_code == 400 and "reasoning_effort" in r.text:
+    if effort and r.status_code == 400 and "reasoning_effort" in r.text and not strict():
         logger.warning("LLM rejected reasoning_effort=%s; retrying without it", effort)
         payload.pop("reasoning_effort", None)
-        r = await client.post(url, json=payload, headers=headers)
+        r = await http_client.post(client, url, json=payload, headers=headers)
     if r.status_code != 200:
         # Surface the upstream error body server-side — raise_for_status() hides
         # it, which makes provider misconfig (wrong endpoint shape, rejected
         # params) impossible to diagnose from the logs.
-        logger.warning("LLM chat_step upstream %s: %.500r", r.status_code, r.text)
+        logger.warning("LLM chat_step upstream %s: %.500r", r.status_code, "[routed details omitted]" if strict() else r.text)
         r.raise_for_status()
     data = r.json()
     _record_usage(stage, data.get("usage"))
@@ -438,7 +465,7 @@ async def chat_step(
     # a model may emit a tool call as TEXT in `content` instead of
     # the native array (this leaked a `read_skill` UUID into an answer). When no native
     # call came back, recover it so the loop EXECUTES it and the JSON never renders.
-    if not tool_calls:
+    if not tool_calls and sampling.get("response_schema") is None:
         recovered, content = _extract_text_tool_call(content)
         tool_calls = recovered
     return {
@@ -449,6 +476,7 @@ async def chat_step(
     }
 
 
+@routed(utility=True)
 async def complete(system: str, user: str, max_tokens: int = 512, *, reasoning_effort: str | None = "minimal") -> str:
     """Non-streaming completion — used by the agentic loop (decompose, grade,
     reformulate). Off the chat hot prefix. Token spend is attributed to the stage
@@ -468,10 +496,15 @@ async def complete(system: str, user: str, max_tokens: int = 512, *, reasoning_e
     base = cfg("utility_base_url", cfg("llm_base_url", settings.llm_base_url))
     model = cfg("utility_model", cfg("llm_model", settings.llm_model))
     api_key = cfg("utility_api_key", cfg("llm_api_key", settings.llm_api_key))
-    if anthropic_adapter.is_anthropic(base):
+    if adapter_is("anthropic", base, anthropic_adapter.is_anthropic):
         return await anthropic_adapter.a_complete(system, user, max_tokens)
-    if gemini_adapter.is_gemini_native(base):
+    if adapter_is("gemini", base, gemini_adapter.is_gemini_native):
         return await gemini_adapter.a_complete(system, user, max_tokens)
+    if strict() and cfg("llm_adapter", None) == "openai_responses":
+        result = await _responses_chat_step([
+            {"role": "system", "content": system}, {"role": "user", "content": user},
+        ], None, {"max_tokens": max_tokens})
+        return result["content"]
     stage = _consume_stage()
     guided = _consume_guided()
     token_key, sampling_ok = _gen_caps(base, model)
@@ -489,23 +522,23 @@ async def complete(system: str, user: str, max_tokens: int = 512, *, reasoning_e
     # Minimise reasoning on the scaffolding calls (OpenAI reasoning models only; the
     # field is never sent to vLLM/local, so those bodies are unchanged).
     req = _reasoning_request({"reasoning_effort": reasoning_effort}) if reasoning_effort else None
-    effort = _openai_reasoning_effort(model, req) if (req and _is_openai(base)) else None
+    effort = cfg("routing_effort", None) if strict() else (_openai_reasoning_effort(model, req) if (req and _is_openai(base)) else None)
     if effort:
         payload["reasoning_effort"] = effort
     if guided and settings.llm_guided_decoding:
         payload.update(guided)
     url = f"{base.rstrip('/')}/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers = http_client.bearer_headers(api_key)
     client = http_client.get_client()
-    r = await client.post(url, json=payload, headers=headers)
+    r = await http_client.post(client, url, json=payload, headers=headers)
     # Graceful degradation: a model may reject our reasoning_effort value; drop it and
     # retry once so the scaffolding call still succeeds (mirrors chat_step).
-    if effort and r.status_code == 400 and "reasoning_effort" in r.text:
+    if effort and r.status_code == 400 and "reasoning_effort" in r.text and not strict():
         logger.warning("LLM rejected reasoning_effort=%s; retrying without it", effort)
         payload.pop("reasoning_effort", None)
-        r = await client.post(url, json=payload, headers=headers)
+        r = await http_client.post(client, url, json=payload, headers=headers)
     if r.status_code != 200:
-        logger.warning("LLM complete upstream %s: %.500r", r.status_code, r.text)
+        logger.warning("LLM complete upstream %s: %.500r", r.status_code, "[routed details omitted]" if strict() else r.text)
         r.raise_for_status()
     data = r.json()
     _record_usage(stage, data.get("usage"))
@@ -515,6 +548,41 @@ async def complete(system: str, user: str, max_tokens: int = 512, *, reasoning_e
 class _ResponsesUnsupported(Exception):
     """Raised (before any event is yielded) when the OpenAI Responses API rejects the
     call, so `stream_chat` can transparently fall back to chat-completions."""
+
+
+async def _responses_chat_step(messages, tools, sampling):
+    """Explicit Responses assignment; rejection never changes the chosen adapter."""
+    stage = _consume_stage()
+    from .native_replay import responses_input, responses_state
+    payload = {"model": cfg("llm_model", None), "input": responses_input(messages),
+               "max_output_tokens": sampling.get("max_tokens") or settings.llm_default_max_tokens,
+               "stream": False}
+    if sampling.get("response_schema") is not None:
+        payload["text"] = {"format": {"type": "json_schema", "name": "fosnie_output", "strict": True, "schema": sampling["response_schema"]}}
+    effort = cfg("routing_effort", None)
+    if effort:
+        payload["reasoning"] = {"effort": effort}
+    if tools:
+        payload["tools"] = _responses_tools(tools)
+        payload["include"] = ["reasoning.encrypted_content"]
+    response = await http_client.post(http_client.get_client(),
+        f"{cfg('llm_base_url', '').rstrip('/')}/responses", json=payload,
+        headers=http_client.bearer_headers(cfg('llm_api_key', '')))
+    response.raise_for_status()
+    data = response.json()
+    content, calls = [], []
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            content.extend(part.get("text", "") for part in item.get("content", []) if part.get("type") == "output_text")
+        elif item.get("type") == "function_call":
+            calls.append({"id": item.get("call_id"), "name": item.get("name"),
+                          "arguments": json.loads(item.get("arguments") or "{}")})
+    if calls:
+        calls[0]["native_replay"] = responses_state(data.get("output", []))
+    usage = _normalise_responses_usage(data.get("usage")) or {}
+    _record_usage(stage, usage)
+    return {"content": "".join(content), "tool_calls": calls, "usage": usage,
+            "finish_reason": "tool_calls" if calls else ("length" if data.get("status") == "incomplete" else "stop")}
 
 
 def _normalise_responses_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -528,16 +596,22 @@ def _normalise_responses_usage(usage: dict[str, Any] | None) -> dict[str, Any] |
         "completion_tokens": usage.get("output_tokens"),
         "total_tokens": usage.get("total_tokens"),
     }
+    if strict():
+        out["raw_provider_usage"] = dict(usage)
+        out["prompt_tokens_details"] = usage.get("input_tokens_details") or {}
     rt = (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
     if rt:
         out["reasoning_tokens"] = rt
     return out
 
 
-def _responses_effort(effort: str | None) -> str:
-    """Clamp our unified effort to a value the Responses API `reasoning.effort` accepts
-    (low/medium/high; `minimal` for gpt-5, but we only reach here with reasoning ON)."""
-    return effort if effort in ("minimal", "low", "medium", "high") else "high"
+def _responses_effort(effort: str | None) -> str | None:
+    """Preserve the routed API value; legacy intent must not silently lose xhigh."""
+    if strict():return effort
+    if effort is None:return None
+    if effort in ("none", "minimal", "low", "medium", "high", "xhigh"):return effort
+    if effort == "max":return "high"  # existing legacy unified maximum
+    raise ValueError("unsupported Responses reasoning effort")
 
 
 def _responses_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -571,27 +645,32 @@ async def _stream_responses(
     url = f"{base.rstrip('/')}/responses"
     payload: dict[str, Any] = {
         "model": model,
-        "input": messages,
-        "reasoning": {"effort": _responses_effort(effort), "summary": "auto"},
+        "input": __import__("app.native_replay",fromlist=["responses_input"]).responses_input(messages),
         "max_output_tokens": sampling.get("max_tokens") or settings.llm_default_max_tokens,
         "stream": True,
     }
+    effective = _responses_effort(effort)
+    if effective is not None:
+        payload["reasoning"] = {"effort": effective}
+        if trace_on:payload["reasoning"]["summary"] = "auto"
     if tools:
         payload["tools"] = _responses_tools(tools)
-    headers = {"Authorization": f"Bearer {cfg('llm_api_key', settings.llm_api_key)}"}
+    headers = http_client.bearer_headers(cfg('llm_api_key', settings.llm_api_key))
     client = http_client.get_client()
     usage: dict[str, Any] | None = None
     finish: str | None = None
     # Function calls stream as their own output items: `output_item.added` carries the
     # id/name, `function_call_arguments.delta` the JSON fragments, `.done` the full string.
     tool_acc: dict[str, dict[str, Any]] = {}
-    async with client.stream("POST", url, json=payload, headers=headers) as resp:
+    async with http_client.stream(client, "POST", url, json=payload, headers=headers) as resp:
         if resp.status_code != 200:
             body = await resp.aread()
             btext = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
-            logger.warning(
-                "Responses API %s: %.400r — falling back to chat-completions", resp.status_code, btext
-            )
+            if strict():
+                logger.warning("Selected Responses adapter rejected request (%s)", resp.status_code)
+                raise await LlmError.from_response(resp)
+            else:
+                logger.warning("Responses API %s: %.400r — falling back to chat-completions", resp.status_code, btext)
             raise _ResponsesUnsupported(f"responses {resp.status_code}")
         async for line in resp.aiter_lines():
             if not line or not line.startswith("data:"):
@@ -659,6 +738,7 @@ async def _stream_responses(
     yield {"type": "done", "finish_reason": finish, "model": model, "usage": usage or {}}
 
 
+@routed()
 async def stream_chat(
     messages: list[dict[str, Any]],
     sampling: dict[str, Any],
@@ -675,11 +755,11 @@ async def stream_chat(
     `done` carries `finish_reason:"tool_calls"`. The caller executes the tool and
     continues the answer in a follow-up request. `tools=None` ⇒ unchanged."""
     base = cfg("llm_base_url", settings.llm_base_url)
-    if anthropic_adapter.is_anthropic(base):
+    if adapter_is("anthropic", base, anthropic_adapter.is_anthropic):
         async for ev in anthropic_adapter.a_stream_chat(messages, sampling, model, tools=tools):
             yield ev
         return
-    if gemini_adapter.is_gemini_native(base):
+    if adapter_is("gemini", base, gemini_adapter.is_gemini_native):
         async for ev in gemini_adapter.a_stream_chat(messages, sampling, model, tools=tools):
             yield ev
         return
@@ -709,7 +789,7 @@ async def stream_chat(
     # reasoning-capable OpenAI models; the field is omitted (and
     # never sent to vLLM/Ollama/local) when not applicable, so it can't 400.
     req = _reasoning_request(sampling)
-    effort = _openai_reasoning_effort(model, req) if (req and _is_openai(base)) else None
+    effort = cfg("routing_effort", None) if strict() else (_openai_reasoning_effort(model, req) if (req and _is_openai(base)) else None)
     # NB: do NOT force reasoning-off here when tools are present. Unlike the
     # non-streaming `chat_step`, this path routes a reasoning gpt-5.x + tools call
     # through the Responses API (`want_tools_responses` below), which carries tools
@@ -717,12 +797,12 @@ async def stream_chat(
     if effort:
         payload["reasoning_effort"] = effort
     # Whether to forward the reasoning trace to the client (paid for either way).
-    trace_on = req.get("trace", True) if req else True
+    trace_on = req.get("trace", True) if req else str(cfg("llm_reasoning_trace", "true")).strip().lower() != "false"
     # Local/vLLM qwen-family models don't honour OpenAI's `reasoning_effort`; steer
     # their chat template's `enable_thinking` instead so the composer's Reasoning
     # toggle actually works (off ⇒ no <think>, fast; on ⇒ think + stream the trace).
     # Leave the template default when nothing was requested (`req is None`).
-    if req is not None and not _is_openai(base):
+    if req is not None and not _is_openai(base) and not strict():
         _lvl = (req.get("level") or "").strip().lower()
         payload.setdefault("chat_template_kwargs", {})["enable_thinking"] = (
             bool(req.get("enabled")) and _lvl != "minimal"
@@ -750,7 +830,8 @@ async def stream_chat(
     # Responses API (which carries tools AND reasoning). vLLM always stays on
     # chat-completions (its Responses endpoint mis-emits XML tool calls as text).
     want_tools_responses = bool(tools) and _is_openai(base) and effort not in (None, "none")
-    if want_summaries or want_tools_responses:
+    use_responses = cfg("llm_adapter", None) == "openai_responses" if strict() else (want_summaries or want_tools_responses)
+    if use_responses:
         try:
             async for ev in _stream_responses(
                 base, model, messages, sampling, effort, trace_on, stage, tools=tools
@@ -758,16 +839,18 @@ async def stream_chat(
                 yield ev
             return
         except _ResponsesUnsupported:
+            if strict():
+                raise LlmError("selected Responses adapter rejected the request")
             pass  # nothing yielded yet — fall through to the chat-completions path below
 
     if tools:
         payload["tools"] = tools
         # chat-completions accepts function tools only with reasoning disabled
         # (a reasoning model 400s otherwise); the reasoning path went to Responses above.
-        if _is_openai(base):
+        if _is_openai(base) and not strict():
             payload["reasoning_effort"] = "none"
 
-    headers = {"Authorization": f"Bearer {cfg('llm_api_key', settings.llm_api_key)}"}
+    headers = http_client.bearer_headers(cfg('llm_api_key', settings.llm_api_key))
     url = f"{cfg('llm_base_url', settings.llm_base_url).rstrip('/')}/chat/completions"
 
     usage: dict[str, Any] | None = None
@@ -788,21 +871,21 @@ async def stream_chat(
     # emits literal `<think>` tags inside `content` still works: those tokens flow
     # through as answer text and the frontend's `splitThink` fallback separates them.
     for attempt in range(2):
-        async with client.stream("POST", url, json=payload, headers=headers) as resp:
+        async with http_client.stream(client, "POST", url, json=payload, headers=headers) as resp:
             if resp.status_code != 200:
                 body = await resp.aread()
                 btext = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
                 # Graceful degradation: a reasoning model may reject our effort value
                 # (the accepted set differs across gpt-5/gpt-5.x/o-series). Drop it and
                 # retry once so the answer still streams (reasoning just isn't tuned).
-                if attempt == 0 and effort and resp.status_code == 400 and "reasoning_effort" in btext:
+                if attempt == 0 and effort and resp.status_code == 400 and "reasoning_effort" in btext and not strict():
                     logger.warning("LLM rejected reasoning_effort=%s; retrying without it", effort)
                     payload.pop("reasoning_effort", None)
                     continue
                 # Log the upstream body server-side; surface only the status to
                 # the caller (the body can carry infra detail / echoed headers).
-                logger.warning("LLM upstream %s: %.500r", resp.status_code, btext)
-                raise LlmError(f"LLM upstream returned {resp.status_code}")
+                logger.warning("LLM upstream %s: %.500r", resp.status_code, "[routed details omitted]" if strict() else btext)
+                raise await LlmError.from_response(resp)
 
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):

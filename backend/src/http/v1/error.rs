@@ -121,6 +121,13 @@ impl IntoResponse for ApiError {
 
 impl From<AppError> for ApiError {
     fn from(e: AppError) -> Self {
+        if let Some(failure)=crate::model_routing::failure::ProviderFailure::from_error(&e) {
+            use crate::model_routing::fallback::FailureKind;
+            let status=match failure.kind {FailureKind::RateLimited|FailureKind::QuotaExhausted=>StatusCode::TOO_MANY_REQUESTS,
+                FailureKind::PaymentRequired=>StatusCode::PAYMENT_REQUIRED,_=>StatusCode::SERVICE_UNAVAILABLE};
+            let mut error=Self::new(status,"provider_error",failure.message());error.code=Some(failure.code());
+            error.retry_after=failure.retry_after_seconds.map(u64::from);return error;
+        }
         match e {
             AppError::Validation(m) => Self::bad_request(m),
             AppError::Unauthorized(m) => Self::unauthorised(m),

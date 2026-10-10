@@ -267,7 +267,7 @@ pub async fn create_page(
         ..Default::default()
     };
     let step =
-        crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(&state, ctx.user_id).await).await?;
+        crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(&state, ctx.user_id).await?).await?;
     let html = step.content;
     if html.trim().is_empty() {
         return Err(AppError::Other(anyhow::anyhow!("report-to-page produced no HTML")));

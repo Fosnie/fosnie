@@ -28,10 +28,50 @@ or rely on the lazy fallback in ``get_client``.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import httpx
 
 from .config import settings
+
+
+def bearer_headers(key: str | None) -> dict[str, str]:
+    """An explicitly empty provider key means no authentication header."""
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _routed_request(method, url, kwargs):
+    # Request(), unlike client.build_request(), never merges the shared client's
+    # headers, cookies or credentials with this assignment. Preserve the client's
+    # configured timeouts without inheriting its auth or redirect behaviour.
+    values = dict(kwargs)
+    timeout = values.pop("timeout", None)
+    request = httpx.Request(method, url, **values)
+    request.extensions["timeout"] = (timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)).as_dict()
+    return request
+
+
+async def post(client, url, **kwargs):
+    from .inference_target import strict
+    if not strict():
+        return await client.post(url, **kwargs)
+    request = _routed_request("POST", url, {"timeout": client.timeout, **kwargs})
+    return await client.send(request, auth=None, follow_redirects=False)
+
+
+@asynccontextmanager
+async def stream(client, method, url, **kwargs):
+    from .inference_target import strict
+    if not strict():
+        async with client.stream(method, url, **kwargs) as response:
+            yield response
+        return
+    request = _routed_request(method, url, {"timeout": client.timeout, **kwargs})
+    response = await client.send(request, stream=True, auth=None, follow_redirects=False)
+    try:
+        yield response
+    finally:
+        await response.aclose()
 
 
 def v1_url(base_url: str, path: str) -> str:

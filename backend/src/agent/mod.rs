@@ -283,6 +283,14 @@ pub async fn execute_pending(state: &AppState, run_id: Uuid) -> Result<ResumeOut
     let (Some(chat_id), Some(turn_id)) = (r.chat_id, r.turn_id) else {
         return Ok(ResumeOutcome::Completed);
     };
+    // Routed checkpoints are observations, not resumable effect grants. A
+    // legacy approval also loses admission if its chat has since adopted Auto.
+    let routed: bool = sqlx::query_scalar("SELECT COALESCE(checkpoint->>'routed'='true',false) OR COALESCE(checkpoint->>'resumable'='false',false) FROM agent_runs WHERE id=$1")
+        .bind(run_id).fetch_one(&state.pg).await?;
+    if routed || crate::model_routing::admission::chat_requires_routing(state, chat_id).await? {
+        refuse_resume(state, run_id, chat_id, r.pending_tool.as_deref().unwrap_or("unknown"), "routed execution has no legacy tool resume").await;
+        return Ok(ResumeOutcome::Completed);
+    }
     let args = r.pending_args.unwrap_or_else(|| json!({}));
 
     // The egress/permission-bearing tools (MCP + custom) resume through the SAME

@@ -418,3 +418,12 @@ fn a_citation_from_a_newer_release_keeps_its_known_fields() {
     let c: CitationOut = serde_json::from_str(json).expect("tolerates the new field");
     assert_eq!(c.quote_text, "q");
 }
+
+#[test]
+fn routed_regeneration_is_a_distinct_non_destructive_frame() {
+    let value=serde_json::json!({"type":"chat.routed.regenerate","chat_id":id(1),"from_message_id":id(2)});
+    let frame:ClientFrame=serde_json::from_value(value.clone()).unwrap();
+    assert!(matches!(frame,ClientFrame::ChatRoutedRegenerate {chat_id,from_message_id} if chat_id==id(1) && from_message_id==id(2)));
+    assert_eq!(serde_json::to_value(frame).unwrap(),value);
+    assert!(serde_json::from_value::<ClientFrame>(serde_json::json!({"type":"chat.routed.regenerate","chat_id":id(1)})).is_err());
+}

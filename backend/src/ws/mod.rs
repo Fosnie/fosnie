@@ -56,6 +56,8 @@ pub struct WsAuth {
     /// so a reconnect re-mints a resume token that still names the device, and so
     /// a conversation the socket starts is stamped with where it came from.
     pub device_id: Option<Uuid>,
+    /// Original device key preserved by the ticket/resume, never inferred from ID.
+    pub device_key_id:Option<Uuid>,
     /// Where a conversation started on this socket is recorded as coming from,
     /// derived from how the socket authenticated.
     pub origin: crate::chat::origin::ChatOrigin,
@@ -102,16 +104,19 @@ impl FromRequestParts<AppState> for WsAuth {
                 ctx,
                 resumed: false,
                 device_id: None,
+                device_key_id:None,
                 origin: crate::chat::origin::ChatOrigin::Web,
             });
         }
         if let Some(token) = parts.uri.query().and_then(|q| query_param(q, "resume")) {
-            if let Some((user_id, device_id)) = session::lookup_resume(&state.redis, &token).await? {
+            if let Some(session::Principal {user_id,device_id,device_key_id}) = session::lookup_bound_resume(&state.redis, &token).await? {
                 let ctx = auth::load_context(&state.pg, user_id).await?;
+                if let Some((device_id,key_id))=device_id.zip(device_key_id) {crate::auth::device::DeviceCredential {device_id,key_id}.validate(state,&ctx).await?;}
                 return Ok(WsAuth {
                     ctx,
                     resumed: true,
                     device_id,
+                    device_key_id,
                     origin: crate::chat::origin::ChatOrigin::from_device(device_id),
                 });
             }
@@ -119,12 +124,14 @@ impl FromRequestParts<AppState> for WsAuth {
         // Single-use connect ticket (minted over the authenticated HTTP path) —
         // keeps the JWT out of the socket URL. load_context re-checks deactivation.
         if let Some(ticket) = parts.uri.query().and_then(|q| query_param(q, "ticket")) {
-            if let Some((user_id, device_id)) = session::redeem_ticket(&state.redis, &ticket).await? {
+            if let Some(session::Principal {user_id,device_id,device_key_id}) = session::redeem_bound_ticket(&state.redis, &ticket).await? {
                 let ctx = auth::load_context(&state.pg, user_id).await?;
+                if let Some((device_id,key_id))=device_id.zip(device_key_id) {crate::auth::device::DeviceCredential {device_id,key_id}.validate(state,&ctx).await?;}
                 return Ok(WsAuth {
                     ctx,
                     resumed: false,
                     device_id,
+                    device_key_id,
                     origin: crate::chat::origin::ChatOrigin::from_device(device_id),
                 });
             }
@@ -248,7 +255,7 @@ async fn hello_frame(
 }
 
 async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
-    let WsAuth { ctx, resumed, device_id, origin } = auth;
+    let WsAuth { ctx, resumed, device_id, device_key_id, origin } = auth;
     // Break-glass principals have no user identity and cannot own/drive chats.
     let Some(user_id) = ctx.user_id else {
         return;
@@ -271,7 +278,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
     let _ = session::register_socket(&state.redis, socket_id, user_id).await;
     // The resume token carries the device id too, so a reconnect within the
     // window keeps marking what this socket creates as coming from the desktop.
-    let resume_token = session::issue_resume(&state.redis, user_id, device_id)
+    let resume_token = session::issue_bound_resume(&state.redis, user_id, device_id,device_key_id)
         .await
         .unwrap_or_default();
 
@@ -321,6 +328,22 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
             Message::Text(text) => match serde_json::from_str::<ClientFrame>(text.as_str()) {
+                Ok(ClientFrame::ChatRoutedSend {request}) => {
+                    let surface=match crate::chat::browser::Surface::authenticated(origin,device_id,device_key_id) {Ok(surface)=>surface,Err(e)=>{let _=tx.send(ServerFrame::ChatError {turn_id:None,chat_id:request.chat_id,message:e.to_string()}).await;continue;}};
+                    if !crate::cache::rate_limit_ok(&state.redis,&format!("chat:{user_id}"),30,60).await {
+                        let _=tx.send(ServerFrame::ChatError {turn_id:None,chat_id:request.chat_id,message:"You're sending messages too quickly — please slow down.".into()}).await;continue;
+                    }
+                    let turn_id=Uuid::now_v7();let cancel=Arc::new(Notify::new());let chat=request.chat_id;
+                    state.hub.add_turn(socket_id,turn_id,cancel.clone());
+                    let st=state.clone();let actor=ctx.clone();let out=tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e)=crate::chat::browser::execute_surface(st.clone(),actor,request,turn_id,out.clone(),cancel,surface).await {
+                            crate::model_routing::failure::notify_chat(&st,turn_id,chat,&e,&out,false).await;
+                            let _=tokio::time::timeout(std::time::Duration::from_secs(5),out.send(ServerFrame::ChatError {turn_id:Some(turn_id),chat_id:chat,message:e.to_string()})).await;
+                        }
+                        st.hub.remove_turn(socket_id,turn_id);
+                    });
+                }
                 Ok(ClientFrame::ChatSend { chat_id, content, project_id, agent_id, attachment_ids, thinking, reasoning, llm_provider_id, workspace_id }) => {
                     // Coarse per-user abuse guard on the expensive turn path.
                     if !crate::cache::rate_limit_ok(&state.redis, &format!("chat:{user_id}"), 30, 60).await {
@@ -347,6 +370,19 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         )
                         .await;
                         st.hub.remove_turn(socket_id, turn_id);
+                    });
+                }
+                Ok(ClientFrame::ChatRoutedRegenerate { chat_id, from_message_id }) => {
+                    let surface=match crate::chat::browser::Surface::authenticated(origin,device_id,device_key_id) {Ok(surface)=>surface,Err(e)=>{let _=tx.send(ServerFrame::ChatError {turn_id:None,chat_id:Some(chat_id),message:e.to_string()}).await;continue;}};
+                    if !crate::cache::rate_limit_ok(&state.redis,&format!("chat:{user_id}"),30,60).await {continue;}
+                    let turn_id=Uuid::now_v7();let cancel=Arc::new(Notify::new());
+                    state.hub.add_turn(socket_id,turn_id,cancel.clone());
+                    let st=state.clone();let actor=ctx.clone();let txc=tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e)=crate::chat::regenerate::execute_surface(st.clone(),actor,chat_id,from_message_id,turn_id,txc.clone(),cancel,surface).await {
+                            let _=tokio::time::timeout(std::time::Duration::from_secs(5),txc.send(ServerFrame::ChatError {turn_id:Some(turn_id),chat_id:Some(chat_id),message:e.to_string()})).await;
+                        }
+                        st.hub.remove_turn(socket_id,turn_id);
                     });
                 }
                 Ok(ClientFrame::ChatRegenerate { chat_id, from_message_id, content }) => {
@@ -386,6 +422,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                 }
                 Ok(ClientFrame::ChatCancel { turn_id }) => {
                     state.hub.cancel_turn(socket_id, turn_id);
+                    if let Some(session)=state.routed_voice.get(socket_id) {session.cancel_turn(turn_id).await;}
                 }
                 Ok(ClientFrame::DesktopToolResult { call_id, ok, result }) => {
                     // The answer to something this server asked this machine to do
@@ -436,7 +473,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                     let _ = session::refresh_presence(&state.redis, user_id).await;
                     // Keep the device on the refreshed resume token, so a desktop
                     // socket that refreshes mid-session stays a desktop socket.
-                    let resume_token = session::issue_resume(&state.redis, user_id, device_id)
+                    let resume_token = session::issue_bound_resume(&state.redis, user_id, device_id,device_key_id)
                         .await
                         .unwrap_or_default();
                     let _ = tx
@@ -499,7 +536,10 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         } else {
                             match base64::engine::general_purpose::STANDARD.decode(audio_base64.as_bytes()) {
                                 Err(e) => ServerFrame::ChatError { turn_id: None, message: format!("bad audio: {e}"), chat_id: None },
-                                Ok(bytes) => match crate::ml::transcribe(&st.http, &st.boot.ml.base_url, &bytes, &mime, crate::ml::provider_overrides(&st, Some(user_id)).await).await {
+                                Ok(bytes) => match async {
+                                    let overrides = crate::ml::provider_overrides(&st, Some(user_id)).await?;
+                                    crate::ml::transcribe(&st.http, &st.boot.ml.base_url, &bytes, &mime, overrides).await
+                                }.await {
                                     Ok(text) => ServerFrame::VoiceTranscript { text },
                                     Err(e) => ServerFrame::ChatError { turn_id: None, message: e.to_string(), chat_id: None },
                                 },
@@ -515,7 +555,10 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         let frame = if !st.features.enabled_for_user(&st, Some(user_id), "voice").await {
                             ServerFrame::ChatError { turn_id: None, message: "voice is not enabled".into(), chat_id: None }
                         } else {
-                            match crate::ml::synthesize(&st.http, &st.boot.ml.base_url, &text, voice.as_deref(), crate::ml::provider_overrides(&st, Some(user_id)).await).await {
+                            match async {
+                                let overrides = crate::ml::provider_overrides(&st, Some(user_id)).await?;
+                                crate::ml::synthesize(&st.http, &st.boot.ml.base_url, &text, voice.as_deref(), overrides).await
+                            }.await {
                                 Ok((bytes, mime)) => ServerFrame::VoiceAudio {
                                     audio_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
                                     mime,
@@ -528,7 +571,28 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                 }
                 // ── Live / streaming voice. A session
                 // spans many frames, so it lives in `state.voice` keyed by socket.
+                Ok(ClientFrame::VoiceRoutedStart { chat_id, project_id, agent_id, model_selection, aec }) => {
+                    if let Some(old)=state.routed_voice.remove(socket_id) {old.shutdown().await;}
+                    if let Some(old)=state.voice.remove(socket_id) {old.shutdown().await;}
+                    if let Some(old)=state.dictation.remove(socket_id) {old.shutdown();}
+                    let result=async {
+                        if device_id.is_some() || origin!=crate::chat::origin::ChatOrigin::Web {
+                            return Err(crate::model_routing::RoutingError::Incompatible("routed browser voice cannot adopt a device or phone identity").into());
+                        }
+                        let selection=serde_json::from_value(model_selection).map_err(|_|crate::model_routing::RoutingError::Invalid("invalid voice model_selection"))?;
+                        crate::voice::routed::Session::start(state.clone(),ctx.clone(),Arc::new(crate::voice::WebSocketSink::new(tx.clone())),
+                            chat_id,project_id,agent_id,selection,aec).await
+                    }.await;
+                    match result {
+                        Ok(session)=>state.routed_voice.insert(socket_id,session),
+                        Err(error)=>{let _=tx.send(ServerFrame::VoiceError {message:error.to_string()}).await;}
+                    }
+                }
                 Ok(ClientFrame::VoiceStreamStart { chat_id, project_id, agent_id, mode, aec }) => {
+                    if let Err(error)=crate::model_routing::admission::require_legacy_chat(&state,chat_id).await {
+                        let _=tx.send(ServerFrame::VoiceError {message:error.to_string()}).await;continue;
+                    }
+                    if let Some(old)=state.routed_voice.remove(socket_id) {old.shutdown().await;}
                     // Built inline (not spawned) so the session exists before the
                     // next frame (an audio chunk) is read from this socket.
                     if !state.features.enabled_for_user(&state, Some(user_id), "voice_live").await {
@@ -558,13 +622,16 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                     }
                 }
                 Ok(ClientFrame::VoiceAudioChunk { audio_base64, seq }) => {
-                    if let Some(s) = state.voice.get(socket_id) {
+                    if let Some(s)=state.routed_voice.get(socket_id) {
+                        if let Err(error)=s.on_audio_chunk(audio_base64).await {let _=tx.send(ServerFrame::VoiceError {message:error.to_string()}).await;}
+                    } else if let Some(s) = state.voice.get(socket_id) {
                         s.on_audio_chunk(audio_base64, seq).await;
                     } else if let Some(d) = state.dictation.get(socket_id) {
                         d.on_audio_chunk(audio_base64).await;
                     }
                 }
                 Ok(ClientFrame::VoiceDictateStart) => {
+                    if let Some(old)=state.routed_voice.remove(socket_id) {old.shutdown().await;}
                     // Built inline (not spawned) so the session exists before the next
                     // audio chunk is read from this socket.
                     if !state.features.enabled_for_user(&state, Some(user_id), "voice").await {
@@ -589,11 +656,13 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                     }
                 }
                 Ok(ClientFrame::VoiceBargeIn) => {
+                    if let Some(s)=state.routed_voice.get(socket_id) {s.barge_in().await;}
                     if let Some(s) = state.voice.get(socket_id) {
                         s.barge_in().await;
                     }
                 }
                 Ok(ClientFrame::VoiceStreamEnd) => {
+                    if let Some(s)=state.routed_voice.remove(socket_id) {s.shutdown().await;}
                     if let Some(s) = state.voice.remove(socket_id) {
                         s.shutdown().await;
                     }
@@ -627,6 +696,7 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
     if let Some(s) = state.voice.remove(socket_id) {
         s.detach();
     }
+    if let Some(s)=state.routed_voice.remove(socket_id) {s.detach();}
     if let Some(d) = state.dictation.remove(socket_id) {
         d.shutdown(); // STT-only, nothing to persist — just close the engine
     }

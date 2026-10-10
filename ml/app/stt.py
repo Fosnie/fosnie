@@ -31,8 +31,10 @@ from . import http_client
 from .config import settings
 from .llm import _is_openai
 from .rag_ctx import cfg
+from .inference_fixed import routed_fixed, post
+from .inference_target import strict
 
-_log = logging.getLogger("pai.stt")
+_log = logging.getLogger("fosnie.stt")
 _degraded = False
 
 
@@ -80,6 +82,7 @@ async def _to_wav(audio: bytes, mime: str | None) -> tuple[bytes, str]:
     out_fd, out_path = tempfile.mkstemp(suffix=".wav")
     os.close(in_fd)
     os.close(out_fd)
+    proc = None
     try:
         with open(in_path, "wb") as f:
             f.write(audio)
@@ -95,6 +98,11 @@ async def _to_wav(audio: bytes, mime: str | None) -> tuple[bytes, str]:
             return audio, _audio_format(mime)
         with open(out_path, "rb") as f:
             return f.read(), "wav"
+    except asyncio.CancelledError:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise
     except Exception as e:  # noqa: BLE001 — never let transcode crash STT
         _log.warning("ffmpeg transcode error (%s); sending original", e)
         return audio, _audio_format(mime)
@@ -139,6 +147,7 @@ def _clean_transcript(content: str) -> str:
     return content.strip()
 
 
+@routed_fixed("stt")
 async def transcribe(audio: bytes, mime: str | None = None, language: str | None = None) -> str:
     """Transcribe audio to text. Two wire shapes, selected by `stt_format`:
     `openai` (POST /v1/audio/transcriptions, multipart) or `chat` (POST
@@ -146,7 +155,7 @@ async def transcribe(audio: bytes, mime: str | None = None, language: str | None
     ASR). Raises on failure (route → 503); latches `_degraded`."""
     global _degraded
     base = cfg("stt_base_url", settings.stt_base_url).rstrip("/")
-    headers = {"Authorization": f"Bearer {cfg('stt_api_key', settings.stt_api_key)}"}
+    headers = http_client.bearer_headers(cfg('stt_api_key', settings.stt_api_key))
     # Caller hint wins; else the deployment default (English-first profile pins "en").
     lang = (language or settings.stt_language or "").strip()
     # Browser MediaRecorder emits Opus/WebM the engine can't decode — normalise
@@ -185,8 +194,8 @@ async def transcribe(audio: bytes, mime: str | None = None, language: str | None
                     }
                 ],
             }
-            r = await client.post(
-                http_client.v1_url(base, "chat/completions"),
+            r = await post(
+                "stt", client, http_client.v1_url(base, "chat/completions"),
                 json=payload,
                 headers=headers,
                 timeout=settings.request_timeout,
@@ -200,8 +209,8 @@ async def transcribe(audio: bytes, mime: str | None = None, language: str | None
             data = {"model": cfg("stt_model", settings.stt_model), "response_format": "json"}
             if lang:
                 data["language"] = lang
-            r = await client.post(
-                http_client.v1_url(base, "audio/transcriptions"),
+            r = await post(
+                "stt", client, http_client.v1_url(base, "audio/transcriptions"),
                 files=files,
                 data=data,
                 headers=headers,
@@ -214,6 +223,8 @@ async def transcribe(audio: bytes, mime: str | None = None, language: str | None
         _degraded = False
         return text
     except Exception as e:  # noqa: BLE001 — surface as unavailable, never 500-crash
+        if strict():
+            raise
         _degraded = True
         _log.warning("STT unavailable: %s", e)
         raise

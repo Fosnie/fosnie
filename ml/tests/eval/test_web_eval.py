@@ -1,6 +1,6 @@
 """Web-search quality eval.
 
-Gated on PAI_WEB_EVAL=1 — needs the real stack (SearXNG reachable, the network,
+Gated on FOSNIE_WEB_EVAL=1 — needs the real stack (SearXNG reachable, the network,
 the local LLM for planning/grading and for the judge, the reranker). Runs the
 standard-depth agentic loop over ~20 representative queries across four classes
 (simple facts, multi-hop, freshness, conflict-prone) and scores each digest with
@@ -9,7 +9,7 @@ quality). Report-only — prints a per-query + per-group table; the single hard
 assert is a liveness floor (≥80% of queries return a non-empty digest with ≥1
 citation), so the judge's opinions never make CI flaky.
 
-Run: `PAI_WEB_EVAL=1 .venv/Scripts/python -m pytest tests/eval/test_web_eval.py -q -s`
+Run: `FOSNIE_WEB_EVAL=1 .venv/Scripts/python -m pytest tests/eval/test_web_eval.py -q -s`
 """
 
 import asyncio
@@ -24,8 +24,8 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 pytestmark = pytest.mark.skipif(
-    os.getenv("PAI_WEB_EVAL") != "1",
-    reason="web eval needs the live stack + network (set PAI_WEB_EVAL=1)",
+    os.getenv("FOSNIE_WEB_EVAL") != "1",
+    reason="web eval needs the live stack + network (set FOSNIE_WEB_EVAL=1)",
 )
 
 # (class, query, recency). Freshness queries lean on today's date in the judge.

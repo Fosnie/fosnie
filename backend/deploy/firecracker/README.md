@@ -22,7 +22,7 @@ fresh, network-less microVM per execution (boot → run job over vsock → destr
    at it.
 3. **Guest agent** — install [`guest_agent.py`](guest_agent.py) in the rootfs and
    start it at boot (an init service) so it is already listening on AF_VSOCK
-   (`PAI_AGENT_PORT`, default 5005) when the VM starts. It executes one job per
+   (`FOSNIE_AGENT_PORT`, default 5005) when the VM starts. It executes one job per
    connection in a scratch dir and returns stdout/stderr/exit + new files.
 
 ## Wire protocol (host ↔ guest, vsock)
@@ -53,7 +53,7 @@ no route out, so injected code cannot exfiltrate or fetch even in principle
 
 ```
 features.code_interpreter = true   # in the boot config
-PAI_FIRECRACKER=1 cargo test --test firecracker   # gated integration test
+FOSNIE_FIRECRACKER=1 cargo test --test firecracker   # gated integration test
 ```
 
 Then a live chat: ask the Agent to compute or plot something → confirm a

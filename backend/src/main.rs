@@ -93,8 +93,11 @@ async fn main() -> anyhow::Result<()> {
     if boot.audit_signing_key.trim().is_empty() {
         tracing::warn!(
             "audit_signing_key is empty — the audit log is hash-chained but UNSIGNED; \
-             set PAI__AUDIT_SIGNING_KEY in production for non-repudiation"
+             set FOSNIE__AUDIT_SIGNING_KEY in production for non-repudiation"
         );
+    }
+    if let Some(warning) = fosnie_backend::config::legacy_env_prefix_warning() {
+        tracing::warn!("{warning}");
     }
     // Non-fatal deployment-posture advisories (e.g. non-loopback bind, open ML service).
     for warning in boot.hardening_warnings() {

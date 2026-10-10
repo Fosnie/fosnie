@@ -33,7 +33,7 @@ from .budgets import ResearchBudgets
 from .checks import Violation
 from .outline import Outline
 
-_log = logging.getLogger("pai.research.padding")
+_log = logging.getLogger("fosnie.research.padding")
 
 _WID_RE = re.compile(r"\[[WD]\d+\]")
 _SIM_THRESHOLD = 0.86       # cosine above this ⇒ two sections say the same thing

@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 use crate::audit::{self, AuditEvent};
 use crate::auth::keycloak::AuthUser;
-use crate::auth::rbac::{Permission, ResourceType};
+use crate::auth::rbac::Permission;
 use crate::auth::AuthContext;
 use crate::error::{AppError, Result};
 use crate::scheduler::{self, TaskType};
@@ -75,7 +75,7 @@ async fn resolve_target(
         }
         "document" => {
             let pid = crate::documents::project_of(&state.pg, target_id).await?;
-            state.rbac.require(&state.pg, ctx, ResourceType::Project, pid, Permission::Read).await?;
+            state.rbac.require_project(&state.pg, ctx, pid, Permission::Read).await?;
             let cur = crate::documents::current_version(&state.pg, &state.boot.storage.workspace_dir, target_id).await?;
             // Project's linked KBs ∩ caller-readable, in ONE query (the `can_read`
             // EXISTS shape from kb/mod.rs inlined) instead of a per-KB round-trip
@@ -192,7 +192,10 @@ async fn run_detail(state: &AppState, ctx: &AuthContext, run_id: Uuid) -> Result
 
     // RBAC: the creator + admins, else read access to the run's target.
     let is_creator = ctx.user_id.is_some() && ctx.user_id == r.created_by;
-    if !is_creator && !ctx.is_admin() {
+    if matches!(r.target_type.as_str(),"document"|"draft") && r.mode=="verify_draft" && crate::groundedness::jobs::is_routed(state,run_id).await? {
+        let kind=if r.target_type=="document" {crate::groundedness::routed_draft::TargetKind::Document} else {crate::groundedness::routed_draft::TargetKind::Draft};
+        crate::groundedness::jobs::authorize_target_result(state,ctx,run_id,r.target_id,kind).await?;
+    } else if !is_creator && !ctx.is_admin() {
         resolve_target(state, ctx, &r.target_type, r.target_id).await?;
     }
 
@@ -299,6 +302,13 @@ pub async fn repair(
     }
     // RBAC + existence + a succeeded document run, reusing run_detail's access check.
     let r = run_detail(&state, &ctx, run_id).await?;
+    let durable:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM routed_jobs WHERE id=$1)")
+        .bind(run_id).fetch_one(&state.pg).await?;
+    if durable {
+        crate::groundedness::durable::enqueue_repair(&state,&ctx,run_id).await?;
+        return Ok(Json(json!({"job_id":run_id,"status_url":format!("/api/document-verification-jobs/{run_id}")})));
+    }
+    crate::groundedness::routed_draft::reject_legacy_resume(&state,run_id).await?;
     if r.target_type != "document" {
         return Err(AppError::Validation("repair applies to workspace documents only".into()));
     }

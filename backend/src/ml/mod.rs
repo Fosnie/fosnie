@@ -47,7 +47,7 @@ fn omap_is_empty(m: &ProviderOverrides) -> bool {
 pub async fn provider_overrides(
     state: &crate::state::AppState,
     user_id: Option<uuid::Uuid>,
-) -> ProviderOverrides {
+) -> crate::Result<ProviderOverrides> {
     provider_overrides_with_llm(state, user_id, None).await
 }
 
@@ -61,7 +61,7 @@ pub async fn provider_overrides_with_llm(
     state: &crate::state::AppState,
     user_id: Option<uuid::Uuid>,
     llm_override: Option<&crate::ext::ResolvedProvider>,
-) -> ProviderOverrides {
+) -> crate::Result<ProviderOverrides> {
     let mut map = ProviderOverrides::new();
     for role in crate::providers::ROLES {
         // The llm role can be a per-turn selected provider (multi-LLM); when the
@@ -69,10 +69,10 @@ pub async fn provider_overrides_with_llm(
         let resolved = if role == "llm" {
             match llm_override {
                 Some(p) => Some(p.clone()),
-                None => state.providers.resolve(&state.pg, role, user_id).await.ok().flatten(),
+                None => state.providers.resolve(&state.pg, role, user_id).await?,
             }
         } else {
-            state.providers.resolve(&state.pg, role, user_id).await.ok().flatten()
+            state.providers.resolve(&state.pg, role, user_id).await?
         };
         let Some(p) = resolved else {
             continue;
@@ -86,16 +86,16 @@ pub async fn provider_overrides_with_llm(
         if let Some(v) = p.model {
             map.insert(format!("{role}_model"), v.into());
         }
-        if let Some(v) = p.api_key {
-            map.insert(format!("{role}_api_key"), v.into());
-        }
+        // An explicitly configured unauthenticated endpoint must not inherit the
+        // ML process's credential for an unrelated provider.
+        map.insert(format!("{role}_api_key"), p.api_key.unwrap_or_default().into());
     }
     // Bind the embed role to the ACTIVE index's model (provenance), so query + ingest
     // always embed consistently with the live vectors — independent of the "desired"
     // `provider_configs` embed row a pending migration carries, and ignoring any
     // per-user embed override (embed is deployment-wide). No provenance yet ⇒ leave
     // the resolved embed override as-is (un-seeded deploys behave exactly as before).
-    if let Ok(Some(active)) = crate::embedding_index::active(&state.pg, state.message_key).await {
+    if let Some(active) = crate::embedding_index::active(&state.pg, state.message_key).await? {
         map.insert("embed_model".into(), active.model.into());
         match active.base_url {
             Some(u) => { map.insert("embed_base_url".into(), u.into()); }
@@ -106,7 +106,7 @@ pub async fn provider_overrides_with_llm(
             None => { map.remove("embed_api_key"); }
         }
     }
-    map
+    Ok(map)
 }
 
 /// Augment a provider-override map with the per-turn reasoning request, in the
@@ -182,6 +182,9 @@ pub struct Sampling {
     /// burn the whole token budget thinking. ML clamps it to each provider's floor.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Explicit portable JSON contract for bounded, non-streaming calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,6 +237,8 @@ pub enum GenEvent {
         arguments: serde_json::Value,
     },
     Done {
+        #[serde(default)]
+        routing_report: Option<crate::model_routing::lease::LeaseReport>,
         #[serde(default)]
         finish_reason: Option<String>,
         #[serde(default)]
@@ -1597,6 +1602,9 @@ pub async fn ensure_collection(
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolCall {
+    /// Opaque adapter-bound replay state. Never sent as tool arguments or UI text.
+    #[serde(default)]
+    pub native_replay: Option<serde_json::Value>,
     pub id: Option<String>,
     pub name: String,
     pub arguments: serde_json::Value,
@@ -1604,6 +1612,10 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatStep {
+    #[serde(default)]
+    pub routing_failure:Option<crate::model_routing::failure::ProviderFailure>,
+    #[serde(default)]
+    pub routing_report: Option<crate::model_routing::lease::LeaseReport>,
     #[serde(default)]
     pub content: String,
     #[serde(default)]
@@ -2167,10 +2179,10 @@ pub async fn transcribe(
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, mime);
     // The body is raw audio, so provider overrides ride a header (keeps any
-    // stt_api_key out of the URL/query). ML reads `X-PAI-Overrides` → set_overrides.
+    // stt_api_key out of the URL/query). ML reads `X-Fosnie-Overrides` → set_overrides.
     if !providers.is_empty() {
         if let Ok(j) = serde_json::to_string(&providers) {
-            builder = builder.header("x-pai-overrides", j);
+            builder = builder.header("x-fosnie-overrides", j);
         }
     }
     let resp = builder

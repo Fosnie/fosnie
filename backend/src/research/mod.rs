@@ -24,6 +24,9 @@
 //! timeout below (45 min) ≈ the agent-run kill-token TTL minted at start.
 
 use std::time::Duration;
+mod triage;
+mod quality;
+pub mod history;
 
 use serde_json::json;
 use uuid::Uuid;
@@ -33,6 +36,10 @@ use crate::error::{AppError, Result};
 use crate::state::AppState;
 use crate::web_search::persist_web_citations;
 use crate::ws::protocol::{CitationOut, ServerFrame};
+
+pub mod routed;
+pub(crate) mod web;
+pub mod jobs;
 
 /// Generous per-request ceiling for the research ML call (the shared ML client
 /// sets none). Matches the kill-token TTL minted by the start endpoint.
@@ -368,6 +375,7 @@ async fn persist_verification(
 /// BEFORE the first DB write.
 pub async fn run_research(state: &AppState, payload: &serde_json::Value) -> Result<()> {
     let p = parse(payload)?;
+    crate::model_routing::admission::require_legacy_chat(state, Some(p.chat_id)).await?;
 
     // Killed/expired before we started → nothing to do.
     if let Some(run_id) = p.run_id {
@@ -429,7 +437,7 @@ pub async fn run_research(state: &AppState, payload: &serde_json::Value) -> Resu
             verify,
             &overrides,
             &research,
-            crate::ml::provider_overrides(state, None).await,
+            crate::ml::provider_overrides(state, None).await?,
             Some(Duration::from_secs(RESEARCH_ML_TIMEOUT_SECS)),
         )
         .await?;

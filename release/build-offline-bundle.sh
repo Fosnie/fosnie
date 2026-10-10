@@ -30,7 +30,7 @@
 #   build-offline-bundle.sh [--edition core|enterprise] [--docker] [OUT_DIR]
 #
 # Env:
-#   PAI_QDRANT_PIN   Qdrant image tag to record for the (future) docker path (default v1.12)
+#   FOSNIE_QDRANT_PIN   Qdrant image tag to record for the --docker path (default v1.12)
 
 set -uo pipefail
 
@@ -50,7 +50,7 @@ CORE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"                 # fosnie-core/
 ENT_ROOT="$(cd "$CORE_ROOT/../fosnie-enterprise" 2>/dev/null && pwd || true)"
 VERSION="$(grep -m1 '^version' "$CORE_ROOT/backend/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
 [ -n "$VERSION" ] || VERSION="0.0.0"
-STAGE="$OUT_DIR/pai-offline-$EDITION-$VERSION"
+STAGE="$OUT_DIR/fosnie-offline-$EDITION-$VERSION"
 
 echo "building $EDITION offline bundle v$VERSION → $STAGE"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
@@ -147,12 +147,12 @@ for d in deploy/airgap-install.md deploy/byok.md security/egress-inventory.md se
   stage_file "$CORE_ROOT/docs/$d" "$STAGE/docs"
 done
 
-# --- docker hook (documented, not built until prod GHCR images land) ---------
+# --- docker hook (documented, not implemented) -------------------------------
 if [ "$DO_DOCKER" -eq 1 ]; then
   echo "[docker]"
-  warn "docker-save NOT implemented: prod GHCR images (frontend nginx / backend / ml) from"
-  warn "ts-docker-deploy do not exist yet. When they land, 'docker save' them + pinned"
-  warn "postgres:17 / qdrant/qdrant:${PAI_QDRANT_PIN:-v1.12} / redis:7 into $STAGE/images/."
+  warn "docker-save NOT implemented. To add it: 'docker save' the release images"
+  warn "ghcr.io/<owner>/fosnie-backend:\$VERSION and ghcr.io/<owner>/fosnie-ml:\$VERSION,"
+  warn "plus pinned postgres:17 / qdrant/qdrant:${FOSNIE_QDRANT_PIN:-v1.12} / redis:7, into $STAGE/images/."
 fi
 
 # --- version marker ----------------------------------------------------------
@@ -168,7 +168,7 @@ bash "$CORE_ROOT/release/sign-release.sh" "$STAGE" || warn "signing incomplete (
 
 # --- tarball -----------------------------------------------------------------
 echo "[tar]"
-TARBALL="$OUT_DIR/pai-offline-$EDITION-$VERSION.tar.gz"
+TARBALL="$OUT_DIR/fosnie-offline-$EDITION-$VERSION.tar.gz"
 ( cd "$OUT_DIR" && tar -czf "$(basename "$TARBALL")" "$(basename "$STAGE")" ) && ok "bundle: $TARBALL"
 SHA="sha256sum"; command -v sha256sum >/dev/null 2>&1 || SHA="shasum -a 256"
 ( cd "$OUT_DIR" && $SHA "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )

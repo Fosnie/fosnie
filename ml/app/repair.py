@@ -30,7 +30,7 @@ from . import retrieve as retrieve_mod
 from . import verify as verify_mod
 from .config import settings
 
-_log = logging.getLogger("pai.ml.repair")
+_log = logging.getLogger("fosnie.ml.repair")
 
 _SYSTEM = (
     "You repair a single STATEMENT so that it is fully supported by the SOURCE.\n"

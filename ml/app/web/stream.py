@@ -26,7 +26,7 @@ from typing import AsyncIterator
 
 from . import loop, progress
 
-_log = logging.getLogger("pai.web.stream")
+_log = logging.getLogger("fosnie.web.stream")
 
 _QUEUE_MAX = 256
 _DONE = object()  # queue sentinel: runner finished, drain and stop
@@ -60,7 +60,9 @@ async def stream_events(query: str, recency: str = "any", depth: str = "standard
             _log.warning("web search stream errored: %s", e)
             await queue.put({"type": "error", "message": str(e)})
         finally:
-            await queue.put(_DONE)
+            # On disconnect the consumer no longer drains a full queue.
+            if not asyncio.current_task().cancelling():
+                await queue.put(_DONE)
 
     task = asyncio.create_task(runner())
     try:

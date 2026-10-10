@@ -1,7 +1,7 @@
 //! Code-interpreter seam: the cross-platform execute→artefact→audit core via a
 //! mock executor (no KVM), plus the capability-gate refusal when the feature is
 //! off. The real Firecracker backend is verified separately on a Linux+KVM box
-//! (tests/firecracker.rs, PAI_FIRECRACKER=1). Gated on PAI_E2E=1. alice=admin.
+//! (tests/firecracker.rs, FOSNIE_FIRECRACKER=1). Gated on FOSNIE_E2E=1. alice=admin.
 
 use std::sync::Arc;
 
@@ -19,7 +19,7 @@ use uuid::Uuid;
 const KC: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 /// Mint an authorisation witness through the real seam, then dispatch — the only
@@ -76,7 +76,7 @@ async fn token(user: &str) -> Option<String> {
 async fn setup(code_interpreter: bool) -> (sqlx::PgPool, AppState, u16) {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 5).await.unwrap();
     let redis = cache::create_pool(&redis_url).unwrap();
     let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };

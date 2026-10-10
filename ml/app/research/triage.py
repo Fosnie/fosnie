@@ -26,7 +26,7 @@ import logging
 
 from .. import guided, llm
 
-_log = logging.getLogger("pai.research.triage")
+_log = logging.getLogger("fosnie.research.triage")
 
 MAX_QUESTIONS = 3
 MAX_OPTIONS = 4

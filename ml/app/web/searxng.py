@@ -25,7 +25,7 @@ from ..config import settings
 from .pacing import pacer
 from .provider import SerpResult
 
-_log = logging.getLogger("pai.web.searxng")
+_log = logging.getLogger("fosnie.web.searxng")
 
 ENGINE_KEY = "engine:searxng"
 _COOLDOWN_S = 60.0

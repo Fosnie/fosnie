@@ -149,6 +149,7 @@ fn events<S: EmitSource>(state: StreamState<S>) -> impl Stream<Item = Result<Eve
                         finish_reason: "stop".into(),
                         usage: Default::default(),
                         citations: None,
+                        routing: None,
                     };
                     let ev = Event::default()
                         .data(chunk(&st.id, &st.model, st.created, &emit).to_string());

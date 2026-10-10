@@ -1,4 +1,4 @@
-# PAI Platform — TEST deploy (2× A100 80GB, single Linux box).
+# Fosnie — TEST deploy (2× A100 80GB, single Linux box).
 #
 # NOT the production artefact. Production is bare-metal + systemd + zero-egress
 # This brings the WHOLE platform
@@ -20,7 +20,7 @@
 #   GPU 0  → main LLM  (Qwen3-32B-AWQ, the heavy one — owns the card)
 #   GPU 1  → GLM-OCR + Qwen3-Embedding-4B + Qwen3-Reranker (all small, share the card)
 
-name: pai-test
+name: fosnie-test
 
 x-gpu0: &gpu0
   deploy:
@@ -46,7 +46,7 @@ services:
       POSTGRES_USER: pai
       POSTGRES_PASSWORD: pai
       POSTGRES_DB: pai
-    # host net → binds 5432 on the box. matches PAI__DATABASE_URL below.
+    # host net → binds 5432 on the box. matches FOSNIE__DATABASE_URL below.
     volumes:
       - pai_pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -237,7 +237,7 @@ services:
     build:
       context: ../../..
       dockerfile: backend/deploy/test/Dockerfile.verify
-    image: pai-verify:test
+    image: fosnie-verify:test
     network_mode: host
     volumes:
       - pai_hf_cache:/root/.cache/huggingface
@@ -262,17 +262,17 @@ services:
 
   # ─── Platform: Python ML/RAG service ─────────────────────────────────────
   # Pure HTTP client (no torch/vLLM in the image) → tiny, rebuilds in seconds.
-  pai-ml:
+  fosnie-ml:
     build:
       context: ../../..
       dockerfile: backend/deploy/test/Dockerfile.ml
-    image: pai-ml:test
+    image: fosnie-ml:test
     network_mode: host
     env_file: ./ml.test.env
     environment:
       SHARED_SECRET: ${ML_SHARED_SECRET:?set ML_SHARED_SECRET in .env}
     volumes:
-      - pai_storage:/var/lib/pai
+      - pai_storage:/var/lib/fosnie
     depends_on: [postgres, qdrant, vllm-main, vllm-embed, reranker, vllm-ocr, stt, tts, verify, searxng]
     restart: unless-stopped
 
@@ -293,18 +293,18 @@ services:
     devices:
       - "/dev/kvm:/dev/kvm"
     environment:
-      PAI_CONFIG_FILE: /etc/pai/config.test.toml
-      PAI__DATABASE_URL: postgres://pai:pai@localhost:5432/pai
-      PAI__REDIS_URL: redis://localhost:6379
-      PAI__ML__SHARED_SECRET: ${ML_SHARED_SECRET:?set ML_SHARED_SECRET in .env}
-      PAI__KEYCLOAK__CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-fosnie-secret}
-      PAI__MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-}
-      PAI__AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
+      FOSNIE_CONFIG_FILE: /etc/fosnie/config.test.toml
+      FOSNIE__DATABASE_URL: postgres://pai:pai@localhost:5432/pai
+      FOSNIE__REDIS_URL: redis://localhost:6379
+      FOSNIE__ML__SHARED_SECRET: ${ML_SHARED_SECRET:?set ML_SHARED_SECRET in .env}
+      FOSNIE__KEYCLOAK__CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-fosnie-secret}
+      FOSNIE__MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-}
+      FOSNIE__AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY:-}
     volumes:
-      - ./config.test.toml:/etc/pai/config.test.toml:ro
-      - ./firecracker:/opt/pai/firecracker          # vmlinux + rootfs.ext4 (you build these)
-      - pai_storage:/var/lib/pai
-    depends_on: [postgres, redis, keycloak, pai-ml]
+      - ./config.test.toml:/etc/fosnie/config.test.toml:ro
+      - ./firecracker:/opt/fosnie/firecracker          # vmlinux + rootfs.ext4 (you build these)
+      - pai_storage:/var/lib/fosnie
+    depends_on: [postgres, redis, keycloak, fosnie-ml]
     restart: unless-stopped
 
 volumes:

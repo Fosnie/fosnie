@@ -33,10 +33,11 @@ from urllib.parse import urlsplit
 
 from .. import chunker, reranker
 from ..config import settings
+from ..inference_target import strict
 from . import extractor, fallback_search, fetcher, provider
 from .cache import TTLCache
 
-_log = logging.getLogger("pai.web.pipeline")
+_log = logging.getLogger("fosnie.web.pipeline")
 
 # Phase-3 caches: repeated SERP queries / page fetches within the TTL are
 # served from memory — faster, and kinder to the pacing budget. SERP entries
@@ -103,6 +104,20 @@ def _domain_allowed(url: str) -> bool:
     return True
 
 
+async def _gather(*awaitables):
+    """Strict fan-out cancels and awaits children before returning a failure."""
+    if not strict():
+        return await asyncio.gather(*awaitables)
+    tasks = [asyncio.ensure_future(work) for work in awaitables]
+    try:
+        return await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def _extract_pdf(raw: bytes) -> str:
     """Route fetched PDF bytes through the existing document extraction path
     (pypdf native text; OCR service for scanned). The
@@ -146,7 +161,7 @@ async def _fetch_source(r: provider.SerpResult, sem: asyncio.Semaphore) -> _Sour
     """Fetch + extract one candidate; degrade to snippet-only on any failure.
     Successful extractions are TTL-cached by requested URL (the pool mutates
     sources, so cache hits return a copy)."""
-    cached = _page_cache.get(r.url)
+    cached = None if strict() else _page_cache.get(r.url)
     if cached is not None:
         return dataclasses.replace(cached, chunks=list(cached.chunks))
     fetched_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -170,11 +185,13 @@ async def _fetch_source(r: provider.SerpResult, sem: asyncio.Semaphore) -> _Sour
                         snippet_only=False,
                         chunks=chunks,
                     )
-                    _page_cache.set(r.url, dataclasses.replace(src, chunks=list(chunks)))
+                    if not strict():
+                        _page_cache.set(r.url, dataclasses.replace(src, chunks=list(chunks)))
                     return src
                 raise fetcher.FetchError(f"no text extracted from PDF {r.url}")
             ex = extractor.extract(page.body, page.final_url)
-            if len(ex.text) < extractor.NEAR_EMPTY_CHARS and settings.web_render_enabled:
+            from ..rag_ctx import cfg
+            if len(ex.text) < extractor.NEAR_EMPTY_CHARS and settings.web_render_enabled and not cfg("bounded_research_web", False):
                 try:
                     from . import progress
 
@@ -196,9 +213,12 @@ async def _fetch_source(r: provider.SerpResult, sem: asyncio.Semaphore) -> _Sour
                     snippet_only=False,
                     chunks=chunks,
                 )
-                _page_cache.set(r.url, dataclasses.replace(src, chunks=list(chunks)))
+                if not strict():
+                    _page_cache.set(r.url, dataclasses.replace(src, chunks=list(chunks)))
                 return src
         except Exception as e:  # noqa: BLE001 — snippet-only beats nothing
+            if strict():
+                raise
             _log.info("fetch failed for %s (snippet-only): %s", r.url, e)
     return _Source(
         url=r.url,
@@ -291,7 +311,7 @@ async def _single_round(query: str, recency: str = "any", depth: str = "standard
     # Fetch the top-N concurrently (paced per host inside the fetcher); the
     # remaining candidates contribute snippet-only evidence.
     sem = asyncio.Semaphore(max(1, settings.web_fetch_concurrency))
-    fetched = await asyncio.gather(*[_fetch_source(r, sem) for r in ranked[:fetch_top_n]])
+    fetched = await _gather(*[_fetch_source(r, sem) for r in ranked[:fetch_top_n]])
     snippet_sources = [
         _Source(
             url=r.url,

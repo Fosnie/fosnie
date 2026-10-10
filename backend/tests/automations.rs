@@ -1,5 +1,5 @@
 //! Automations: create + calendar + the due-scan enqueue (no LLM), and a
-//! run-on-demand that executes a headless chat (LLM). Gated on PAI_E2E=1.
+//! run-on-demand that executes a headless chat (LLM). Gated on FOSNIE_E2E=1.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use tokio::sync::watch;
 const KC: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 async fn token(user: &str) -> Option<String> {
@@ -41,9 +41,9 @@ async fn token(user: &str) -> Option<String> {
 async fn setup(with_scheduler: bool) -> (sqlx::PgPool, AppState, u16, watch::Sender<bool>) {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let ml_url =
-        std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let pg = db::connect(&db_url, 5).await.unwrap();
     let redis = cache::create_pool(&redis_url).unwrap();
     let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };

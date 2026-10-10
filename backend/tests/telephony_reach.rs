@@ -152,7 +152,7 @@ static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 async fn cast(url: &str) -> Option<Cast> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:16379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:16379".into());
     let pg = db::connect(&db_url, 5).await.unwrap_or_else(|e| {
         panic!("DATABASE_URL is set but unreachable, so nothing here was tested: {e}")
     });

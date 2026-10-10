@@ -85,6 +85,11 @@ pub async fn run(
         }
         None => create_chat(state, uid, agent_id, &content).await?,
     };
+    let lease=super::agent_routed::lock_chat(state,chat_id).await?;
+    let same:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chats WHERE id=$1 AND agent_id=$2)").bind(chat_id).bind(agent_id).fetch_one(&state.pg).await?;
+    if !same {return Err(ApiError::bad_request("conversation belongs to another agent"));}
+    let adopted:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM api_routed_chats WHERE chat_id=$1)").bind(chat_id).fetch_one(&state.pg).await?;
+    if adopted {return Err(ApiError::bad_request("this conversation requires an explicit model_selection on every request"));}
 
     let (tx, rx) = mpsc::channel::<ServerFrame>(FRAME_BUFFER);
     let cancel = Arc::new(Notify::new());
@@ -97,6 +102,7 @@ pub async fn run(
         let c = ctx.clone();
         let cancel = cancel.clone();
         tokio::spawn(async move {
+            let _lease=lease;
             crate::chat::run_turn(
                 &st,
                 // The conversation already exists with origin 'api' (created up
@@ -147,7 +153,7 @@ pub async fn run(
 
 /// The agent must be one this caller can see. The pipeline itself does not
 /// re-check, so without this a key could drive any agent by guessing its id.
-async fn require_visible_agent(
+pub(super) async fn require_visible_agent(
     state: &AppState,
     ctx: &AuthContext,
     uid: Uuid,
@@ -172,7 +178,7 @@ async fn require_visible_agent(
     }
 }
 
-fn continued_chat(headers: &HeaderMap) -> Result<Option<Uuid>, ApiError> {
+pub(super) fn continued_chat(headers: &HeaderMap) -> Result<Option<Uuid>, ApiError> {
     let Some(raw) = headers.get(CHAT_ID_HEADER) else { return Ok(None) };
     let s = raw
         .to_str()
@@ -192,7 +198,7 @@ fn continued_chat(headers: &HeaderMap) -> Result<Option<Uuid>, ApiError> {
 /// conversations, which is a write into the application's UI from a credential
 /// meant for machine traffic. Refusing as "not found" keeps a caller from
 /// probing which ids exist.
-async fn verify_api_chat(state: &AppState, uid: Uuid, chat_id: Uuid) -> Result<(), ApiError> {
+pub(super) async fn verify_api_chat(state: &AppState, uid: Uuid, chat_id: Uuid) -> Result<(), ApiError> {
     let ok = sqlx::query_scalar!(
         r#"SELECT EXISTS(
                SELECT 1 FROM chats
@@ -215,7 +221,7 @@ async fn verify_api_chat(state: &AppState, uid: Uuid, chat_id: Uuid) -> Result<(
 /// Two reasons. The origin has to be right from the first instant, and the
 /// conversation id has to be known before the response head is written — it
 /// travels as a header, and a streamed body is far too late.
-async fn create_chat(
+pub(super) async fn create_chat(
     state: &AppState,
     uid: Uuid,
     agent_id: Uuid,
@@ -287,6 +293,7 @@ async fn next_emit(src: &mut Source) -> Option<Emit> {
                     finish_reason: "stop".into(),
                     usage,
                     citations: citations_value(&src.citations),
+                    routing: None,
                 });
             }
             ServerFrame::ChatInterrupted { .. } => {
@@ -295,6 +302,7 @@ async fn next_emit(src: &mut Source) -> Option<Emit> {
                     finish_reason: "stop".into(),
                     usage: ml::Usage::default(),
                     citations: citations_value(&src.citations),
+                    routing: None,
                 });
             }
             ServerFrame::ChatError { message, .. } => {
@@ -362,7 +370,7 @@ mod tests {
     async fn state() -> Option<AppState> {
         let db_url = std::env::var("DATABASE_URL").ok()?;
         let redis_url =
-            std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+            std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
         let pg = crate::db::connect(&db_url, 2).await.ok()?;
         let redis = crate::cache::create_pool(&redis_url).ok()?;
         let boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };

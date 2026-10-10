@@ -43,7 +43,17 @@ pub const CHAT_ID_HEADER: &str = "x-fosnie-chat-id";
 
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionRequest {
+    #[serde(default)]
     pub model: String,
+    /// Explicit Fosnie extension. Absence keeps the compatible legacy path;
+    /// null and malformed selections must never silently become legacy.
+    #[serde(default, deserialize_with = "selection")]
+    pub model_selection: Option<crate::model_routing::ModelSelection>,
+    /// Only with an enabled virtual Auto alias. agent/<uuid> keeps its meaning.
+    #[serde(default, deserialize_with="alias_agent")]
+    pub fosnie_agent_id:Option<Uuid>,
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, Value>,
     #[serde(default)]
     pub messages: Vec<ReqMessage>,
     #[serde(default)]
@@ -74,6 +84,11 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub user: Option<String>,
 }
+
+fn selection<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<crate::model_routing::ModelSelection>, D::Error> {
+    crate::model_routing::ModelSelection::deserialize(d).map(Some)
+}
+fn alias_agent<'de,D:serde::Deserializer<'de>>(d:D)->Result<Option<Uuid>,D::Error> {Uuid::deserialize(d).map(Some)}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReqMessage {
@@ -106,6 +121,9 @@ impl ReqMessage {
 
 impl ChatCompletionRequest {
     pub fn validate(&self) -> Result<(), ApiError> {
+        if self.model_selection.is_none() && self.model.trim().is_empty() {
+            return Err(ApiError::bad_request("'model' is required without model_selection"));
+        }
         if self.messages.is_empty() {
             return Err(ApiError::bad_request("'messages' must contain at least one message"));
         }
@@ -141,6 +159,7 @@ impl ChatCompletionRequest {
             frequency_penalty: self.frequency_penalty,
             presence_penalty: self.presence_penalty,
             reasoning_effort: None,
+            response_schema: None,
         }
     }
 
@@ -174,6 +193,7 @@ pub enum Emit {
         finish_reason: String,
         usage: ml::Usage,
         citations: Option<Value>,
+        routing: Option<Value>,
     },
     /// The turn failed. Terminal.
     Failed(ApiError),
@@ -187,6 +207,7 @@ pub struct Aggregate {
     pub finish_reason: Option<String>,
     pub usage: ml::Usage,
     pub citations: Option<Value>,
+    pub routing: Option<Value>,
     pub failed: Option<ApiError>,
 }
 
@@ -197,10 +218,11 @@ impl Aggregate {
                 self.content.push_str(&content);
                 self.reasoning.push_str(&reasoning);
             }
-            Emit::Final { finish_reason, usage, citations } => {
+            Emit::Final { finish_reason, usage, citations, routing } => {
                 self.finish_reason = Some(finish_reason);
                 self.usage = usage;
                 self.citations = citations;
+                self.routing = routing;
             }
             Emit::Failed(e) => self.failed = Some(e),
         }
@@ -225,7 +247,7 @@ pub fn chunk(id: &str, model: &str, created: i64, emit: &Emit) -> Value {
                 d.insert("reasoning_content".into(), json!(reasoning));
             }
         }
-        Emit::Final { finish_reason, usage: u, citations } => {
+        Emit::Final { finish_reason, usage: u, citations, .. } => {
             choice["finish_reason"] = json!(finish_reason);
             usage = usage_json(u);
             if let Some(c) = citations {
@@ -247,6 +269,9 @@ pub fn chunk(id: &str, model: &str, created: i64, emit: &Emit) -> Value {
     }
     if let Some((k, v)) = extra {
         out[k] = v;
+    }
+    if let Emit::Final { routing: Some(routing), .. } = emit {
+        out["fosnie_routing"] = routing.clone();
     }
     out
 }
@@ -271,6 +296,9 @@ pub fn completion(id: &str, model: &str, created: i64, agg: &Aggregate) -> Value
     });
     if let Some(c) = &agg.citations {
         out["citations"] = c.clone();
+    }
+    if let Some(routing) = &agg.routing {
+        out["fosnie_routing"] = routing.clone();
     }
     out
 }
@@ -303,11 +331,36 @@ pub async fn completions(
     State(state): State<AppState>,
     ApiKeyAuth(ctx, key_id): ApiKeyAuth,
     headers: HeaderMap,
-    axum::Json(req): axum::Json<ChatCompletionRequest>,
+    body: Result<axum::Json<ChatCompletionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, ApiError> {
     super::require_enabled_for(&state, &ctx).await?;
     super::rate_limit(&state, key_id).await?;
+    let axum::Json(mut req) = body.map_err(|_| ApiError::bad_request("invalid completion request JSON"))?;
     req.validate()?;
+    if let Some((alias,objective))=super::alias::resolve(&state,&req.model).await? {
+        if req.model_selection.as_ref().is_some_and(|s|!matches!(s,crate::model_routing::ModelSelection::Auto {..})) {
+            return Err(ApiError::bad_request("the virtual Auto alias requires Auto selection; Default/Manual cannot be combined with it"));
+        }
+        if req.model_selection.is_none() {req.model_selection=Some(crate::model_routing::ModelSelection::Auto {objective,policy_id:None});}
+        if let Some(agent_id)=req.fosnie_agent_id.take() {
+            req.model=format!("{AGENT_PREFIX}{agent_id}");
+            return super::agent_routed::run_alias(&state,&ctx,key_id,req,agent_id,&headers,alias).await;
+        }
+        if headers.contains_key(CHAT_ID_HEADER) {return Err(ApiError::bad_request("raw alias completions are stateless; agent continuation requires fosnie_agent_id"));}
+        req.model.clear();
+        return super::routed::run_alias(&state,&ctx,key_id,req,alias).await;
+    }
+    if req.fosnie_agent_id.is_some() {return Err(ApiError::bad_request("fosnie_agent_id requires an enabled virtual Auto alias"));}
+    if req.model_selection.is_some() {
+        if let Some(rest)=req.model.strip_prefix(AGENT_PREFIX) {
+            let agent_id=Uuid::parse_str(rest.trim()).map_err(|_|ApiError::model_not_found(&req.model))?;
+            return super::agent_routed::run(&state,&ctx,key_id,req,agent_id,&headers).await;
+        }
+        if headers.contains_key(CHAT_ID_HEADER) {
+            return Err(ApiError::bad_request("routed stateless completions do not accept a chat id"));
+        }
+        return super::routed::run(&state, &ctx, key_id, req).await;
+    }
 
     // Tested before the provider labels: the prefix is what selects the agent
     // pipeline, so it wins any collision with a label that looks like one.

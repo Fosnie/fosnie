@@ -40,8 +40,9 @@ from urllib.parse import urlparse
 from . import http_client
 from .config import settings
 from .rag_ctx import cfg
+from .inference_target import strict
 
-logger = logging.getLogger("pai-ml.gemini")
+logger = logging.getLogger("fosnie-ml.gemini")
 
 
 def is_gemini_native(base_url: str | None) -> bool:
@@ -78,22 +79,53 @@ def _url(model: str, method: str, sse: bool = False) -> str:
 _BUDGET = {"low": 4096, "medium": 8192, "high": 16384, "max": 24576}
 
 
-def _thinking_config() -> dict[str, Any] | None:
-    """Build `thinkingConfig` from the per-turn reasoning overrides. Returns None to
-    omit it entirely (⇒ the model's default thinking behaviour)."""
-    enabled = cfg("llm_reasoning_enabled", None)
+def _uses_thinking_level(model: str) -> bool:
+    family = model.removeprefix("models/").split("-", 2)
+    major = family[1].split(".", 1)[0] if len(family) > 1 and family[0] == "gemini" else ""
+    return major.isdigit() and int(major) >= 3
+
+
+def _level_config(model: str, level: str, trace: bool) -> dict[str, Any]:
+    supported = {"minimal", "low", "medium", "high"}
+    # Only exact documented model IDs narrow the API enum. No quality inference,
+    # broad alias guessing or silently replacing an unsupported effort.
+    model = model.removeprefix("models/")
+    if model == "gemini-3-pro-preview":supported = {"low", "high"}
+    elif model == "gemini-3.1-pro-preview":supported = {"low", "medium", "high"}
+    if level not in supported:
+        raise ValueError("selected Gemini effort has no supported parameter mapping")
+    return {"thinkingLevel": level.upper(), "includeThoughts": trace}
+
+
+def _thinking_config(model: str | None = None) -> dict[str, Any] | None:
+    """Translate reasoning for the actual request model, preserving its default."""
+    model = str(model or cfg("llm_model", settings.llm_model))
     trace = str(cfg("llm_reasoning_trace", "true")).strip().lower() != "false"
+    if strict():
+        level = cfg("routing_effort", None)
+        if level is None:return None
+        if _uses_thinking_level(model):return _level_config(model, level, trace)
+        if level == "none":return {"thinkingBudget": 0}
+        if level not in _BUDGET:
+            raise ValueError("selected Gemini effort has no supported parameter mapping")
+        return {"thinkingBudget": _BUDGET[level], "includeThoughts": trace}
+    enabled = cfg("llm_reasoning_enabled", None)
+    spec = (cfg("llm_thinking", settings.llm_thinking) or "off").strip().lower()
+    if _uses_thinking_level(model):
+        if enabled is None:
+            if not spec.startswith("adaptive"):return None
+            level = spec.partition(":")[2] or "auto"
+        elif str(enabled).lower() != "true":
+            raise ValueError("Gemini 3 cannot guarantee thinking off; select minimal where supported")
+        else:level = (cfg("llm_reasoning_level", None) or "auto").strip().lower()
+        if level in ("", "auto"):return {"includeThoughts": trace}
+        return _level_config(model, level, trace)
+    # Earlier/unknown families retain the existing budget translation.
     if enabled is None:
-        # No per-turn control — honour a legacy `llm_thinking` budget/adaptive hint
-        # if present, else leave the model default.
-        spec = (cfg("llm_thinking", settings.llm_thinking) or "off").strip().lower()
-        if spec in ("", "off"):
-            return None
-        if spec.startswith("adaptive"):
-            return {"thinkingBudget": -1, "includeThoughts": trace}
+        if spec in ("", "off"):return None
+        if spec.startswith("adaptive"):return {"thinkingBudget": -1, "includeThoughts": trace}
         return None
-    if str(enabled).lower() != "true":
-        return {"thinkingBudget": 0}  # disable (no-op on always-on Pro models)
+    if str(enabled).lower() != "true":return {"thinkingBudget": 0}
     level = (cfg("llm_reasoning_level", None) or "auto").strip().lower()
     budget = -1 if level in ("", "auto") else _BUDGET.get(level, -1)
     return {"thinkingBudget": budget, "includeThoughts": trace}
@@ -174,7 +206,17 @@ def _translate(messages: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, l
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = {}
-                parts.append({"functionCall": {"name": name, "args": args or {}}})
+                from .native_replay import get
+                replay = get(tc, "gemini")
+                part = {"functionCall": {"name": name, "args": args or {}}}
+                if replay:
+                    native = replay.get("part")
+                    if (not isinstance(native,dict) or set(native)-{"functionCall","thoughtSignature"}
+                        or native.get("functionCall",{}).get("name")!=name
+                        or native.get("functionCall",{}).get("args",{})!=(args or {})):
+                        raise ValueError("Gemini replay call mismatch")
+                    part = native
+                parts.append(part)
             contents.append({"role": "model", "parts": parts or [{"text": ""}]})
             continue
         if role == "tool":
@@ -188,7 +230,12 @@ def _translate(messages: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, l
                 resp_obj = {"result": raw}
             # Function results are sent back in a user-role content (Gemini accepts
             # only `user`/`model` roles; the `functionResponse` part marks it).
-            contents.append({"role": "user", "parts": [{"functionResponse": {"name": name, "response": resp_obj}}]})
+            response_part = {"functionResponse": {"name": name, "response": resp_obj}}
+            for previous in contents:
+                for part in previous.get("parts", []):
+                    fc = part.get("functionCall", {})
+                    if fc.get("id")==m.get("tool_call_id"):response_part["functionResponse"]["id"] = fc["id"]
+            contents.append({"role": "user", "parts": [response_part]})
             continue
     system = {"parts": [{"text": "\n".join(sys_parts)}]} if sys_parts else None
     return system, contents
@@ -215,12 +262,13 @@ def _build_body(
     messages: list[dict[str, Any]],
     sampling: dict[str, Any],
     tools: list[dict[str, Any]] | None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     system, contents = _translate(messages)
     gen: dict[str, Any] = {
         "maxOutputTokens": sampling.get("max_tokens") or settings.llm_default_max_tokens,
     }
-    think = _thinking_config()
+    think = _thinking_config(model)
     if think is not None:
         gen["thinkingConfig"] = think
     # Sampling params are dropped while thinking is on (mirrors the Anthropic
@@ -230,6 +278,8 @@ def _build_body(
             gen["temperature"] = sampling["temperature"]
         if "top_p" in sampling:
             gen["topP"] = sampling["top_p"]
+    if sampling.get("response_schema") is not None:
+        gen["responseFormat"] = {"text": {"mimeType": "APPLICATION_JSON", "schema": sampling["response_schema"]}}
     body: dict[str, Any] = {"contents": contents, "generationConfig": gen}
     if system:
         body["systemInstruction"] = system
@@ -258,6 +308,15 @@ def _map_usage(u: dict[str, Any] | None) -> dict[str, Any]:
     tt = u.get("thoughtsTokenCount")
     if tt:
         out["reasoning_tokens"] = tt
+    if strict():
+        # Gemini's total includes prompt + thoughts + response candidates;
+        # thoughts are separate from candidatesTokenCount in its native usage.
+        # https://ai.google.dev/api/generate-content#UsageMetadata
+        out["completion_tokens"] = ct + (tt or 0)
+        out["prompt_tokens_details"] = {"cached_tokens":u.get("cachedContentTokenCount")}
+        out["raw_provider_usage"] = dict(u)
+        if not u:
+            out["prompt_tokens"] = out["completion_tokens"] = out["total_tokens"] = None
     return out
 
 
@@ -273,7 +332,12 @@ def _parse_parts(parts: list[dict[str, Any]] | None) -> tuple[str, list[dict[str
             text_parts.append(p.get("text") or "")
         elif "functionCall" in p:
             fc = p["functionCall"]
-            tool_calls.append({"id": f"call_{i}", "name": fc.get("name"), "arguments": fc.get("args") or {}})
+            from .native_replay import bind
+            call = {"id": fc.get("id") or f"call_{i}", "name": fc.get("name"), "arguments": fc.get("args") or {}}
+            part = {"functionCall": fc}
+            if p.get("thoughtSignature"):part["thoughtSignature"] = p["thoughtSignature"]
+            call["native_replay"] = bind("gemini", {"part":part})
+            tool_calls.append(call)
     return "".join(text_parts), tool_calls
 
 
@@ -288,16 +352,16 @@ async def a_chat_step(
     stage = llm._consume_stage()
     sampling = sampling or {}
     model = model or cfg("llm_model", settings.llm_model)
-    body = _build_body(messages, sampling, tools)
+    body = _build_body(messages, sampling, tools, model=model)
     client = http_client.get_client()
-    r = await client.post(_url(model, "generateContent"), json=body, headers=_headers())
+    r = await http_client.post(client, _url(model, "generateContent"), json=body, headers=_headers())
     # Graceful tools-drop: a model/route without function-calling rejects `tools`.
-    if tools and r.status_code >= 400:
+    if tools and r.status_code >= 400 and not strict():
         logger.warning("Gemini rejected tools (%s); retrying without tools", r.status_code)
         body.pop("tools", None)
-        r = await client.post(_url(model, "generateContent"), json=body, headers=_headers())
+        r = await http_client.post(client, _url(model, "generateContent"), json=body, headers=_headers())
     if r.status_code != 200:
-        logger.warning("Gemini chat_step %s: %.500r", r.status_code, r.text)
+        logger.warning("Gemini chat_step %s: %.500r", r.status_code, "[routed details omitted]" if strict() else r.text)
         r.raise_for_status()
     data = r.json()
     cand = (data.get("candidates") or [{}])[0]
@@ -321,11 +385,11 @@ async def a_complete(system: str, user: str, max_tokens: int = 512) -> str:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": user})
     model = cfg("llm_model", settings.llm_model)
-    body = _build_body(msgs, {"max_tokens": max_tokens, "temperature": 0}, None)
+    body = _build_body(msgs, {"max_tokens": max_tokens, "temperature": 0}, None, model=model)
     client = http_client.get_client()
-    r = await client.post(_url(model, "generateContent"), json=body, headers=_headers())
+    r = await http_client.post(client, _url(model, "generateContent"), json=body, headers=_headers())
     if r.status_code != 200:
-        logger.warning("Gemini complete %s: %.500r", r.status_code, r.text)
+        logger.warning("Gemini complete %s: %.500r", r.status_code, "[routed details omitted]" if strict() else r.text)
         r.raise_for_status()
     data = r.json()
     cand = (data.get("candidates") or [{}])[0]
@@ -345,17 +409,17 @@ async def a_stream_chat(
 
     stage = llm._consume_stage()
     model = model or cfg("llm_model", settings.llm_model)
-    body = _build_body(messages, sampling, tools)
+    body = _build_body(messages, sampling, tools, model=model)
     usage: dict[str, Any] | None = None
     finish: str | None = None
     fc_count = 0  # Gemini has no native call id — synthesise a stable one per call
 
     client = http_client.get_client()
-    async with client.stream("POST", _url(model, "streamGenerateContent", sse=True), json=body, headers=_headers()) as resp:
+    async with http_client.stream(client, "POST", _url(model, "streamGenerateContent", sse=True), json=body, headers=_headers()) as resp:
         if resp.status_code != 200:
             err = await resp.aread()
-            logger.warning("Gemini stream %s: %.500r", resp.status_code, err)
-            raise LlmError(f"Gemini upstream returned {resp.status_code}")
+            logger.warning("Gemini stream %s: %.500r", resp.status_code, "[routed details omitted]" if strict() else err)
+            raise await LlmError.from_response(resp)
         async for line in resp.aiter_lines():
             line = line.strip()
             if not line.startswith("data:"):

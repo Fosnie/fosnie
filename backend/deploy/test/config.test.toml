@@ -1,9 +1,9 @@
-# PAI Platform backend — TEST boot config (container, host networking).
-# Mounted at /etc/pai/config.test.toml; PAI_CONFIG_FILE points here.
-# Secrets come from PAI__* env (see docker-compose.test.yml), NOT this file.
+# Fosnie backend — TEST boot config (container, host networking).
+# Mounted at /etc/fosnie/config.test.toml; FOSNIE_CONFIG_FILE points here.
+# Secrets come from FOSNIE__* env (see docker-compose.test.yml), NOT this file.
 # This is a TEST profile: http on localhost, dev Keycloak realm. Not production.
 
-database_url = "postgres://pai:pai@localhost:5432/pai"   # overridden by PAI__DATABASE_URL
+database_url = "postgres://pai:pai@localhost:5432/pai"   # overridden by FOSNIE__DATABASE_URL
 redis_url    = "redis://localhost:6379"
 log_level    = "info"
 
@@ -13,15 +13,15 @@ max_context_tokens = 0
 [server]
 host       = "127.0.0.1"     # host networking; reach it via SSH tunnel
 port       = 8080
-static_dir = "/opt/pai/frontend/dist"   # SPA baked into the backend image
+static_dir = "/opt/fosnie/frontend/dist"   # SPA baked into the backend image
 public_url = "http://localhost:8080"     # loopback ⇒ plain http allowed by validate()
 
 [ml]
 base_url = "http://127.0.0.1:8090"
-# shared_secret comes from PAI__ML__SHARED_SECRET env.
+# shared_secret comes from FOSNIE__ML__SHARED_SECRET env.
 
 [observability]
-# Set PAI__OBSERVABILITY__METRICS_TOKEN to enable /metrics (fail-closed otherwise).
+# Set FOSNIE__OBSERVABILITY__METRICS_TOKEN to enable /metrics (fail-closed otherwise).
 metrics_token = ""
 log_format    = "json"
 
@@ -40,19 +40,19 @@ data_owner_approval = true # owner approval for access-bearing group adds (inbox
 code_interpreter = true
 
 [storage]
-branding_dir  = "/var/lib/pai/branding"
-artefacts_dir = "/var/lib/pai/artefacts"
-documents_dir = "/var/lib/pai/documents"
-workspace_dir = "/var/lib/pai/workspace"
-skills_dir    = "/var/lib/pai/skills"
-prompts_dir   = "/var/lib/pai/prompts"
-exports_dir   = "/var/lib/pai/exports"
+branding_dir  = "/var/lib/fosnie/branding"
+artefacts_dir = "/var/lib/fosnie/artefacts"
+documents_dir = "/var/lib/fosnie/documents"
+workspace_dir = "/var/lib/fosnie/workspace"
+skills_dir    = "/var/lib/fosnie/skills"
+prompts_dir   = "/var/lib/fosnie/prompts"
+exports_dir   = "/var/lib/fosnie/exports"
 
 [keycloak]
 url       = "http://localhost:8081"   # dev realm; browser + backend share this host
 realm     = "fosnie"
 client_id = "fosnie"
-# client_secret comes from PAI__KEYCLOAK__CLIENT_SECRET env (seed: fosnie-secret).
+# client_secret comes from FOSNIE__KEYCLOAK__CLIENT_SECRET env (seed: fosnie-secret).
 
 [tool_timeout_secs]
 
@@ -73,10 +73,10 @@ tts_stream_url    = "http://127.0.0.1:8880"
 # deploy/firecracker/README.md and drop them there.
 [code_interpreter_vm]
 firecracker_bin = "firecracker"
-kernel_image    = "/opt/pai/firecracker/vmlinux"
-rootfs_image    = "/opt/pai/firecracker/rootfs.ext4"
-snapshot_dir    = "/opt/pai/firecracker/snapshot"
-socket_dir      = "/run/pai/firecracker"
+kernel_image    = "/opt/fosnie/firecracker/vmlinux"
+rootfs_image    = "/opt/fosnie/firecracker/rootfs.ext4"
+snapshot_dir    = "/opt/fosnie/firecracker/snapshot"
+socket_dir      = "/run/fosnie/firecracker"
 vsock_cid       = 3
 vsock_port      = 5005
 vcpus           = 2

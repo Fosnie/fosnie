@@ -231,8 +231,9 @@ impl FromRequestParts<AppState> for AuthUser {
                 // provider's own error untouched, so behaviour without such a
                 // header is unchanged.
                 match crate::auth::device::try_device_auth(parts, state).await {
-                    Some((ctx, device_id)) => {
-                        parts.extensions.insert(crate::auth::device::DeviceAuth(device_id));
+                    Some((ctx, credential)) => {
+                        parts.extensions.insert(crate::auth::device::DeviceAuth(credential.device_id));
+                        parts.extensions.insert(credential);
                         Ok(AuthUser(ctx))
                     }
                     None => Err(e),

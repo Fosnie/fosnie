@@ -1,4 +1,4 @@
-# SearXNG settings for the PAI Platform dev SERP layer (web-search connector).
+# SearXNG settings for the Fosnie SERP layer (web-search connector).
 # Minimal delta over the image defaults.
 #
 # Key points:
@@ -14,7 +14,7 @@ use_default_settings: true
 
 server:
   # Dev-only value; generate a fresh secret for any non-dev deployment.
-  secret_key: "pai-dev-searxng-secret-change-me"
+  secret_key: "fosnie-dev-searxng-secret-change-me"
   limiter: false
   image_proxy: false
 

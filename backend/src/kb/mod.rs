@@ -206,6 +206,21 @@ pub async fn ingest_bytes(
     bytes: &[u8],
     source: &str,
 ) -> Result<Uuid> {
+    let doc_id=stage_bytes(state,ctx,kb_id,filename,mime,bytes,source).await?;
+    if let Err(error)=crate::model_routing::ingestion::queue(state,ctx,doc_id).await {
+        let _=sqlx::query("UPDATE kb_documents SET ingest_status='error' WHERE id=$1").bind(doc_id).execute(&state.pg).await;
+        return Err(error);
+    }
+    Ok(doc_id)
+}
+
+/// Store a connector copy without scheduling inference. The extension must
+/// capture provenance and ACLs before calling `ingestion::queue_connector`.
+#[allow(clippy::too_many_arguments)]
+pub async fn stage_bytes(
+    state:&crate::state::AppState,ctx:&AuthContext,kb_id:Uuid,filename:&str,
+    mime:Option<&str>,bytes:&[u8],source:&str,
+)->Result<Uuid> {
     crate::upload::ensure_supported_document(filename)?;
     let doc_id = crate::db::new_id();
     let bytes_path = write_kb_bytes(state, doc_id, filename, bytes).await?;
@@ -223,13 +238,6 @@ pub async fn ingest_bytes(
     )
     .execute(&state.pg)
     .await?;
-    crate::scheduler::enqueue(
-        &state.pg,
-        crate::scheduler::TaskType::Ingest,
-        serde_json::json!({ "doc_id": doc_id }),
-    )
-    .await
-    .map_err(AppError::from)?;
     audit_kb(
         &state.pg,
         ctx,
@@ -250,6 +258,17 @@ pub async fn replace_bytes(
     kb_document_id: Uuid,
     bytes: &[u8],
 ) -> Result<()> {
+    if crate::model_routing::ingestion::connector_enabled(state).await? {
+        return Err(AppError::Forbidden("actorless connector ingestion is disabled".into()));
+    }
+    replace_bytes_staged(state,kb_document_id,bytes).await?;
+    crate::scheduler::enqueue(&state.pg,crate::scheduler::TaskType::Ingest,serde_json::json!({"doc_id":kb_document_id})).await?;
+    Ok(())
+}
+
+/// Replace bytes without inference; the authorised importer refreshes the
+/// provenance/version and ACLs before scheduling the new immutable snapshot.
+pub async fn replace_bytes_staged(state:&crate::state::AppState,kb_document_id:Uuid,bytes:&[u8])->Result<()> {
     let row = sqlx::query!(
         "SELECT bytes_path FROM kb_documents WHERE id = $1",
         kb_document_id
@@ -268,13 +287,6 @@ pub async fn replace_bytes(
     )
     .execute(&state.pg)
     .await?;
-    crate::scheduler::enqueue(
-        &state.pg,
-        crate::scheduler::TaskType::Ingest,
-        serde_json::json!({ "doc_id": kb_document_id }),
-    )
-    .await
-    .map_err(AppError::from)?;
     Ok(())
 }
 
@@ -557,7 +569,7 @@ pub async fn ensure_project_kb(
     .await?
     .ok_or_else(|| AppError::Validation("project not found".into()))?;
 
-    let info = crate::ml::embed_info(&state.http, &state.boot.ml.base_url, crate::ml::provider_overrides(state, ctx.user_id).await).await?;
+    let info = crate::ml::embed_info(&state.http, &state.boot.ml.base_url, crate::ml::provider_overrides(state, ctx.user_id).await?).await?;
     // Seed embedding-index provenance on first KB build (idempotent).
     if let Ok(ep) = state.providers.resolve(&state.pg, "embed", ctx.user_id).await {
         let ep = ep.unwrap_or(crate::ext::ResolvedProvider { base_url: None, model: None, api_key: None, enabled: true, reasoning_mode: None });

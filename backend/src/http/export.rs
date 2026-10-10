@@ -252,6 +252,9 @@ pub async fn require_chat_read(state: &AppState, ctx: &AuthContext, chat_id: Uui
     if ctx.user_id == Some(row.owner_user_id) || ctx.is_admin() {
         return Ok((row.project_id, row.title));
     }
+    if Box::pin(crate::workflows::delivery::authorize_read(state,ctx,chat_id)).await? {
+        return Ok((row.project_id, row.title));
+    }
     // Project members can read a project-grounded chat.
     if let Some(pid) = row.project_id {
         if state.rbac.can(&state.pg, ctx, ResourceType::Project, pid, Permission::Read).await? {
@@ -288,6 +291,7 @@ pub async fn export_chat(
     require_chat_read(&state, &ctx, chat_id).await?;
     audit_export(&state, &ctx, "requested", "chat", Some(chat_id)).await;
     let f = build_chat_export(&state, chat_id, &q.format).await?;
+    require_chat_read(&state, &ctx, chat_id).await?;
     audit_export(&state, &ctx, "completed", "chat", Some(chat_id)).await;
     Ok(text_response(f.bytes, &f.mime, &f.filename))
 }
@@ -414,12 +418,13 @@ pub async fn list_exports(
 
 /// Owner of the export, or an admin.
 async fn require_export_access(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<Uuid> {
-    let requester: Option<Uuid> =
-        sqlx::query_scalar!("SELECT requested_by FROM exports WHERE id = $1", id)
-            .fetch_optional(&state.pg)
-            .await?;
-    let requester = requester.ok_or_else(|| AppError::Validation("export not found".into()))?;
+    let row:Option<(Uuid,String,Option<Uuid>)>=sqlx::query_as("SELECT requested_by,kind::text,target_id FROM exports WHERE id=$1")
+        .bind(id).fetch_optional(&state.pg).await?;
+    let (requester,kind,target)=row.ok_or_else(|| AppError::Validation("export not found".into()))?;
     if ctx.user_id == Some(requester) || ctx.is_admin() {
+        if kind=="chat" {
+            Box::pin(require_chat_read(state,ctx,target.ok_or_else(|| AppError::Validation("chat export missing target".into()))?)).await?;
+        }
         Ok(requester)
     } else {
         Err(AppError::Forbidden("not your export".into()))
@@ -470,6 +475,7 @@ pub async fn download_export(
         .map_err(|e| AppError::Other(anyhow::anyhow!("read export file: {e}")))?;
     let mime = r.mime.unwrap_or_else(|| "application/octet-stream".into());
     let filename = r.filename.unwrap_or_else(|| format!("{id}.bin"));
+    require_export_access(&state, &ctx, id).await?;
     Ok(text_response(bytes, &mime, &filename))
 }
 
@@ -491,10 +497,14 @@ pub async fn run_export(state: &AppState, export_id: Uuid) -> Result<()> {
     .await?;
 
     let built = match row.kind.as_str() {
-        "chat" => {
+        "chat" => Box::pin(async {
             let tid = row.target_id.ok_or_else(|| AppError::Validation("chat export missing target".into()))?;
-            build_chat_export(state, tid, &row.format).await
-        }
+            let viewer = crate::auth::load_context(&state.pg, row.requested_by).await?;
+            Box::pin(require_chat_read(state,&viewer,tid)).await?;
+            let file=build_chat_export(state, tid, &row.format).await?;
+            Box::pin(require_chat_read(state,&viewer,tid)).await?;
+            Ok(file)
+        }).await,
         "project_db" => {
             let tid = row.target_id.ok_or_else(|| AppError::Validation("project export missing target".into()))?;
             // Run the export as the admin who requested it, so an enforced source

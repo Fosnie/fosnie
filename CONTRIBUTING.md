@@ -87,6 +87,18 @@ Everything in a fragment is published, so write it as customer-facing text: no i
 config names, no notes about the development process, and no claims about other products. Use British
 English and no em-dash.
 
+## Versions
+
+One version describes the platform: `backend/Cargo.toml` and `frontend/package.json` carry it, it is what
+a `vX.Y.Z` tag names, and it is the heading a release lands under in `CHANGELOG.md`. Bump both together;
+`frontend/package-lock.json` holds the same number in its two top-level `version` fields, so edit those by
+hand rather than regenerating the lock (a regeneration on Windows drops the Linux-only optional
+dependencies the Docker build needs).
+
+The desktop client (`desktop/`) versions independently, because it is installed once and updated on its
+own schedule; it ships on `desktop-vX.Y.Z` tags. The internal libraries (`ml/pyproject.toml`,
+`crates/*/Cargo.toml`) are not published anywhere and stay at `0.1.0`; nothing reads their version.
+
 ## Reporting security issues
 
 **Do not** open public issues for security vulnerabilities. Follow the private disclosure process in [`SECURITY.md`](./SECURITY.md).

@@ -2,7 +2,7 @@
 //! create→get→render, memory create→list→edit→delete, skill create→attach→list)
 //! plus an end-to-end `remember_fact` turn: a tool-enabled Agent asked to
 //! remember a fact persists a `memory_fact` row + a `tool.invoked` audit, and a
-//! follow-up turn's slot-[4] carries it back. Gated on `PAI_E2E=1` (needs
+//! follow-up turn's slot-[4] carries it back. Gated on `FOSNIE_E2E=1` (needs
 //! Postgres + Redis + Keycloak + ML + Ollama up).
 
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use fosnie_backend::{auth, cache, db, http};
 const KC: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 async fn token(user: &str) -> Option<String> {
@@ -47,9 +47,9 @@ async fn token(user: &str) -> Option<String> {
 async fn setup() -> (sqlx::PgPool, u16, String) {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let ml_url =
-        std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let tok = token("alice").await.expect("keycloak token");
 
     let pg = db::connect(&db_url, 5).await.unwrap();
@@ -80,7 +80,7 @@ async fn setup() -> (sqlx::PgPool, u16, String) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn prompt_create_get_render_roundtrip() {
     if !enabled() {
-        eprintln!("skipping prompt roundtrip (set PAI_E2E=1)");
+        eprintln!("skipping prompt roundtrip (set FOSNIE_E2E=1)");
         return;
     }
     let (_pg, port, tok) = setup().await;
@@ -170,7 +170,7 @@ async fn prompt_default_agent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn memory_create_list_edit_delete() {
     if !enabled() {
-        eprintln!("skipping memory CRUD (set PAI_E2E=1)");
+        eprintln!("skipping memory CRUD (set FOSNIE_E2E=1)");
         return;
     }
     let (_pg, port, tok) = setup().await;
@@ -227,7 +227,7 @@ async fn memory_create_list_edit_delete() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn skill_create_attach_list() {
     if !enabled() {
-        eprintln!("skipping skill attach (set PAI_E2E=1)");
+        eprintln!("skipping skill attach (set FOSNIE_E2E=1)");
         return;
     }
     let (pg, port, tok) = setup().await;
@@ -290,7 +290,7 @@ async fn skill_create_attach_list() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remember_fact_tool_persists_and_audits() {
     if !enabled() {
-        eprintln!("skipping remember_fact e2e (set PAI_E2E=1 with full stack up)");
+        eprintln!("skipping remember_fact e2e (set FOSNIE_E2E=1 with full stack up)");
         return;
     }
     let (pg, port, tok) = setup().await;

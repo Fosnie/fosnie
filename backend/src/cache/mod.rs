@@ -146,7 +146,7 @@ mod tests {
     /// is unreachable (the limiter fails open, so asserting rejection would be moot).
     #[tokio::test]
     async fn rate_limit_allows_max_then_rejects() {
-        let url = std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        let url = std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
         let Ok(pool) = create_pool(&url) else { return };
         if !ping(&pool).await {
             return; // no Redis → skip (fail-open would defeat the assertion)

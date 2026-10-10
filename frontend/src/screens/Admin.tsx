@@ -13,6 +13,9 @@
 // limitations under the License.
 
 import { confirmDialog, toast } from "@/components/dialogs";
+import { DocumentJobsSetting } from "@/components/DocumentVerificationJob";
+import { ResearchJobsSetting } from "@/components/ResearchJob";
+import { RoutingSettings } from "@/components/RoutingSettings";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -84,6 +87,8 @@ import {
   type CallRecord,
   useEmbeddingIndex,
   reindexEmbeddings,
+  cleanupEmbeddingIndices,
+  cancelEmbeddingReindex,
   useAdminAnnouncements,
   createAnnouncement,
   updateAnnouncement,
@@ -1397,6 +1402,7 @@ const KNOWN_SETTINGS: { key: string; label: string; desc: string; valueType: str
   { key: "web_search.allowlist", label: "Web search: domain allowlist", desc: "Comma-separated domain suffixes. Non-empty restricts fetching to these domains and their subdomains.", valueType: "string", default: "(off)" },
   { key: "web_search.blocklist", label: "Web search: domain blocklist", desc: "Comma-separated domain suffixes that are never searched or fetched. Wins over the allowlist.", valueType: "string", default: "(off)" },
   { key: "web_search.allowlist_only", label: "Web search: allowlist-only mode", desc: "Fail-closed: when true, ONLY allowlisted domains are reachable — true with an empty allowlist blocks all web fetching.", valueType: "bool", default: "false" },
+  { key: "web_search.quick_snippets_only", label: "Web search: use snippets for Quick searches", desc: "Quick search returns search-result excerpts with partial coverage. Full pages are not retrieved. Standard and Deep keep their current behaviour.", valueType: "bool", default: "false" },
   { key: "web_search.robots_policy", label: "Web search: robots.txt policy", desc: "user_triggered (default — single user-requested fetches proceed) or respect (honour robots.txt per host).", valueType: "string", default: "user_triggered" },
 ];
 
@@ -1557,6 +1563,9 @@ function LlmProvidersCard() {
     qc.invalidateQueries({ queryKey: ["admin-providers"] });
     qc.invalidateQueries({ queryKey: ["whoami"] });
     qc.invalidateQueries({ queryKey: ["my-llm-providers"] });
+    qc.invalidateQueries({ queryKey: ["routing-models"] });
+    qc.invalidateQueries({ queryKey: ["routing-fixed"] });
+    qc.invalidateQueries({ queryKey: ["public-api-routing-alias"] });
   };
   const [edits, setEdits] = useState<Record<string, LlmDraft>>({});
   const [adding, setAdding] = useState<LlmDraft | null>(null);
@@ -1570,7 +1579,7 @@ function LlmProvidersCard() {
   const saveEdit = (id: string, d: LlmDraft) => run("Save", () => updateAdminLlm(id, toBody(d)).then(() => { cancelEdit(id); refresh(); }), "Provider saved.");
   const saveNew = (d: LlmDraft) => run("Create", () => createAdminLlm(toBody(d)).then(() => { setAdding(null); refresh(); }), "Provider added.");
   const del = async (p: ProviderConfig) => {
-    if (await confirmDialog({ title: `Delete "${p.label ?? p.model ?? "provider"}"?`, body: "Chats using it fall back to the default.", danger: true, confirmLabel: "Delete" }))
+    if (await confirmDialog({ title: `Delete "${p.label ?? p.model ?? "provider"}"?`, body: "Routed chats and policies referencing this provider become unavailable until you choose another model. Legacy chats keep their existing default behavior.", danger: true, confirmLabel: "Delete" }))
       run("Delete", () => deleteAdminLlm(p.id).then(refresh), "Provider deleted.");
   };
   const makeDefault = (id: string) => run("Default", () => setAdminLlmDefault(id).then(refresh), "Default set.");
@@ -1628,13 +1637,13 @@ function ProvidersSection() {
   const q = useProviders();
   const cfg = useAdminConfig();
   const [edits, setEdits] = useState<Record<string, ProviderDraft>>({});
-  const refresh = () => qc.invalidateQueries({ queryKey: ["admin-providers"] });
+  const refresh = () => Promise.all(["admin-providers","routing-models","routing-fixed"].map(key=>qc.invalidateQueries({queryKey:[key]})));
   const byRole = new Map((q.data ?? []).map((p) => [p.role, p]));
   // BYOK is on by default for public Core; an absent config row means the boot default (on).
   const byok = (cfg.data?.find((c) => c.key === BYOK_KEY)?.value ?? "true") === "true";
   const setByok = (on: boolean) =>
     run("Save", () => setConfig(BYOK_KEY, { value: on ? "true" : "false", value_type: "bool", scope: "global" })
-      .then(() => qc.invalidateQueries({ queryKey: ["admin-config"] })), "Setting saved.");
+      .then(() => Promise.all(["admin-config","routing-management","routing-models","routing-fixed","my-providers"].map(key=>qc.invalidateQueries({queryKey:[key]})))), "Setting saved.");
 
   // An empty draft seeded from the saved row (the editing baseline before any keystroke).
   const blankDraft = (role: string): ProviderDraft => {
@@ -1695,6 +1704,10 @@ function ProvidersSection() {
   return (
     <div>
       <H1>Providers</H1>
+      <DocumentJobsSetting configured={cfg.data?.find(c => c.key === "routing.document_jobs_enabled")?.value === "true"}
+        configReady={cfg.isSuccess && !cfg.isError} />
+      <ResearchJobsSetting configured={cfg.data?.find(c => c.key === "routing.research_jobs_enabled")?.value === "true"}
+        configReady={cfg.isSuccess && !cfg.isError} />
       <p className="mb-4 text-xs text-slate/70">
         Point each role at a local engine or an external API (Claude / GPT / Gemini …), runtime, no restart.
         Leave a row blank to use the ML service&apos;s built-in default. API keys are <span className="text-slate">write-only</span> —
@@ -1717,6 +1730,9 @@ function ProvidersSection() {
             {reindexing && <Badge tone="gold" className="ml-2.5">re-indexing</Badge>}
             {embIndex.data.status === "failed" && <Badge tone="red" className="ml-2.5">failed</Badge>}
           </div>
+          <div className="mt-2 text-xs text-slate/70">Retired indexes are kept for at least 24 hours; the newest retired index is preserved.
+            <button type="button" className={BTN} disabled={!!busy || reindexing} onClick={()=>run("Cleanup",()=>cleanupEmbeddingIndices().then(()=>qc.invalidateQueries({queryKey:["embedding-index"]})),"Retired index cleanup completed.")}>Clean retired indexes</button>
+          </div>
           {/* In-flight (or just-triggered) → live progress bar; search stays on the old model. */}
           {reindexing && (() => {
             const done = embIndex.data.reindex_done ?? 0;
@@ -1733,14 +1749,15 @@ function ProvidersSection() {
                 <div className="mt-1 text-xs text-slate/70">
                   {pct === null ? "Starting re-index…" : `Re-embedding ${done.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`}
                   {" · search still uses the current model."}
+                  <button type="button" className={BTN} disabled={!!busy} onClick={()=>run("Cancel re-index",()=>cancelEmbeddingReindex().then(()=>qc.invalidateQueries({queryKey:["embedding-index"]})),"Cancellation request completed; spent work is retained.")}>Cancel my re-index</button>
                 </div>
               </div>
             );
           })()}
           {embIndex.data.status === "failed" && !reindexing && (
             <div className="mt-1 flex items-center gap-2 text-xs">
-              <span className="text-urgency-red">Re-index failed{embIndex.data.error ? `: ${embIndex.data.error}` : ""}. Old index is intact.</span>
-              <button type="button" className={BTN} disabled={!!busy} onClick={startReindex}>Retry</button>
+              <span className="text-urgency-red">Re-index stopped{embIndex.data.error ? `: ${embIndex.data.error}` : ""}. Old index is intact.</span>
+              <button type="button" className={BTN} disabled={!!busy} onClick={startReindex}>Start new attempt</button>
             </div>
           )}
           {!reindexing && embIndex.data.desired_model && embIndex.data.status !== "failed" && (
@@ -1787,6 +1804,7 @@ function ProvidersSection() {
           </table>
         </TableScroll>
       )}
+      <RoutingSettings surface="deployment" />
     </div>
   );
 }

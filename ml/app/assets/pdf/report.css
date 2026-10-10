@@ -16,7 +16,7 @@
    CSS Paged Media: A4 pages, a running header carrying the document title, page
    numbers in the footer, and clean typographic + table styling. A deployment
    overrides this wholesale via the `pdf_css` config (its own brand CSS); nothing
-   here is PAI-branded — it is a clean, professional neutral. No external URLs
+   here carries Fosnie branding — it is a clean, professional neutral. No external URLs
    (zero-egress): system font stacks only. */
 
 @page {

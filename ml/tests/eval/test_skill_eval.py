@@ -4,7 +4,7 @@ Runs each document/artefact skill end-to-end through the LLM N≥5 times against
 fixed prompt, builds the artefact (which validates it), and reports **pass-rate +
 variance** of a quality metric. Gated like the other evals — it needs the live LLM:
 
-    PAI_SKILL_EVAL=1 uv run pytest tests/eval/test_skill_eval.py -q -s
+    FOSNIE_SKILL_EVAL=1 uv run pytest tests/eval/test_skill_eval.py -q -s
 
 The deterministic, no-LLM half of the QA (the generate→validate pipeline is stable
 across N runs) lives in tests/test_document_skills.py and runs in the default suite.
@@ -22,8 +22,8 @@ import pytest
 from app import generate, llm
 
 pytestmark = pytest.mark.skipif(
-    os.getenv("PAI_SKILL_EVAL") != "1",
-    reason="skill eval needs the live LLM (set PAI_SKILL_EVAL=1)",
+    os.getenv("FOSNIE_SKILL_EVAL") != "1",
+    reason="skill eval needs the live LLM (set FOSNIE_SKILL_EVAL=1)",
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

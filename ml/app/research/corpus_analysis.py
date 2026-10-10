@@ -24,7 +24,7 @@ import logging
 from .. import llm
 from .bank import Bank
 
-_log = logging.getLogger("pai.research.corpus_analysis")
+_log = logging.getLogger("fosnie.research.corpus_analysis")
 
 SECTION_HEADING = "Consensus, contradictions and gaps"
 

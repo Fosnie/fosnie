@@ -1,4 +1,4 @@
-﻿// Copyright 2026 Private AI Ltd (SC881079)
+// Copyright 2026 Private AI Ltd (SC881079)
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,11 @@
 pub mod budget;
 pub mod compose;
 pub mod origin;
+pub mod routing;
+pub mod regenerate;
+pub mod browser;
+pub mod routed_artefact;
+mod routed_parts;
 pub mod prefetch;
 
 use std::sync::Arc;
@@ -115,6 +120,10 @@ pub async fn regenerate_prepare(
     from_message_id: Uuid,
     edit: Option<String>,
 ) -> Result<(Uuid, String)> {
+    crate::model_routing::admission::require_legacy_chat(state,Some(chat_id)).await?;
+    let routed_history:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM messages WHERE chat_id=$1 AND routing_decision IS NOT NULL)")
+        .bind(chat_id).fetch_one(&state.pg).await?;
+    if routed_history {return Err(crate::model_routing::RoutingError::Incompatible("routed answers require non-destructive regeneration with saved intent").into());}
     // Regenerate mutates history — require ownership (or admin), not mere read.
     let owner = sqlx::query_scalar!("SELECT owner_user_id FROM chats WHERE id = $1", chat_id)
         .fetch_optional(&state.pg)
@@ -198,9 +207,39 @@ pub async fn run_turn(
     tx: &mpsc::Sender<ServerFrame>,
     cancel: Arc<Notify>,
 ) {
-    if let Err(e) =
-        run_turn_inner(state, turn, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel).await
-    {
+    let routed = turn.routing;
+    if let Some(run) = routed {
+        if let Err(e) = run.validate_turn(turn.auth, turn_id, chat_id) {
+            let _ = tx.send(ServerFrame::ChatError { turn_id:Some(turn_id), message:e.to_string(), chat_id }).await;
+            return;
+        }
+    }
+    let signal = cancel.clone();
+    // This orchestration future is large. Keep the guarded/legacy alternatives
+    // behind one allocation rather than embedding copies in nested select state.
+    let work = Box::pin(run_turn_inner(state, turn, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel));
+    let result = match routed {
+        Some(run) => run.drive(&signal, Box::pin(async {
+            tokio::select! { biased;
+                result=work=>result,
+                result=Box::pin(routing::watch_agent(state,run))=>result,
+            }
+        })).await,
+        None => work.await,
+    };
+    if let Some(run)=routed {let _=routing::save_agent_usage(state,run).await;}
+    if let Err(e) = result {
+        if let Some(run) = routed {
+            run.cancel();
+            // Cancellation can drop the inner future between any two awaits.
+            // Close only this authenticated run's unfinished assistant row.
+            let _ = sqlx::query("UPDATE messages SET interrupted_at=now() WHERE chat_id=$1 AND turn_id=$2 AND role='assistant' AND completed_at IS NULL AND interrupted_at IS NULL")
+                .bind(chat_id).bind(turn_id).execute(&state.pg).await;
+            let ids:Vec<Uuid>=sqlx::query_scalar("UPDATE agent_runs SET status='failed',finished_at=now(),updated_at=now() WHERE chat_id=$1 AND turn_id=$2 AND status='running' RETURNING id")
+                .bind(chat_id).bind(turn_id).fetch_all(&state.pg).await.unwrap_or_default();
+            for id in ids {crate::agent::release_token(state,id).await;}
+        }
+        if routed.is_some() {crate::model_routing::failure::notify_chat(state,turn_id,chat_id,&e,tx,routed.is_some_and(|r|r.plain_text_retry_allowed())).await;}
         let _ = tx
             .send(ServerFrame::ChatError { turn_id: Some(turn_id), message: e.to_string(), chat_id })
             .await;
@@ -232,6 +271,25 @@ async fn run_turn_inner(
     // the first token).
     let (chat_id, chat_project_id, chat_agent_id, chat_mode, created) =
         resolve_chat(state, ctx, chat_id, project_id, agent_id, "New chat", turn.origin).await?;
+    if turn.routing.is_none() {crate::model_routing::admission::require_legacy_chat(state,Some(chat_id)).await?;}
+    if let Some(run) = turn.routing {
+        routing::authorize(state, run).await?;
+        if agent_id.is_some_and(|id|Some(id)!=chat_agent_id) || chat_mode == "research"
+            || (chat_agent_id.is_some() && wants_artefact(&content) && !run.artefact_intent().is_some_and(|i|i.matches(&content)))
+            || !attachments.is_empty() || !kb_ids.is_empty()
+            || (unattended && !run.allows_unattended() && !(run.durable_id().is_some() && run.plan().decision.reason_codes.iter().any(|r|r=="workflow_agent"))) || reuse_user_msg.is_some()
+            || reasoning.is_some() || llm_provider_id.is_some() || prefetched_rag.is_some()
+            || !match turn.origin {
+                origin::ChatOrigin::Web=>turn.call_id.is_none() && run.phone_call().is_none() && turn.device_id.is_none() && run.desktop_device().is_none(),
+                origin::ChatOrigin::Desktop=>turn.call_id.is_none() && run.phone_call().is_none() && turn.device_id.is_some() && run.desktop_device()==turn.device_id,
+                origin::ChatOrigin::Phone=>turn.call_id.is_some() && run.phone_call()==turn.call_id && turn.device_id.is_none() && run.desktop_device().is_none(),
+            }
+            || turn.workspace_id.is_some() || turn.automation_id.is_some()
+        {
+            return Err(crate::model_routing::RoutingError::Incompatible("this turn requires inference paths not yet adopted by routing").into());
+        }
+        routing::preflight(state, run, chat_id, chat_project_id).await?;
+    }
     if created {
         let _ = tx.send(ServerFrame::ChatCreated { chat_id }).await;
         // Title the chat from the prompt off the hot path. On any failure the chat
@@ -326,10 +384,9 @@ async fn run_turn_inner(
                 .await;
         }
     }
-    let llm_sel = crate::providers::resolve_llm(&state.pg, state.message_key, ctx.user_id, Some(chat_id), llm_provider_id)
-        .await
-        .ok()
-        .flatten();
+    let llm_sel = if turn.routing.is_some() { None } else {
+        crate::providers::resolve_llm(state, ctx.user_id, Some(chat_id), llm_provider_id).await?
+    };
 
     // Per-turn Library attachments (e.g. an automation's chosen Libraries):
     // materialise as chat_kb_links so the RAG allow-list below picks them up this
@@ -367,10 +424,13 @@ async fn run_turn_inner(
         };
         let user_seq = next_seq(&state.pg, chat_id).await?;
         let new_id = Uuid::now_v7();
-        sqlx::query!(
-            "INSERT INTO messages (id, chat_id, role, sequence_number, content) VALUES ($1, $2, 'user', $3, $4)",
-            new_id, chat_id, user_seq, stored_content
+        // Routed post-answer callbacks bind the original prompt to this turn.
+        // Legacy history keeps its existing NULL turn_id representation.
+        sqlx::query(
+            "INSERT INTO messages (id, chat_id, role, sequence_number, content, turn_id) VALUES ($1, $2, 'user', $3, $4, $5)"
         )
+        .bind(new_id).bind(chat_id).bind(user_seq).bind(&stored_content)
+        .bind(turn.routing.map(|_| turn_id))
         .execute(&state.pg)
         .await?;
         // Link the durable attachment rows to this message (and chat) so they render
@@ -401,9 +461,16 @@ async fn run_turn_inner(
         load_agent(&state.pg, chat_agent_id),
         crate::kb::retrieval_allowlist(&state.pg, ctx, chat_id, chat_project_id, chat_agent_id),
         load_skills(&state.pg, chat_agent_id),
-        crate::http::memory::recall(state, ctx, chat_project_id, &content),
+        async { if turn.routing.is_some() && turn.origin==origin::ChatOrigin::Phone {Ok(Vec::new())}
+        else if turn.routing.is_some() {
+            crate::http::memory::recall_routed(state, ctx, chat_project_id, &content).await
+        } else { crate::http::memory::recall(state, ctx, chat_project_id, &content).await } },
         load_history(&state.pg, chat_id),
     )?;
+    if let Some(run)=turn.routing {
+        routing::preflight(state,run,chat_id,chat_project_id).await?;
+        routing::supported_agent(state,&agent)?;
+    }
 
     // An *agentic* run = a configured Agent that can take a gated (state-changing /
     // egress) action. Such runs get a durable `agent_runs` row + a per-run kill-token
@@ -413,6 +480,8 @@ async fn run_turn_inner(
     // call) and only the deterministic drafter-fallback uses it, so it must NOT make
     // an agent agentic — otherwise every default agent would spin up an agent_run and
     // pause the auto-draft for approval (which blocks `chat.completed`).
+    // Routed document reads also need the run's accounting and revocation token;
+    // legacy read-only agents still skip this row.
     // MCP tools in scope this turn (FEATURE B1) — namespaced, RBAC-filtered. Computed
     // once here so it also decides agenticity (MCP tools are gated-by-default, so they
     // need a run for the kill-token + HITL), then folded into the tool defs below.
@@ -422,7 +491,8 @@ async fn run_turn_inner(
     let mcp_grants = crate::mcp::parse_grants(&agent.tools);
     let mcp_defs = crate::mcp::session_tool_defs(state, ctx, &mcp_grants).await;
     let agentic = (chat_agent_id.is_some()
-        && agent.tools.iter().any(|t| crate::tools::needs_agent_run(t) && t != "generate_artefact"))
+        && agent.tools.iter().any(|t| (crate::tools::needs_agent_run(t) && t != "generate_artefact")
+            || (turn.routing.is_some() && t=="read_document")))
         || !mcp_defs.is_empty();
     let run_id: Option<Uuid> = if agentic {
         Some(
@@ -435,6 +505,15 @@ async fn run_turn_inner(
     } else {
         None
     };
+
+    if turn.routing.is_some() {
+        if let Some(id)=run_id {
+            // Publish to the revocation watcher only after start_run minted the
+            // Redis token; an in-flight SET is not an expired token.
+            sqlx::query("UPDATE agent_runs SET checkpoint=jsonb_build_object('routed',true,'resumable',false) WHERE id=$1")
+                .bind(id).execute(&state.pg).await?;
+        }
+    }
 
     // Layer [5] RAG. Authorisation is the INTERSECTION allow-list (Libraries
     //): KBs attached to this context (agent-bound ∪ project-linked ∪
@@ -537,21 +616,20 @@ async fn run_turn_inner(
             }
             None => {
                 let rag_ov = ml::rag_overrides(&state.pg).await;
-            match ml::retrieve_stream(
-                &state.http,
-                &state.boot.ml.base_url,
+            match routing::Retrieval::start(
+                state,ctx,turn.routing,
                 &content,
                 &kb_ids,
                 &deny_doc_ids,
                 &rag_ov,
-                ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel.as_ref()).await,
-                Some(retrieve_timeout(&state.pg).await),
+                llm_sel.as_ref(),
+                retrieve_timeout(&state.pg).await,
             )
             .await
             {
                 Ok(mut stream) => loop {
                     tokio::select! {
-                        ev = stream.recv() => match ev {
+                        ev = stream.recv() => match ev? {
                             Some(ml::RetrieveEvent::Progress { stage, detail }) => {
                                 // The terminal `summary` event is the Coverage line. It is captured and
                                 // forwarded on a PERSISTENT `summary` phase (not the transient
@@ -594,6 +672,7 @@ async fn run_turn_inner(
                                 break;
                             }
                             Some(ml::RetrieveEvent::Error { message }) => {
+                                if turn.routing.is_some() { return Err(crate::AppError::Unavailable("routed retrieval failed".into())); }
                                 tracing::warn!(error = %message, "retrieve failed; proceeding without RAG context");
                                 break;
                             }
@@ -602,7 +681,10 @@ async fn run_turn_inner(
                         _ = cancel.notified() => { cancelled = true; break; }
                     }
                 },
-                Err(e) => tracing::warn!(error = %e, "retrieve stream failed; proceeding without RAG context"),
+                Err(e) => {
+                    if turn.routing.is_some() { return Err(e); }
+                    tracing::warn!(error = %e, "retrieve stream failed; proceeding without RAG context");
+                },
                 }
             }
         }
@@ -681,8 +763,15 @@ async fn run_turn_inner(
     let gk_fallback = rag_context.is_none() && chat_mode != "research";
     // Unknown budget (ML offline) → a large sentinel disables trimming/compaction
     // (the old best-effort behaviour), so a turn never fails on budgeting.
-    let budget_total = context_budget(state).await.unwrap_or(i64::MAX / 8);
-    let answer_reserve = (budget_total / 4).clamp(64, 1024);
+    let routed_capacity = match turn.routing {
+        Some(run) => {
+            let (context, output)=run.capacity(state, crate::model_routing::CallPurpose::Final).await?;
+            Some((context, output.min(run.plan().constraints.max_output_tokens.unwrap_or(output))))
+        },
+        None => None,
+    };
+    let budget_total = match routed_capacity { Some((context,_)) => i64::from(context), None => context_budget(state).await.unwrap_or(i64::MAX / 8) };
+    let answer_reserve = match routed_capacity { Some((_,output)) => i64::from(output.min(4096)), None => (budget_total / 4).clamp(64,1024) };
     let rag_tokens = rag_context.as_deref().map(est_tokens).unwrap_or(0);
     let alloc = budget::allocate(budget_total, est_tokens(&prefix), rag_tokens, answer_reserve);
 
@@ -694,8 +783,10 @@ async fn run_turn_inner(
     // `history` was loaded in the join above; compact it to the budget now.
     // Notify the user as the chat approaches the budget (compaction still runs).
     maybe_warn_context(chat_id, est_tokens(&system), &history, budget_total, answer_reserve, tx).await;
-    let history =
-        compact_history(state, chat_id, turn_id, history, alloc.history_budget, tx).await;
+    let history = match turn.routing {
+        Some(run)=>compact_history_with_run(state, chat_id, turn_id, history, alloc.history_budget, tx, Some(run)).await?,
+        None=>compact_history(state, chat_id, turn_id, history, alloc.history_budget, tx).await,
+    };
     let mut messages = compose::build_messages(system, history);
 
     // Only advertise tools this host can actually run (capability gate) — a
@@ -710,7 +801,8 @@ async fn run_turn_inner(
     // admin switched off is dropped here (so it also leaves `ci_files` detection
     // consistent), and its description is replaced inside `defs`. An empty map
     // leaves the defs byte-identical to the code default (prefix-cache safety).
-    let tool_overrides = crate::tools::load_overrides(&state.pg).await.unwrap_or_default();
+    let tool_overrides = if turn.routing.is_some() {crate::tools::load_overrides(&state.pg).await?}
+        else {crate::tools::load_overrides(&state.pg).await.unwrap_or_default()};
     let enabled_tools: Vec<String> = agent
         .tools
         .iter()
@@ -767,6 +859,9 @@ async fn run_turn_inner(
     let (custom_defs, custom_tools) =
         crate::tools::custom::load_enabled_custom(&state.pg, &agent.tools).await;
     tool_defs.extend(custom_defs);
+    if turn.routing.is_some() && tool_defs.iter().any(|t|!matches!(t["function"]["name"].as_str(),Some("web_search"|"read_document"))) {
+        return Err(crate::model_routing::RoutingError::Incompatible("tool dispatch has not adopted routed execution").into());
+    }
 
     // Code-interpreter input files = this turn's attachments that carry bytes, but only
     // when the tool is actually advertised. The sandbox writes each into its working dir
@@ -868,6 +963,10 @@ async fn run_turn_inner(
     )
     .execute(&state.pg)
     .await?;
+    if let Some(run)=turn.routing {
+        sqlx::query("UPDATE messages SET routing_selection=$2,routing_options=$3 WHERE id=$1")
+            .bind(asst_id).bind(json!(run.selection_intent())).bind(run.routing_options().map(|o|json!(o))).execute(&state.pg).await?;
+    }
     let _ = tx.send(ServerFrame::ChatStarted { turn_id, chat_id, message_id: asst_id }).await;
 
     // Tool-call loop (only if the Agent has tools).
@@ -893,6 +992,7 @@ async fn run_turn_inner(
     if !turn_kb_ids.is_empty()
         && tool_overrides.get("search_library").map(|o| o.enabled).unwrap_or(true)
     {
+        if let Some(run)=turn.routing { routing::preflight(state,run,chat_id,chat_project_id).await?; }
         let cfg = |k: &'static str| crate::config::runtime::get(&state.pg, k);
         let mode = cfg("rag.model_search_mode")
             .await
@@ -900,6 +1000,7 @@ async fn run_turn_inner(
             .flatten()
             .map(|e| e.value)
             .unwrap_or_else(|| "gaps_only".to_string());
+        if turn.routing.is_some() && !matches!(mode.as_str(),"off"|"always"|"gaps_only") { return Err(crate::model_routing::RoutingError::NeedsReplan.into()); }
         // A prefetched retrieval always counts as leaving gaps. It ran a light
         // profile without the gap-filling rounds, on a transcript that was still
         // being spoken, so treating it as complete would be optimistic — instead the
@@ -939,14 +1040,16 @@ async fn run_turn_inner(
             } else {
                 tool_defs.push(sl_def);
             }
-            rag_tool_ctx = Some(crate::tools::RagToolCtx::new(
+            let mut rag=crate::tools::RagToolCtx::new(
                 turn_kb_ids.clone(),
                 turn_deny_doc_ids.clone(),
                 max_calls,
                 deadline,
                 rag_context.as_deref(),
                 rag_citations.len(),
-            ));
+            );
+            rag.routing=turn.routing.cloned();
+            rag_tool_ctx=Some(rag);
         }
     }
 
@@ -966,10 +1069,13 @@ async fn run_turn_inner(
     );
 
     if !tool_defs.is_empty() {
-        let outcome = run_tool_loop(
+        let outcome = if let Some(run)=turn.routing {
+            Box::pin(routing::search_loop(state,run,rag_tool_ctx.as_ref(),
+                asst_id,&tool_defs,&authorised,&tool_overrides,&mut messages,&mut activity,&agent,run_id,&content,tx)).await?
+        } else { run_tool_loop(
             state, ctx, turn_id, chat_id, chat_project_id, &agent, run_id, &tool_defs, &authorised, &tool_overrides, &ci_files, &custom_tools, rag_tool_ctx.as_ref(), desktop_ctx.as_ref(), call_ctx.as_ref(), &mut messages, &mut activity, reasoning.as_ref(), llm_sel.as_ref(), tx, &cancel, &mut phases, model_search_commentary, unattended, pre_approved_writes,
         )
-        .await?;
+        .await? };
         interrupted = outcome.interrupted;
         ready_answer = outcome.ready_answer;
         loop_usage = outcome.final_usage;
@@ -993,7 +1099,8 @@ async fn run_turn_inner(
     let mut prompt_tokens: Option<i32> = None;
     let mut completion_tokens: Option<i32> = None;
     let mut reasoning_tokens: Option<i32> = None;
-    let mut model_used: Option<String> = None;
+    let mut model_used: Option<String> = turn.routing.filter(|_|ready_answer.is_some())
+        .map(|run|run.plan().assignments[&crate::model_routing::CallPurpose::ToolLoop].model.clone());
     let mut errored: Option<String> = None;
     // Terminal finish reason of the streamed answer (`stop` | `length` | …). Kept so
     // an empty-but-`length` answer (a reasoning model that spent the whole
@@ -1039,6 +1146,9 @@ async fn run_turn_inner(
     if !interrupted && acc.is_empty() {
         // The sampling for this pass — a retry (below) bumps `max_tokens` on it.
         let mut sampling = agent.sampling.clone();
+        if let Some((_, output)) = routed_capacity {
+            sampling.max_tokens = Some(sampling.max_tokens.unwrap_or(4096).max(1).min(output.min(4096) as i32));
+        }
         // on a retrieval turn, cap the FINAL answer's reasoning effort
         // to `rag.answer_reasoning_effort` (default medium). Clamps DOWN only — a lower
         // per-turn choice is respected — because the per-sub-question mini-answers already
@@ -1057,18 +1167,21 @@ async fn run_turn_inner(
         // `per_part` splits the reasoning-heavy mega-synthesis into one
         // small generate per numbered part (each over its own slice) — the fix for medium/local
         // models. Backend-only knob (ML always emits the slices; empty ⇒ unified fallback).
-        let synthesis_mode = crate::config::runtime::get(&state.pg, "rag.synthesis_mode")
+        let synthesis_mode = if turn.routing.is_some() {routing::synthesis_mode(state).await?} else {crate::config::runtime::get(&state.pg, "rag.synthesis_mode")
             .await
             .ok()
             .flatten()
             .map(|e| e.value)
-            .unwrap_or_else(|| "unified".to_string());
+            .unwrap_or_else(|| "unified".to_string())};
         if synthesis_mode == "per_part" && !rag_parts.is_empty() {
-            let out = synthesize_per_part(
+            let out = if let Some(run)=turn.routing {
+                Box::pin(routed_parts::synthesize(state,run,&prompt,&memory_facts,gk_fallback,&sampling,&messages,&rag_parts,
+                    &turn_kb_ids,&turn_deny_doc_ids,turn_id,asst_id,tx)).await?
+            } else {synthesize_per_part(
                 state, ctx, &prompt, &memory_facts, unattended, gk_fallback,
                 answer_reasoning.as_ref(), llm_sel.as_ref(), &sampling, &rag_parts, turn_id, asst_id, tx, &cancel,
             )
-            .await;
+            .await?};
             acc = out.acc;
             reasoning_acc = out.reasoning;
             prompt_tokens = out.prompt_tokens;
@@ -1128,10 +1241,12 @@ async fn run_turn_inner(
                 sampling: sampling.clone(),
                 model: None,
                 tools: stream_tools.clone(),
-                overrides: ml::with_reasoning(ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel.as_ref()).await, answer_reasoning.as_ref()),
+                overrides: if turn.routing.is_some() { Default::default() } else {
+                    ml::with_reasoning(ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel.as_ref()).await?, answer_reasoning.as_ref())
+                },
             };
             let seg_start_len = acc.len();
-            let term = stream_generate(state, &req, turn_id, asst_id, tx, &cancel, &mut acc, &mut reasoning_acc, &mut detached, first_pass, Some(answer_deadline)).await?;
+            let term = stream_generate_with_run(state, &req, turn_id, asst_id, tx, &cancel, &mut acc, &mut reasoning_acc, &mut detached, first_pass, Some(answer_deadline), turn.routing).await?;
             finish_reason = term.finish.clone();
             model_used = term.model.clone().or(model_used);
             if first_pass {
@@ -1147,7 +1262,7 @@ async fn run_turn_inner(
             if term.interrupted { interrupted = true; }
 
             // Empty-at-cap retry (first pass only, once).
-            if first_pass && !empty_retry_used {
+            if turn.routing.is_none() && first_pass && !empty_retry_used {
                 if let Some(bumped) = retry_cap(interrupted, errored.is_some(), acc.is_empty(), finish_reason.as_deref(), sampling.max_tokens) {
                     tracing::warn!(prev = ?sampling.max_tokens, bumped, "empty answer hit max_tokens while reasoning; retrying with a higher cap");
                     sampling.max_tokens = Some(bumped);
@@ -1177,7 +1292,10 @@ async fn run_turn_inner(
                     // mid-stream tool is `search_library`, present in `authorised` because the
                     // turn carries a RAG context — so a legitimate top-up passes, while a
                     // fabricated or admin-disabled name is refused and audited.
-                    let result = match crate::tools::authorize_native_call(
+                    let result = if let Some(run)=turn.routing {
+                        routing::dispatch_search(state,run,rag_tool_ctx.as_ref().ok_or(crate::model_routing::RoutingError::Invalid("missing routed search context"))?,
+                            &authorised,&tool_overrides,tc,tx).await?
+                    } else { match crate::tools::authorize_native_call(
                         state, ctx, chat_id, &authorised, &tool_overrides, &tc.name, chat_project_id,
                     )
                     .await
@@ -1190,7 +1308,7 @@ async fn run_turn_inner(
                         },
                         crate::tools::NativeDecision::Recoverable(m) => m,
                         crate::tools::NativeDecision::Denied(e) => format!("error: {e}"),
-                    };
+                    }};
                     tool_msgs.push(json!({ "role": "tool", "tool_call_id": id, "content": result }));
                     if interrupted { break; }
                 }
@@ -1272,6 +1390,9 @@ async fn run_turn_inner(
     } else {
         format!("<think>{reasoning_acc}</think>{clean_acc}")
     };
+    if let Some(run)=turn.routing {run.validate_access().await?;Box::pin(crate::workflows::sources::validate_run(state,run)).await?;}
+    let mut publication=state.pg.begin().await?;
+    if let Some(run)=turn.routing {run.fence(&mut publication).await?;}
     sqlx::query!(
         r#"UPDATE messages
            SET content = $2, completed_at = $3, interrupted_at = $4,
@@ -1279,8 +1400,9 @@ async fn run_turn_inner(
            WHERE id = $1"#,
         asst_id, persisted_content, completed_at, interrupted_at, prompt_tokens, completion_tokens, activity.to_json()
     )
-    .execute(&state.pg)
+    .execute(&mut *publication)
     .await?;
+    publication.commit().await?;
 
     // Link any artefacts this turn produced to the assistant message, so the UI
     // can render them inline under the answer (not as a chat-wide panel).
@@ -1309,7 +1431,11 @@ async fn run_turn_inner(
     // itself as the document, in the format the user requested (`artefact_kind`:
     // pdf/docx/md). Intent-gated so an ordinary answer is never silently filed; the
     // real tool is hidden from the model (it misuses it), so the answer IS the draft.
-    if !interrupted
+    if !interrupted && errored.is_none() && turn.routing.is_some_and(|r|r.artefact_intent().is_some()) {
+        let run=turn.routing.unwrap();
+        routed_artefact::publish(state,run,asst_id,&strip_think(&acc)).await?;
+        if let Some(rid)=run_id {routing::complete_agent(state,run,rid).await?;}
+    } else if !interrupted
         && errored.is_none()
         && acc.trim().len() > 40
         && agent.tools.iter().any(|t| t == "generate_artefact")
@@ -1426,7 +1552,8 @@ async fn run_turn_inner(
         }
     } else if let Some(rid) = run_id {
         // Agentic run that produced no artefact this turn (read-only answer): close it.
-        crate::agent::complete_if_running(state, rid).await;
+        if let Some(run)=turn.routing {routing::complete_agent(state,run,rid).await?;}
+        else {crate::agent::complete_if_running(state, rid).await;}
     }
 
     if let Some(message) = errored {
@@ -1495,8 +1622,13 @@ async fn run_turn_inner(
         event.actor_user_id = ctx.user_id;
         event.resource_type = Some("chat".into());
         event.resource_id = Some(chat_id);
+        let routing_trace = match turn.routing {
+            Some(run) => Some(routing::completion_trace(state, run, asst_id).await?),
+            None => None,
+        };
         event.model_agent_traceability =
-            Some(json!({ "model": model_used, "agent_id": chat_agent_id, "agent_version": agent_version }));
+            Some(json!({ "model": model_used, "agent_id": chat_agent_id, "agent_version": agent_version,
+                "routing": routing_trace }));
         event.token_usage = Some(json!({ "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens }));
         event.payload = Some(json!({
             "message_id": asst_id, "tools": agent.tools, "evidence_content_hash": evidence_hash,
@@ -1577,7 +1709,25 @@ async fn run_turn_inner(
         // faithfulness against that context. Spawned post-stream so it never blocks
         // the turn/TTFT; fails open if the verifier is unavailable. Only RAG answers
         // are checked — a no-source answer has nothing to ground against.
-        if state.features.enabled_for(state, ctx, "groundedness").await {
+        if let Some(run)=turn.routing {
+            if state.features.enabled_for(state,ctx,"groundedness").await {
+                if let Some(evidence)=rag_trimmed.clone().filter(|s|!s.trim().is_empty()) {
+                    let snapshot=crate::groundedness::routed::LiveCheck {
+                        message_id:asst_id,content:persisted_content.clone(),question:content.clone(),evidence,
+                        kbs:turn_kb_ids.iter().map(|id|Uuid::parse_str(id)).collect::<std::result::Result<_,_>>()
+                            .map_err(|_|crate::model_routing::RoutingError::Invalid("invalid verification source"))?,
+                        denied:turn_deny_doc_ids.iter().map(|id|Uuid::parse_str(id)).collect::<std::result::Result<_,_>>()
+                            .map_err(|_|crate::model_routing::RoutingError::Invalid("invalid verification source"))?,
+                    };
+                    let st=state.clone();let cancel=cancel.clone();
+                    run.spawn(move |run| async move {
+                        let result=run.drive(&cancel,Box::pin(crate::groundedness::routed::verify_message(&st,&run,&snapshot))).await;
+                        if result.is_err() {metrics::counter!("routed_verification_failed_total").increment(1);tracing::warn!("routed verification did not complete");}
+                        result
+                    });
+                }
+            }
+        } else if state.features.enabled_for(state, ctx, "groundedness").await {
             if let (Some(uid), Some(context)) = (ctx.user_id, rag_context.clone()) {
                 let st = state.clone();
                 let role = ctx.role.as_str().to_string();
@@ -1598,7 +1748,31 @@ async fn run_turn_inner(
     // Moderation (accountability, not refusal).
     // Off the hot path: the answer is already streamed + completed above. Spawned so it
     // never blocks generation/TTFT; it self-gates on the (off-by-default) feature config.
-    if let Some(uid) = ctx.user_id {
+    if let Some(run) = turn.routing {
+        if !interrupted && !errored_now {
+            let st = state.clone();
+            let prompt = content.clone();
+            let cancel = cancel.clone();
+            run.spawn(move |run| async move {
+                let result=run.drive(&cancel, st.moderation.on_routed_turn_completed(&st, run.clone(), asst_id, prompt)).await;
+                if result.is_err() { tracing::warn!("routed moderation task failed"); }
+                result
+            });
+        }
+        // An opt-in run begins with an already authorized, persisted chat. The
+        // first message can still name that chat, using the remaining run budget.
+        let st=state.clone(); let prompt=content.clone();
+        run.spawn(move |run| async move {
+            let result=async {
+                let unnamed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chats WHERE id=$1 AND title='New chat' AND archived_at IS NULL)")
+                    .bind(chat_id).fetch_one(&st.pg).await?;
+                if unnamed { routing::title(&st,&run,&prompt).await?; }
+                Ok::<_,crate::AppError>(())
+            }.await;
+            if result.is_err() { tracing::warn!("routed title task failed; keeping existing title"); }
+            result
+        });
+    } else if let Some(uid) = ctx.user_id {
         let st = state.clone();
         let prompt = content.clone();
         tokio::spawn(async move {
@@ -2044,6 +2218,15 @@ async fn stream_generate(
     // multi-segment answer, so mid-stream tool calls can't extend the turn without bound.
     deadline_arg: Option<tokio::time::Instant>,
 ) -> Result<GenTerminal, crate::error::AppError> {
+    stream_generate_with_run(state, req, turn_id, asst_id, tx, cancel, acc, reasoning_acc, detached, lead_gate, deadline_arg, None).await
+}
+
+async fn stream_generate_with_run(
+    state: &AppState, req: &GenerateRequest, turn_id: Uuid, asst_id: Uuid,
+    tx: &mpsc::Sender<ServerFrame>, cancel: &Arc<Notify>, acc: &mut String,
+    reasoning_acc: &mut String, detached: &mut bool, lead_gate: bool,
+    deadline_arg: Option<tokio::time::Instant>, run: Option<&crate::model_routing::run::RoutedRun>,
+) -> Result<GenTerminal, crate::error::AppError> {
     let frame_counter = metrics::counter!("ws_token_frames_total");
     let frame_bytes = metrics::counter!("ws_token_frame_bytes_total");
     let mut out = GenTerminal::default();
@@ -2052,7 +2235,7 @@ async fn stream_generate(
     let mut last_flush = std::time::Instant::now();
     let gen_start = std::time::Instant::now();
     let mut ttft_recorded = false;
-    let mut stream = ml::generate(&state.http, &state.boot.ml.base_url, req).await?;
+    let mut stream = routing::Generation::start(state, req, run, asst_id).await?;
     let idle = synthesis_idle_timeout(&state.pg).await;
     let deadline = match deadline_arg {
         Some(d) => d,
@@ -2064,12 +2247,20 @@ async fn stream_generate(
         // alone never catches it because each delta resets it).
         let step = idle.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
         if step.is_zero() {
+            if run.is_some() { return Err(crate::AppError::Unavailable("routed generation deadline exceeded".into())); }
             tracing::warn!("generation exceeded total budget; ending soft");
             out.finish = Some("stall_timeout".to_string());
             break;
         }
         tokio::select! {
-            ev = stream.recv() => match ev {
+            ev = stream.recv() => match match ev {
+                Ok(event) => event,
+                Err(error) => {
+                    let _ = sqlx::query("UPDATE messages SET content=$2 WHERE id=$1")
+                        .bind(asst_id).bind(strip_tool_leak(acc)).execute(&state.pg).await;
+                    return Err(error);
+                }
+            } {
                 Some(GenEvent::Token { delta }) => {
                     if !ttft_recorded {
                         metrics::histogram!("llm_ttft_seconds").record(gen_start.elapsed().as_secs_f64());
@@ -2119,11 +2310,18 @@ async fn stream_generate(
                     }
                 }
                 Some(GenEvent::ToolCall { id, name, arguments }) => {
+                    if run.is_some() && out.tool_calls.len()>=32 { return Err(crate::model_routing::RoutingError::Invalid("too many streamed tool calls").into()); }
+                    if run.is_some() && (name!="search_library" || !req.tools.as_ref().is_some_and(|tools|tools.iter().any(|t|t["function"]["name"]==name))) {
+                        return Err(crate::model_routing::RoutingError::Incompatible("unplanned streaming tool call").into());
+                    }
                     // Collect — the caller runs it and continues the answer. Not framed to the
                     // client as tokens; the `ChatTool` activity frames come from the dispatch.
-                    out.tool_calls.push(ml::ToolCall { id, name, arguments });
+                    out.tool_calls.push(ml::ToolCall { id, name, arguments, native_replay:None });
                 }
-                Some(GenEvent::Done { usage, model, finish_reason: fr }) => {
+                Some(GenEvent::Done { usage, model, finish_reason: fr, .. }) => {
+                    if run.is_some() && !out.tool_calls.is_empty() && fr.as_deref()!=Some("tool_calls") {
+                        return Err(crate::model_routing::RoutingError::Invalid("tool calls without matching terminal reason").into());
+                    }
                     out.prompt_tokens = usage.prompt_tokens;
                     out.completion_tokens = usage.completion_tokens;
                     out.reasoning_tokens = usage.reasoning_tokens;
@@ -2135,12 +2333,16 @@ async fn stream_generate(
                 Some(GenEvent::Error { message }) => { out.errored = Some(message); break; }
                 None => break,
             },
-            _ = cancel.notified() => { out.interrupted = true; break; }
+            _ = cancel.notified() => {
+                if let Some(run)=run { run.cancel(); return Err(crate::model_routing::RoutingError::Cancelled.into()); }
+                out.interrupted = true; break;
+            }
             // No stream event for `step` (the idle gap, or the remaining total budget) — the stream
             // is wedged or running away. End soft with the partial answer already streamed;
             // "stall_timeout" is NOT a truncation reason, so the caller does not auto-continue a
             // dead stream. Dropping `stream` aborts the request.
             _ = tokio::time::sleep(step) => {
+                if run.is_some() { return Err(crate::AppError::Unavailable("routed generation deadline exceeded".into())); }
                 tracing::warn!(step_s = step.as_secs(), "generation stalled / over budget; ending soft");
                 out.finish = Some("stall_timeout".to_string());
                 break;
@@ -2254,7 +2456,7 @@ async fn run_tool_loop(
         }
         let step_t = std::time::Instant::now();
         let step = tokio::select! {
-            r = ml::chat_step(&state.http, &state.boot.ml.base_url, messages, Some(tool_defs), &loop_sampling, ml::with_reasoning(ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel).await, loop_reasoning.as_ref())) => r?,
+            r = ml::chat_step(&state.http, &state.boot.ml.base_url, messages, Some(tool_defs), &loop_sampling, ml::with_reasoning(ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel).await?, loop_reasoning.as_ref())) => r?,
             _ = cancel.notified() => return Ok(ToolLoopOutcome { interrupted: true, ready_answer: None, final_usage: None, capped }),
         };
         phases.mark(format!("step {} llm", step_idx + 1), step_t.elapsed());
@@ -2797,6 +2999,7 @@ async fn load_agent(pool: &sqlx::PgPool, agent_id: Option<Uuid>) -> Result<Agent
         frequency_penalty: f("frequency_penalty"),
         presence_penalty: f("presence_penalty"),
         reasoning_effort: None,
+        response_schema: None,
     };
     let tool_concurrency = p.get("tool_concurrency").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
 
@@ -3002,7 +3205,7 @@ async fn name_artefact(state: &AppState, content: &str) -> Option<String> {
         reasoning_effort: Some("minimal".into()),
         ..Default::default()
     };
-    let step = crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(state, None).await)
+    let step = crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(state, None).await.ok()?)
         .await
         .ok()?;
     let line = step.content.trim().lines().next().unwrap_or("").to_string();
@@ -3056,7 +3259,11 @@ fn wants_artefact(prompt: &str) -> bool {
         "presentation",
         "pptx",
     ];
-    VERBS.iter().any(|v| p.contains(v)) && NOUNS.iter().any(|n| p.contains(n))
+    // Substrings such as "documentation", "contractual" and "blueprint"
+    // must not turn an ordinary question into an unsolicited file export.
+    let words:Vec<_>=p.split(|c:char|!c.is_alphanumeric()).filter(|w|!w.is_empty()).collect();
+    let mentions=|keyword:&str|words.iter().any(|w|*w==keyword || w.strip_suffix('s')==Some(keyword));
+    VERBS.iter().any(|v| mentions(v)) && NOUNS.iter().any(|n| mentions(n))
 }
 
 /// The requested artefact format from the user's prompt — `pptx`/`pdf`/`docx`/`md`
@@ -3191,7 +3398,7 @@ fn trim_to_tokens(s: &str, max_tokens: i64) -> String {
 /// as the *answer* — groundedness scoring, the drafter-fallback document — must not
 /// see the reasoning. Mirrors the frontend `splitThink`: folds out every closed
 /// block, drops an unclosed trailing `<think>` and any orphan tags.
-fn strip_think(content: &str) -> String {
+pub(crate) fn strip_think(content: &str) -> String {
     if !content.contains("<think>") && !content.contains("</think>") {
         return content.to_string();
     }
@@ -3492,11 +3699,11 @@ async fn synthesize_per_part(
     asst_id: Uuid,
     tx: &mpsc::Sender<ServerFrame>,
     cancel: &Arc<Notify>,
-) -> PerPartOut {
+) -> crate::Result<PerPartOut> {
     // Bound concurrent generates so a 5-6 part prompt doesn't fire every heavy synthesis at
     // once; parts still stream in order so a small bound keeps the pipeline full.
     let sem = Arc::new(Semaphore::new(3));
-    let base_ov = ml::with_reasoning(ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel).await, answer_reasoning);
+    let base_ov = ml::with_reasoning(ml::provider_overrides_with_llm(state, ctx.user_id, llm_sel).await?, answer_reasoning);
     let max_cont = crate::config::runtime::get(&state.pg, "chat.answer_max_continuations")
         .await.ok().flatten().and_then(|e| e.value.parse::<usize>().ok()).unwrap_or(4);
     let idle = synthesis_idle_timeout(&state.pg).await;
@@ -3618,7 +3825,7 @@ async fn synthesize_per_part(
                             out.detached = true;
                         }
                     }
-                    Some(ml::GenEvent::Done { usage, model, finish_reason }) => {
+                    Some(ml::GenEvent::Done { usage, model, finish_reason, .. }) => {
                         out.prompt_tokens = sum_opt(out.prompt_tokens, usage.prompt_tokens);
                         out.completion_tokens = sum_opt(out.completion_tokens, usage.completion_tokens);
                         out.reasoning_tokens = sum_opt(out.reasoning_tokens, usage.reasoning_tokens);
@@ -3706,7 +3913,7 @@ async fn synthesize_per_part(
     if out.finish_reason.is_none() && !out.cancelled {
         out.finish_reason = Some("stop".to_string());
     }
-    out
+    Ok(out)
 }
 
 /// per-turn wall-clock phase table. Debug instrument: monotonic
@@ -3781,11 +3988,24 @@ async fn compact_history(
     history_budget: i64,
     tx: &mpsc::Sender<ServerFrame>,
 ) -> Vec<Value> {
+    // The legacy path retains its best-effort behaviour. Routed callers use the
+    // Result-returning variant so policy/budget/cancellation errors propagate.
+    compact_history_with_run(state,chat_id,turn_id,history,history_budget,tx,None).await
+        .expect("legacy compaction handles its own inference errors")
+}
+
+async fn compact_history_with_run(
+    state:&AppState,chat_id:Uuid,turn_id:Uuid,history:Vec<HistMsg>,history_budget:i64,
+    tx:&mpsc::Sender<ServerFrame>,run:Option<&crate::model_routing::run::RoutedRun>,
+) -> Result<Vec<Value>> {
     const KEEP_MIN: usize = 2;
 
     // Load any persisted rolling summary + the watermark it already covers.
-    let (mut summary, mut watermark) =
-        load_summary(&state.pg, chat_id).await.unwrap_or((String::new(), i32::MIN));
+    let loaded=if run.is_some() {
+        sqlx::query_as::<_,(String,i32)>("SELECT summary,up_to_sequence FROM chat_summaries WHERE chat_id=$1")
+            .bind(chat_id).fetch_optional(&state.pg).await?
+    } else { load_summary(&state.pg,chat_id).await };
+    let (mut summary,mut watermark)=loaded.unwrap_or((String::new(),i32::MIN));
 
     // The verbatim window is everything newer than the watermark.
     let mut verbatim: Vec<HistMsg> = history.into_iter().filter(|m| m.seq > watermark).collect();
@@ -3806,7 +4026,7 @@ async fn compact_history(
         // Scaffolding call: pin minimal reasoning effort so a thinking-capable model
         // does not spend this budget on reasoning tokens and emit nothing (which would
         // silently disable compaction). The user's full effort is for their answer.
-        let sum_sampling = Sampling {
+        let mut sum_sampling = Sampling {
             max_tokens: Some(1024),
             reasoning_effort: Some("minimal".into()),
             ..Default::default()
@@ -3833,7 +4053,14 @@ async fn compact_history(
         let input_tokens = est_tokens(&usr);
         let sum_msgs =
             vec![json!({ "role": "system", "content": sys }), json!({ "role": "user", "content": usr })];
-        match ml::chat_step(&state.http, &state.boot.ml.base_url, &sum_msgs, None, &sum_sampling, ml::provider_overrides(state, None).await).await {
+        match async {
+            if let Some(run)=run {
+                sum_sampling.reasoning_effort=None; // The saved assignment owns effort.
+                return run.chat_step(state,crate::model_routing::CallPurpose::UtilitySummary,&sum_msgs,None,&sum_sampling).await;
+            }
+            let overrides = ml::provider_overrides(state, None).await?;
+            ml::chat_step(&state.http, &state.boot.ml.base_url, &sum_msgs, None, &sum_sampling, overrides).await
+        }.await {
             // Accept only a real fold: non-empty AND objectively shorter than the
             // input it replaces. A string that is not shorter is not a summary (an
             // echo) — accepting it would inflate the prompt and, since earlier turns
@@ -3845,9 +4072,15 @@ async fn compact_history(
             Ok(s) if !s.content.trim().is_empty() && est_tokens(&s.content) < input_tokens => {
                 summary = s.content;
                 watermark = to_fold.last().map(|m| m.seq).unwrap_or(watermark);
-                let _ = upsert_summary(&state.pg, chat_id, &summary, watermark).await;
+                if let Some(run)=run {
+                    routing::authorize(state,run).await?;
+                    upsert_summary(&state.pg,chat_id,&summary,watermark).await?;
+                } else {
+                    let _ = upsert_summary(&state.pg, chat_id, &summary, watermark).await;
+                }
                 let _ = tx.send(ServerFrame::ChatCompacted { turn_id, summarised: to_fold.len() as u32 }).await;
             }
+            Err(error) if run.is_some() => return Err(error),
             _ => {
                 // Summary empty, errored, or not shorter than its input — keep the
                 // turns verbatim (better an over-long prompt than dropped context).
@@ -3871,7 +4104,7 @@ async fn compact_history(
         out.push(json!({ "role": "system", "content": format!("[Earlier conversation summary]\n{summary}") }));
     }
     out.extend(verbatim.iter().map(HistMsg::to_value));
-    out
+    Ok(out)
 }
 
 async fn load_summary(pool: &sqlx::PgPool, chat_id: Uuid) -> Option<(String, i32)> {
@@ -4083,7 +4316,7 @@ async fn name_chat(state: &AppState, user_id: Option<Uuid>, content: &str) -> Op
         reasoning_effort: Some("minimal".into()),
         ..Default::default()
     };
-    let step = crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(state, user_id).await)
+    let step = crate::ml::chat_step(&state.http, &state.boot.ml.base_url, &messages, None, &sampling, crate::ml::provider_overrides(state, user_id).await.ok()?)
         .await
         .ok()?;
     let line = step.content.trim().lines().next().unwrap_or("").to_string();
@@ -4474,7 +4707,7 @@ mod compaction_tests {
     async fn state_with_ml(ml_url: String) -> Option<(AppState, sqlx::PgPool)> {
         let db_url = std::env::var("DATABASE_URL").ok()?;
         let redis_url =
-            std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+            std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
         let pg = db::connect(&db_url, 5).await.ok()?;
         let redis = cache::create_pool(&redis_url).ok()?;
         let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };
@@ -4632,7 +4865,7 @@ mod compaction_tests {
     /// (the empty-content premise was right). (2) A real two-pass incremental fold is
     /// accepted on BOTH passes — the update-branch case, where a real summary grows
     /// with the input. Also (N2) a skill-test-style scaffolding call returns real
-    /// output, not a blank box. Gated on PAI_E2E=1 + OPENAI_TEST_KEY.
+    /// output, not a blank box. Gated on FOSNIE_E2E=1 + OPENAI_TEST_KEY.
     ///
     /// `compact_history` resolves the DEPLOYMENT default provider, whose stored key is
     /// encrypted with the running host's DEK (unavailable to this process). So this
@@ -4641,8 +4874,8 @@ mod compaction_tests {
     /// running backend with an undecryptable provider key.
     #[tokio::test]
     async fn live_incremental_compaction_folds_twice() {
-        if std::env::var("PAI_E2E").as_deref() != Ok("1") {
-            eprintln!("skip: set PAI_E2E=1 with the ML stack up");
+        if std::env::var("FOSNIE_E2E").as_deref() != Ok("1") {
+            eprintln!("skip: set FOSNIE_E2E=1 with the ML stack up");
             return;
         }
         let Ok(api_key) = std::env::var("OPENAI_TEST_KEY") else {
@@ -4654,7 +4887,7 @@ mod compaction_tests {
             return;
         };
         let redis_url =
-            std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+            std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
         let pg = db::connect(&db_url, 5).await.unwrap();
 
         // The deployment default llm row that compact_history will resolve.
@@ -4693,7 +4926,7 @@ mod compaction_tests {
             ..BootConfig::default()
         };
         boot.ml.base_url =
-            std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+            std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
         let state = AppState::new(pg.clone(), redis, Arc::new(boot));
 
         let chat_id = seed_chat(&pg).await;
@@ -4720,7 +4953,7 @@ mod compaction_tests {
             json!({ "role": "system", "content": "You are a test skill. Reply with a single short line." }),
             json!({ "role": "user", "content": "Say the single word READY." }),
         ];
-        let n2 = ml::chat_step(&state.http, &state.boot.ml.base_url, &n2_msgs, None, &n2_sampling, ml::provider_overrides(&state, None).await).await;
+        let n2 = ml::chat_step(&state.http, &state.boot.ml.base_url, &n2_msgs, None, &n2_sampling, ml::provider_overrides(&state, None).await.unwrap()).await;
         let n2_nonempty = n2.map(|s| !s.content.trim().is_empty()).unwrap_or(false);
 
         // RESTORE the provider row + clean up BEFORE asserting.
@@ -4745,5 +4978,25 @@ mod compaction_tests {
         );
         assert!(n2_nonempty, "the skill-test scaffolding call must return real output, not a blank box");
         eprintln!("live incremental compaction: w1={w1} w2={w2} s1_len={} n2_ok={n2_nonempty}", s1.len());
+    }
+}
+
+#[cfg(test)]
+mod artefact_intent_tests {
+    use super::wants_artefact;
+    #[test]
+    fn documentation_search_and_keyword_substrings_are_plain_chat() {
+        for prompt in ["Make one web search call for Open-Meteo API documentation and answer in two sentences.",
+            "Generate an explanation of contractual obligations.","Explain how to write a blueprint.",
+            "Which query parameter does the API documentation describe?"] {
+            assert!(!wants_artefact(prompt),"{prompt}");
+        }
+    }
+    #[test]
+    fn explicit_files_and_plural_document_requests_still_export() {
+        for prompt in ["Create a document.","Write two reports.","Generate slides.",
+            "Export report.docx", "Give the answer as a PDF.","Prepare a downloadable summary."] {
+            assert!(wants_artefact(prompt),"{prompt}");
+        }
     }
 }

@@ -454,12 +454,42 @@ impl crate::ext::AuditSink for BasicAuditSink {
 /// Canonical, deterministic hash of a row's content chained to `prev_hash`.
 ///
 /// Fields are emitted in a fixed order, each tagged and length-prefixed so no
-/// two distinct rows can collide on concatenation. JSON is serialised with
-/// `serde_json` (BTreeMap-backed, hence key-sorted) for stability. Timestamps
-/// use nanoseconds since the Unix epoch. Shared by [`append`] and verification
+/// two distinct rows can collide on concatenation. JSON object keys are sorted
+/// recursively, even when a consumer enables serde_json's preserve_order feature.
+/// Timestamps use microseconds since the Unix epoch. Shared by append and verification
 /// so both sides agree byte-for-byte.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_chain_hash(
+    seq:i64,actor_user_id:Option<Uuid>,actor_role:&str,action_type:&str,
+    resource_type:Option<&str>,resource_id:Option<Uuid>,occurred_at:OffsetDateTime,
+    session_id:Option<&str>,source_ip:Option<&str>,outcome:AuditOutcome,outcome_reason:Option<&str>,
+    model_agent_traceability:Option<&serde_json::Value>,token_usage:Option<&serde_json::Value>,
+    risk_anomaly_flag:bool,payload:Option<&serde_json::Value>,prev_hash:Option<&[u8]>,
+) -> Vec<u8> {
+    fn canonical(value:&serde_json::Value)->serde_json::Value {
+        match value {
+            serde_json::Value::Object(map)=>{
+                let mut keys:Vec<_>=map.keys().collect();keys.sort_unstable();
+                let mut sorted=serde_json::Map::new();
+                for key in keys {sorted.insert(key.clone(),canonical(&map[key]));}
+                serde_json::Value::Object(sorted)
+            },
+            serde_json::Value::Array(values)=>serde_json::Value::Array(values.iter().map(canonical).collect()),
+            value=>value.clone(),
+        }
+    }
+    let trace=model_agent_traceability.map(canonical);
+    let tokens=token_usage.map(canonical);
+    let payload=payload.map(canonical);
+    compute_legacy_chain_hash(seq,actor_user_id,actor_role,action_type,resource_type,resource_id,occurred_at,
+        session_id,source_ip,outcome,outcome_reason,trace.as_ref(),tokens.as_ref(),risk_anomaly_flag,payload.as_ref(),prev_hash)
+}
+
+/// Read-only compatibility with previously signed rows serialized in their
+/// transport JSON key order. New appenders must use `compute_chain_hash`.
+/// A historically unverifiable row is not rewritten or repaired by this path.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_legacy_chain_hash(
     seq: i64,
     actor_user_id: Option<Uuid>,
     actor_role: &str,

@@ -27,6 +27,7 @@ import pypdf
 from . import tracked_changes
 from .config import settings
 from .rag_ctx import cfg
+from .inference_target import strict
 
 _log = logging.getLogger("extract")
 
@@ -151,6 +152,8 @@ def _pdf_pages_pdfplumber(p: Path) -> list[tuple[int, str]]:
                 text = page.extract_text() or ""
                 tables = page.extract_tables() or []
             except Exception:
+                if strict():
+                    raise
                 _log.warning("pdfplumber failed on page %d of %s", i + 1, p.name)
                 text, tables = "", []
             parts = [text] if text.strip() else []
@@ -170,6 +173,8 @@ def _pdf_pages(p: Path) -> list[tuple[int, str]]:
         try:
             return _pdf_pages_pdfplumber(p)
         except Exception:
+            if strict():
+                raise
             _log.warning("pdfplumber unavailable on %s; falling back to pypdf", p.name)
     reader = pypdf.PdfReader(str(p))
     return [(i + 1, page.extract_text() or "") for i, page in enumerate(reader.pages)]
@@ -181,7 +186,7 @@ def extract(path: str, mime: str | None = None) -> str:
     p = Path(path)
     suffix = p.suffix.lower()
 
-    if suffix in (".txt", ".md", ".text") or (mime and mime.startswith("text/")):
+    if suffix in (".txt", ".md", ".text"):
         return p.read_text(encoding="utf-8", errors="replace")
 
     if suffix == ".docx":
@@ -261,6 +266,9 @@ async def extract_pages_ocr(path: str, mime: str | None = None) -> list[tuple[in
     # PDF: prefer the embedded text layer; fall back to OCR for scanned PDFs.
     if suffix == ".pdf":
         pages = extract_pages(path, mime)
+        from . import pdf_ocr
+        if pdf_ocr.mode()=="page_images":
+            return await pdf_ocr.extract_scanned_pages(path,pages,_SCANNED_MIN_CHARS)
         if sum(len(t.strip()) for _, t in pages) >= _SCANNED_MIN_CHARS:
             return pages  # has a usable text layer
         # Scanned (no text layer): hand the whole PDF to the OCR service.

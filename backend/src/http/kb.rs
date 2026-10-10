@@ -72,7 +72,7 @@ pub async fn create_kb(
         return Err(AppError::Validation("a library needs a name".into()));
     }
 
-    let info = crate::ml::embed_info(&state.http, &state.boot.ml.base_url, crate::ml::provider_overrides(&state, ctx.user_id).await).await?;
+    let info = crate::ml::embed_info(&state.http, &state.boot.ml.base_url, crate::ml::provider_overrides(&state, ctx.user_id).await?).await?;
     // Seed the embedding-index provenance on the first KB build (idempotent), so
     // retrieval/ingest bind to the model that actually produced the live vectors
     // and a later model change is detected as a migration.

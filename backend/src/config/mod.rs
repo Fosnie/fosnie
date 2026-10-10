@@ -18,7 +18,7 @@
 //!   * **deployment layer** — external services' versions/flags (not this
 //!     module);
 //!   * **boot-time** — this module: endpoints, secrets, ports, paths, read once
-//!     at startup from defaults → optional TOML file → `PAI__` env vars;
+//!     at startup from defaults → optional TOML file → `FOSNIE__` env vars;
 //!   * **runtime-mutable** — [`runtime`]: typed validated rows in
 //!     `config_settings`, edited from the UI, every change audited.
 //!
@@ -67,7 +67,7 @@ pub struct BootConfig {
     /// (`/model-info` max_model_len); a small value forces early compaction.
     pub max_context_tokens: i64,
     /// Authentication mode + local-login knobs. Default is local email/password
-    /// (the open-source build); `keycloak` is opt-in via `PAI__AUTH__MODE=keycloak`.
+    /// (the open-source build); `keycloak` is opt-in via `FOSNIE__AUTH__MODE=keycloak`.
     #[serde(default)]
     pub auth: AuthConfig,
     /// Provider-registry policy. Off by default — only the
@@ -156,7 +156,7 @@ impl Default for ObservabilityConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConfig {
     /// Max pooled connections for the main application pool. Default 10. Lower it
-    /// to fit a small managed tier's connection cap (`PAI__DB__MAX_CONNECTIONS`).
+    /// to fit a small managed tier's connection cap (`FOSNIE__DB__MAX_CONNECTIONS`).
     #[serde(default = "default_db_max_connections")]
     pub max_connections: u32,
 }
@@ -345,10 +345,10 @@ impl Default for CodeInterpreterConfig {
     fn default() -> Self {
         Self {
             firecracker_bin: "firecracker".into(),
-            kernel_image: "/opt/pai/firecracker/vmlinux".into(),
-            rootfs_image: "/opt/pai/firecracker/rootfs.ext4".into(),
-            snapshot_dir: "/opt/pai/firecracker/snapshot".into(),
-            socket_dir: "/run/pai/firecracker".into(),
+            kernel_image: "/opt/fosnie/firecracker/vmlinux".into(),
+            rootfs_image: "/opt/fosnie/firecracker/rootfs.ext4".into(),
+            snapshot_dir: "/opt/fosnie/firecracker/snapshot".into(),
+            socket_dir: "/run/fosnie/firecracker".into(),
             vsock_cid: 3,
             vsock_port: 5005,
             vcpus: 2,
@@ -396,10 +396,10 @@ fn default_runsc_bin() -> String {
     "runsc".into()
 }
 fn default_gvisor_rootfs() -> String {
-    "/opt/pai/firecracker/rootfs".into()
+    "/opt/fosnie/firecracker/rootfs".into()
 }
 fn default_gvisor_state_dir() -> String {
-    "/run/pai/gvisor".into()
+    "/run/fosnie/gvisor".into()
 }
 fn default_ignore_cgroups() -> String {
     "auto".into()
@@ -601,9 +601,9 @@ pub struct SchedulerConfig {
 pub struct MlConfig {
     /// Base URL of the Python ML/RAG service (the platform's LLM client).
     pub base_url: String,
-    /// Shared secret sent as `X-PAI-ML-Key` on every ML call. The ML service
+    /// Shared secret sent as `X-Fosnie-ML-Key` on every ML call. The ML service
     /// rejects requests without it. Empty (default) = unauthenticated, for
-    /// localhost dev; set `PAI__ML__SHARED_SECRET` in production.
+    /// localhost dev; set `FOSNIE__ML__SHARED_SECRET` in production.
     #[serde(default)]
     pub shared_secret: String,
 }
@@ -762,16 +762,24 @@ impl Default for BootConfig {
 }
 
 impl BootConfig {
-    /// Build config from defaults → optional TOML file → `PAI__` env vars.
-    /// The file path comes from `PAI_CONFIG_FILE` (default `config.toml`);
+    /// Build config from defaults → optional TOML file → `FOSNIE__` env vars.
+    /// The file path comes from `FOSNIE_CONFIG_FILE` (default `config.toml`);
     /// a missing file is not an error. Env vars use `__` to nest, e.g.
-    /// `PAI__SERVER__PORT=9000`, `PAI__DATABASE_URL=...`.
+    /// `FOSNIE__SERVER__PORT=9000`, `FOSNIE__DATABASE_URL=...`.
+    ///
+    /// `PAI__` / `PAI_CONFIG_FILE` are the pre-rename spellings. They are still read
+    /// so an existing deployment's env file keeps booting, and are merged *before*
+    /// the new prefix so `FOSNIE__` wins where both are set. [`legacy_env_prefix_warning`]
+    /// surfaces the deprecation in the boot log.
     pub fn load() -> Result<Self, Box<figment::Error>> {
-        let file = std::env::var("PAI_CONFIG_FILE").unwrap_or_else(|_| "config.toml".into());
+        let file = std::env::var("FOSNIE_CONFIG_FILE")
+            .or_else(|_| std::env::var("PAI_CONFIG_FILE"))
+            .unwrap_or_else(|_| "config.toml".into());
         Figment::new()
             .merge(Serialized::defaults(BootConfig::default()))
             .merge(Toml::file(file))
             .merge(Env::prefixed("PAI__").split("__"))
+            .merge(Env::prefixed("FOSNIE__").split("__"))
             .extract()
             .map_err(Box::new)
     }
@@ -779,7 +787,7 @@ impl BootConfig {
     /// Reject obviously-broken config before anything depends on it.
     pub fn validate(&self) -> Result<(), String> {
         if self.database_url.is_empty() {
-            return Err("database_url is required (set PAI__DATABASE_URL)".into());
+            return Err("database_url is required (set FOSNIE__DATABASE_URL)".into());
         }
         if !self.database_url.starts_with("postgres://")
             && !self.database_url.starts_with("postgresql://")
@@ -842,12 +850,40 @@ impl BootConfig {
         if public && self.ml.shared_secret.trim().is_empty() {
             w.push(
                 "ml.shared_secret is empty on a public deployment — the ML service (:8090) \
-                 runs UNAUTHENTICATED. Set PAI__ML__SHARED_SECRET so direct calls are rejected."
+                 runs UNAUTHENTICATED. Set FOSNIE__ML__SHARED_SECRET so direct calls are rejected."
                     .into(),
             );
         }
         w
     }
+}
+
+/// One line for the boot log when the deployment still configures itself with the
+/// pre-rename `PAI__*` / `PAI_CONFIG_FILE` env vars. They are still honoured (see
+/// [`BootConfig::load`]); this is the nudge to move before the fallback is dropped.
+/// `None` when nothing legacy is set, which is the case for every new deployment.
+pub fn legacy_env_prefix_warning() -> Option<String> {
+    let mut names: Vec<String> = std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .filter(|k| k.starts_with("PAI__") || k == "PAI_CONFIG_FILE")
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort();
+    let shown = names.len().min(5);
+    let more = names.len() - shown;
+    let list = names[..shown].join(", ");
+    let tail = if more > 0 {
+        format!(" (and {more} more)")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "deprecated config env vars in use: {list}{tail}. The prefix is now FOSNIE__ \
+         (FOSNIE_CONFIG_FILE for the file path); PAI__ is still read but will be dropped. \
+         Where both are set, FOSNIE__ wins."
+    ))
 }
 
 /// True when the URL's host is loopback (dev), so plain http is acceptable there.
@@ -897,8 +933,8 @@ mod tests {
         }
 
         // SAFETY: edition 2021; serialised by ENV_LOCK, cleaned up below.
-        std::env::set_var("PAI_CONFIG_FILE", &path);
-        std::env::set_var("PAI__SERVER__PORT", "9000"); // env overrides the file
+        std::env::set_var("FOSNIE_CONFIG_FILE", &path);
+        std::env::set_var("FOSNIE__SERVER__PORT", "9000"); // env overrides the file
 
         let cfg = BootConfig::load().expect("load");
 
@@ -909,8 +945,8 @@ mod tests {
         // default holds where neither file nor env set it:
         assert_eq!(cfg.ml.base_url, "http://localhost:8090");
 
-        std::env::remove_var("PAI_CONFIG_FILE");
-        std::env::remove_var("PAI__SERVER__PORT");
+        std::env::remove_var("FOSNIE_CONFIG_FILE");
+        std::env::remove_var("FOSNIE__SERVER__PORT");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -990,9 +1026,9 @@ mod tests {
     fn linux_profile_example_loads_voice_live() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/deploy/config.linux.example.toml");
-        std::env::set_var("PAI_CONFIG_FILE", path);
+        std::env::set_var("FOSNIE_CONFIG_FILE", path);
         let cfg = BootConfig::load().expect("load linux profile");
-        std::env::remove_var("PAI_CONFIG_FILE");
+        std::env::remove_var("FOSNIE_CONFIG_FILE");
 
         // The Linux profile turns live voice on and pins the streaming engines.
         assert!(cfg.features.voice, "batch voice on");
@@ -1007,12 +1043,46 @@ mod tests {
     fn macos_profile_example_loads() {
         let _guard = ENV_LOCK.lock().unwrap();
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/deploy/config.macos.example.toml");
-        std::env::set_var("PAI_CONFIG_FILE", path);
+        std::env::set_var("FOSNIE_CONFIG_FILE", path);
         let cfg = BootConfig::load().expect("load macos profile");
-        std::env::remove_var("PAI_CONFIG_FILE");
+        std::env::remove_var("FOSNIE_CONFIG_FILE");
 
         // The macOS profile disables code-interpreter and widens RAG timeout.
         assert!(!cfg.features.code_interpreter, "code_interpreter off on macOS");
         assert_eq!(cfg.tool_timeout_secs.get("rag"), Some(&240));
+    }
+
+    /// An existing deployment still on `PAI__*` must boot with its settings honoured —
+    /// and where the operator has set both spellings, the new one decides.
+    ///
+    /// The developer's own shell may already export `PAI__*` vars, so the assertions
+    /// are written against what this test sets rather than against a globally empty
+    /// environment.
+    #[test]
+    fn legacy_env_prefix_is_still_read_but_loses_to_the_new_one() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let ambient = legacy_env_prefix_warning().is_some();
+
+        std::env::set_var("PAI__SERVER__PORT", "9101");
+        std::env::set_var("PAI__LOG_LEVEL", "trace");
+        let cfg = BootConfig::load().expect("load with the legacy prefix");
+        assert_eq!(cfg.server.port, 9101, "a PAI__ var still applies");
+        assert_eq!(cfg.log_level, "trace");
+        assert!(legacy_env_prefix_warning().is_some(), "the deprecation is reported");
+
+        std::env::set_var("FOSNIE__SERVER__PORT", "9102");
+        let cfg = BootConfig::load().expect("load with both prefixes");
+        assert_eq!(cfg.server.port, 9102, "FOSNIE__ wins where both are set");
+        assert_eq!(cfg.log_level, "trace", "an unshadowed PAI__ var still applies");
+
+        std::env::remove_var("PAI__SERVER__PORT");
+        std::env::remove_var("PAI__LOG_LEVEL");
+        std::env::remove_var("FOSNIE__SERVER__PORT");
+        let cfg = BootConfig::load().expect("load with nothing of ours set");
+        assert_ne!(cfg.server.port, 9101, "the removed vars stop applying");
+        assert_ne!(cfg.server.port, 9102, "the removed vars stop applying");
+        if !ambient {
+            assert!(legacy_env_prefix_warning().is_none(), "silent once nothing legacy is set");
+        }
     }
 }

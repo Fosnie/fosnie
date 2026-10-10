@@ -1,7 +1,7 @@
 //! End-to-end RAG over the real stack: create project + knowledge, upload a
 //! document, let the scheduler ingest it, then ask a doc-answerable question
 //! over WebSocket and assert citations are emitted + persisted. Gated on
-//! `PAI_E2E=1`; needs Postgres + Redis + Keycloak + ML + Ollama + Qdrant +
+//! `FOSNIE_E2E=1`; needs Postgres + Redis + Keycloak + ML + Ollama + Qdrant +
 //! reranker all up.
 
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use fosnie_backend::{auth, cache, db, http, scheduler};
 const KC: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 async fn token(user: &str) -> Option<String> {
@@ -50,14 +50,14 @@ async fn token(user: &str) -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rag_chat_emits_and_persists_citations() {
     if !enabled() {
-        eprintln!("skipping rag_chat (set PAI_E2E=1 with full stack up)");
+        eprintln!("skipping rag_chat (set FOSNIE_E2E=1 with full stack up)");
         return;
     }
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let ml_url =
-        std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let tok = token("alice").await.expect("keycloak token");
 
     let pg = db::connect(&db_url, 5).await.unwrap();

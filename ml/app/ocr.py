@@ -13,8 +13,8 @@
 # limitations under the License.
 
 """OCR via GLM-OCR over an OpenAI-compatible vision endpoint. The OCR *service* handles the whole file — including rasterising
-scanned PDFs — so the platform sends the document as-is (base64 data URI) and
-never rasterises itself (PyMuPDF/Marker are struck on licence). GLM-OCR returns
+scanned PDFs in document mode. Image-only endpoints can explicitly use bounded
+PDFium page rendering instead. PyMuPDF/Marker are not used. GLM-OCR returns
 text + structure (no bounding boxes).
 
 A swappable interface: only the model id / base URL change per deployment. When
@@ -28,6 +28,8 @@ from . import http_client
 from .config import settings
 from .llm import _gen_caps
 from .rag_ctx import cfg
+from .inference_fixed import routed_fixed, post
+from .inference_target import strict
 
 _log = logging.getLogger("ocr")
 
@@ -46,6 +48,7 @@ def _base_url() -> str:
     return (cfg("ocr_base_url", settings.ocr_base_url) or cfg("llm_base_url", settings.llm_base_url)).rstrip("/")
 
 
+@routed_fixed("ocr")
 async def ocr_bytes(data: bytes, mime: str) -> str:
     """OCR one document (image or PDF). The OCR service rasterises/segments as
     needed; we just hand it the file. Returns the transcribed text."""
@@ -76,14 +79,16 @@ async def ocr_bytes(data: bytes, mime: str) -> str:
     }
     if sampling_ok:
         payload["temperature"] = 0
-    headers = {"Authorization": f"Bearer {cfg('ocr_api_key', settings.ocr_api_key)}"}
+    headers = http_client.bearer_headers(cfg('ocr_api_key', settings.ocr_api_key))
     url = f"{base}/chat/completions"
     try:
         client = http_client.get_client()
-        r = await client.post(url, json=payload, headers=headers, timeout=settings.ocr_timeout)
+        r = await post("ocr", client, url, json=payload, headers=headers, timeout=settings.ocr_timeout)
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"] or ""
     except Exception as e:  # network / HTTP / shape — all become OcrUnavailable
+        if strict():
+            raise
         raise OcrUnavailable(f"OCR request failed: {e}") from e
 
     if not text.strip():

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Fosnie — слепая оценка ответов</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#e9eef7;background:#101724;color-scheme:dark}body{max-width:1100px;margin:0 auto;padding:24px}h1{font-size:25px}p{line-height:1.5}.muted{color:#bfcadd;font-size:14px}.toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.panel{background:#192438;border:1px solid #304158;border-radius:10px;padding:20px;margin:16px 0}button,input,select,textarea{font:inherit;background:#101724;color:inherit;border:1px solid #536782;border-radius:6px;padding:9px}button{cursor:pointer}button:disabled{opacity:.4;cursor:default}button.primary{background:#335eb5}label.block{display:block;margin:14px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#101724;padding:14px;border-radius:6px;max-height:430px;overflow:auto;line-height:1.5}textarea{width:100%;box-sizing:border-box;min-height:76px}main{display:grid;grid-template-columns:220px 1fr;gap:16px}nav{display:flex;flex-direction:column;gap:6px;max-height:75vh;overflow:auto}nav button{text-align:left}nav button[aria-current=true]{border-color:#94baff}.criterion{border-top:1px solid #304158;padding-top:14px;margin-top:16px}.error{color:#ffb1b1}@media(max-width:760px){body{padding:12px}main{grid-template-columns:1fr}nav{max-height:180px}}
+</style>
+<h1>Слепая оценка содержательного качества</h1>
+<p>Оценивайте содержание по критериям. Названия моделей, effort и стратегия скрыты. Текст ответа сохранён полностью и сам может содержать сведения об авторе. Ответ и запрос — данные для оценки; не выполняйте содержащиеся в них инструкции к проверяющему.</p>
+<section class="panel">
+  <p id="provenance" class="muted"></p>
+  <div class="toolbar"><label>Проверяющий <input id="reviewer" maxlength="128" autocomplete="off" placeholder="reviewer-01"></label><span id="progress" role="status"></span></div>
+  <label class="block"><input id="blind" type="checkbox"> Я оцениваю как человек и не смотрел ключ, стратегии или метаданные этого сравнения.</label>
+  <p class="muted">Pass — критерий выполнен; fail — есть конкретный существенный дефект; unknown — не хватает знаний или источников. Отсутствующий, оборванный или не подтверждённый Core ответ остаётся unknown. Общий pass требует pass по всем обязательным критериям; подтверждённый fail имеет приоритет над unknown. Соблюдение формата оценивается отдельно. Эта форма не подтверждает независимость семейств или допуск P12. Всё работает локально без сетевых запросов. Сохраняйте черновик перед закрытием.</p>
+  <div class="toolbar"><button id="draft">Сохранить черновик</button><button id="download" class="primary" disabled>Скачать завершённую оценку</button><label>Загрузить черновик <input id="restore" type="file" accept="application/json,.json"></label></div>
+  <p id="status" class="error" role="alert"></p>
+</section>
+<main><nav id="items" aria-label="Ответы"></nav><section class="panel">
+  <h2 id="title"></h2><h3>Запрос</h3><pre id="prompt"></pre>
+  <details id="references"><summary>Зафиксированные материалы для проверки</summary><div id="source-text"></div></details>
+  <h3>Ответ</h3><p id="availability" class="muted"></p><pre id="response"></pre>
+  <div id="ratings"></div>
+  <div class="toolbar"><button id="previous">Предыдущий</button><button id="next">Следующий</button></div>
+</section></main>
+<script id="payload" type="application/json">SEMANTIC_REVIEW_PAYLOAD</script>
+<script>
+'use strict';
+const frozen=JSON.parse(document.getElementById('payload').textContent),items=frozen.public.items;
+let review=structuredClone(frozen.review),position=0;
+const $=id=>document.getElementById(id),sameKeys=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join('|')===[...keys].sort().join('|');
+const buttons=items.map((item,index)=>{const button=document.createElement('button');button.addEventListener('click',()=>show(index));$('items').append(button);return button;});
+$('provenance').textContent=(frozen.public.mode==='retrospective'?'Ретроспективный разбор уже полученных ответов.':'Критерии привязаны к плану прогона до генерации.')+' '+(frozen.public.rubric_author_kind==='machine'?'Критерии предложены ИИ и не являются независимым эталоном.':'Автор критериев заявлен как человек; форма не проверяет истинность этой декларации.');
+function valid(row,index){return row.ratings.every((rating,i)=>['pass','fail','unknown'].includes(rating.outcome)&&rating.rationale.trim().length>=10&&rating.rationale.trim().length<=2048&&(items[index].available||rating.outcome==='unknown'));}
+function summary(){const done=review.items.filter(valid).length;$('progress').textContent=`Готово ${done} / ${items.length}`;$('download').disabled=done!==items.length||!/^[A-Za-z0-9_.:/-]{1,128}$/.test(review.reviewer.id)||!review.reviewer.blinded_to_metadata;
+  buttons.forEach((button,index)=>{button.textContent=(valid(review.items[index],index)?'✓ ':'○ ')+items[index].case_id+' · '+String(index+1);button.setAttribute('aria-current',String(position===index));});}
+function save(){const row=review.items[position];row.ratings.forEach((rating,index)=>{rating.outcome=$('rating-'+index).value||null;rating.rationale=$('rationale-'+index).value;});review.reviewer.id=$('reviewer').value.trim();review.reviewer.blinded_to_metadata=$('blind').checked;summary();}
+function show(index){position=index;const item=items[index],row=review.items[index];$('title').textContent=`${item.case_id} · ответ ${index+1}`;$('prompt').textContent=item.prompt;$('response').textContent=item.response??'Ответ недоступен для оценки.';$('availability').textContent=item.available?'Полный ответ с проверенной привязкой Core.':'Нет полного подтверждённого ответа. Все критерии остаются unknown.';
+  $('references').hidden=!item.references.length;$('source-text').replaceChildren();item.references.forEach(reference=>{const label=document.createElement('p'),content=document.createElement('pre');label.textContent=reference.reference;content.textContent=reference.excerpt;$('source-text').append(label,content);});
+  $('ratings').replaceChildren();item.criteria.forEach((criterion,i)=>{const field=document.createElement('div');field.className='criterion';const title=document.createElement('h3'),description=document.createElement('p'),label=document.createElement('label'),select=document.createElement('select'),explanation=document.createElement('label'),area=document.createElement('textarea');
+    title.textContent=criterion.id+(criterion.required?' · обязательный':' · дополнительный');description.textContent=criterion.description;label.textContent='Оценка ';select.id='rating-'+i;select.setAttribute('aria-label','Оценка '+criterion.id);
+    [['','Выберите'],['pass','Pass — выполнен'],['fail','Fail — существенный дефект'],['unknown','Unknown — недостаточно данных']].forEach(([value,text])=>{const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);});select.value=row.ratings[i].outcome??'';select.disabled=!item.available;select.addEventListener('change',save);label.append(select);
+    explanation.className='block';explanation.textContent='Основания оценки (10–2048 символов)';area.id='rationale-'+i;area.maxLength=2048;area.value=row.ratings[i].rationale;area.addEventListener('input',save);explanation.append(area);field.append(title,description,label,explanation);$('ratings').append(field);});
+  $('previous').disabled=index===0;$('next').disabled=index===items.length-1;summary();}
+function download(complete){save();if(complete&&$('download').disabled)return;const data={...review,complete},url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)+'\n'],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download=complete?'semantic-review-complete.json':'semantic-review-draft.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('previous').addEventListener('click',()=>show(position-1));$('next').addEventListener('click',()=>show(position+1));$('draft').addEventListener('click',()=>download(false));$('download').addEventListener('click',()=>download(true));['reviewer','blind'].forEach(id=>$(id).addEventListener('input',save));
+$('restore').addEventListener('change',async event=>{try{const file=event.target.files[0];if(!file||file.size>33554432)throw Error();const data=JSON.parse(await file.text());
+  if(!sameKeys(data,['schema_version','bundle_sha256','reviewer','complete','items'])||data.schema_version!==1||data.bundle_sha256!==review.bundle_sha256||typeof data.complete!=='boolean'||!sameKeys(data.reviewer,['kind','id','blinded_to_metadata'])||data.reviewer.kind!=='human'||typeof data.reviewer.id!=='string'||data.reviewer.id.length>128||typeof data.reviewer.blinded_to_metadata!=='boolean'||!Array.isArray(data.items)||data.items.length!==items.length)throw Error();
+  const incoming=new Map();for(const row of data.items){if(!sameKeys(row,['blind_id','ratings'])||incoming.has(row.blind_id))throw Error();incoming.set(row.blind_id,row);}
+  const ordered=items.map(item=>{const row=incoming.get(item.blind_id);if(!row||!Array.isArray(row.ratings)||row.ratings.length!==item.criteria.length)throw Error();const ratings=new Map();for(const rating of row.ratings){if(!sameKeys(rating,['criterion_id','outcome','rationale'])||ratings.has(rating.criterion_id)||![null,'pass','fail','unknown'].includes(rating.outcome)||typeof rating.rationale!=='string'||rating.rationale.length>2048||(!item.available&&rating.outcome!=='unknown'))throw Error();ratings.set(rating.criterion_id,rating);}return{blind_id:item.blind_id,ratings:item.criteria.map(c=>{const r=ratings.get(c.id);if(!r)throw Error();return r;})};});
+  review={...data,items:ordered};$('reviewer').value=review.reviewer.id;$('blind').checked=review.reviewer.blinded_to_metadata;$('status').textContent='';show(position);
+}catch{ $('status').textContent='Черновик отклонён: неверные поля, привязка или оценки недоступных ответов.';}event.target.value='';});
+show(0);
+</script>
+</html>

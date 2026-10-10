@@ -1,4 +1,4 @@
-# Dev-only datastores for the PAI Platform Rust backend.
+# Dev-only datastores for the Fosnie Rust backend.
 # Brings up the Postgres + Redis that sqlx (compile-time checks, migrations)
 # and the readiness probe need. NOT a deployment artefact — production
 # datastores have their own lifecycle.
@@ -8,7 +8,7 @@
 # Matches .env.example (host port 5433 to avoid a clash with a native
 # PostgreSQL install that may already own 5432):
 #   DATABASE_URL=postgres://pai:pai@localhost:5433/pai
-#   PAI__REDIS_URL=redis://localhost:6379
+#   FOSNIE__REDIS_URL=redis://localhost:6379
 
 name: fosnie-backend-dev
 
@@ -44,7 +44,7 @@ services:
       retries: 10
 
   # Dev IdP. start-dev uses in-memory H2 (no external DB needed) and imports
-  # the pai realm on boot. Host port 8081 to leave 8080 for the backend.
+  # the fosnie realm on boot. Host port 8081 to leave 8080 for the backend.
   keycloak:
     image: quay.io/keycloak/keycloak:26.1
     command: ["start-dev", "--import-realm"]

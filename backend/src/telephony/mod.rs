@@ -52,6 +52,7 @@ pub mod notify;
 pub mod policy;
 pub mod preflight;
 pub mod retention;
+pub mod routing;
 pub mod sign;
 pub mod twilio;
 
@@ -303,6 +304,9 @@ pub async fn line_for(pg: &sqlx::PgPool, provider: &str, to: &str) -> Result<Lin
 /// half one configuration and half another.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CallDetails {
+    /// Pinned when the authenticated answer mints its single-use ticket.
+    #[serde(default)]
+    pub routing: Option<routing::Selection>,
     /// The account the call runs as.
     pub owner_user_id: Uuid,
     /// The agent that bounds what the caller can reach.
@@ -464,7 +468,7 @@ impl Ending {
 
 /// One call in progress.
 pub struct CallEntry {
-    pub session: Arc<crate::voice::Session>,
+    pub session: Arc<routing::CallVoice>,
     /// How this call is brought to an end from outside the socket that is carrying it,
     /// which is how the network's own notice that the call is over takes effect, and how
     /// the agent puts a caller through or finishes the call.
@@ -546,7 +550,7 @@ impl TelephonyCalls {
 /// second implementation: everything above the sink is identical whether the audio comes
 /// from a carrier's socket or from a telephone system on the practice's own network.
 pub struct StartedCall {
-    pub voice: Arc<crate::voice::Session>,
+    pub voice: Arc<routing::CallVoice>,
     /// The concrete transport, kept alongside the session's own reference to it because
     /// the reader has to hand it what the carrier says back, and the session holds it only
     /// as something that can be spoken through.
@@ -573,6 +577,9 @@ pub async fn start_session(
     wire: Wire,
     confirms_playback: bool,
 ) -> Option<StartedCall> {
+    // A ticket cannot silently cross an administrator's opt-in/out edit.
+    if routing::selection(state,details.phone_number_id).await.ok()?!=details.routing {return None;}
+    if details.routing.is_some() && logged.is_none() {return None;}
     let (out_tx, out_rx) = mpsc::channel::<Outbound>(OUT_QUEUE);
     let (control_tx, control_rx) = mpsc::channel::<Control>(8);
     let (pacer, pacer_task) = pace::spawn(out_tx, pace::DEFAULT_PREBUFFER);
@@ -602,7 +609,13 @@ pub async fn start_session(
         }
         _ => (None, None),
     };
-    let voice = crate::voice::Session::start(
+    let voice = if details.routing.is_some() {
+        let binding=Arc::new(routing::Binding {call:logged?,details:details.clone(),ending:ending.clone()});
+        match crate::voice::routed::Session::start_phone(state.clone(),ctx.clone(),sink.clone(),binding).await {
+            Ok(voice)=>Arc::new(routing::CallVoice::Routed(voice)),
+            Err(error)=>{tracing::warn!(%error,"routed telephone session refused");pacer_task.abort();return None;}
+        }
+    } else {Arc::new(routing::CallVoice::Legacy(crate::voice::Session::start(
         state.clone(),
         ctx.clone(),
         // A synthetic identifier. This session is not on the socket registry the
@@ -636,7 +649,7 @@ pub async fn start_session(
         // rather than filing the caller's message against no call at all.
         logged,
     )
-    .await;
+    .await))};
     Some(StartedCall { voice, sink, out_rx, control_rx, pacer_task, ending, recorder, recording })
 }
 
@@ -714,6 +727,7 @@ mod tests {
     #[test]
     fn the_ticket_survives_a_round_trip_through_its_stored_form() {
         let details = CallDetails {
+            routing: None,
             owner_user_id: Uuid::from_bytes([1; 16]),
             agent_id: Uuid::from_bytes([2; 16]),
             call_sid: "CAtest".into(),

@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 
-PORT = int(os.environ.get("PAI_AGENT_PORT", "5005"))
+PORT = int(os.environ.get("FOSNIE_AGENT_PORT", "5005"))
 
 
 def _prepare_matplotlib_env():

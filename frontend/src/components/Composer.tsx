@@ -43,6 +43,8 @@ import {
   type PromptSummary,
 } from "@/api/client";
 import type { ReasoningSpec } from "@/ws/protocol";
+import type { RoutingChoice, useChatRouting } from "@/api/chatRouting";
+import { ChatModelSelection } from "@/components/ChatModelSelection";
 
 type ThinkLevel = "off" | "on" | "low" | "medium" | "high" | "xhigh";
 const THINK_LEVELS: ThinkLevel[] = ["off", "on", "low", "medium", "high", "xhigh"];
@@ -56,6 +58,7 @@ type Attach = { key: string; id?: string; filename: string; size: number; mime: 
 export interface ComposerHandle {
   addFiles: (files: FileList | File[] | null) => void;
   focus: () => void;
+  prepareText: (text:string) => void;
 }
 
 export interface ComposerProps {
@@ -72,7 +75,8 @@ export interface ComposerProps {
   /** For the LiveVoiceOverlay conversation strip. */
   messages: ComposerMsg[];
   /** A typed turn — the parent builds the optimistic bubbles + sends the WS frame. */
-  onSubmit: (content: string, extras: { attachments: ChatAttachmentMeta[]; reasoning: ReasoningSpec | null; llmProviderId: string | null }) => void;
+  onSubmit: (content: string, extras: { attachments: ChatAttachmentMeta[]; reasoning: ReasoningSpec | null; llmProviderId: string | null; routingChoice?: RoutingChoice | null }) => void;
+  routing?: ReturnType<typeof useChatRouting>;
   /** Stop the in-flight generation. */
   onCancel: () => void;
   /** Extra items inside the "+" popover (Chat: project/library pickers). `close` shuts the menu. */
@@ -89,7 +93,7 @@ function fmtBytes(n: number): string {
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer({
   setAgentId, chatId, ready, sending, placeholder, agentName,
-  live, messages, onSubmit, onCancel, groundingSlot, statusSlot,
+  live, messages, onSubmit, onCancel, groundingSlot, statusSlot, routing,
 }, ref) {
   const who = useWhoami();
   const prompts = usePrompts();
@@ -100,7 +104,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 200) + "px";
   }
-  useImperativeHandle(ref, () => ({ addFiles: onAttachFiles, focus: () => taRef.current?.focus() }));
+  useImperativeHandle(ref, () => ({addFiles:onAttachFiles,focus:()=>taRef.current?.focus(),prepareText:(text:string)=>{setInput(text);taRef.current?.focus();}}));
 
   // --- Attachments (per-turn files) ---
   const [attachments, setAttachments] = useState<Attach[]>([]);
@@ -111,6 +115,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   function onAttachFiles(files: FileList | File[] | null) {
     if (!files?.length) return;
+    if (routing?.choice || routing?.problem) {toast("Attachments are not supported by this routed conversation.");return;}
     setAttachMenu(false);
     const { ok: withinSize, tooBig } = splitBySize(Array.from(files));
     for (const name of tooBig) toast(`Attach failed: ${name}: file too large (max ${MAX_CHAT_ATTACHMENT_LABEL})`);
@@ -157,13 +162,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }
 
   // --- Live voice (real-time call mode) — the session is owned by the parent. ---
-  const liveVoiceOn = !!who.data?.capabilities.voice_live;
+  const liveVoiceOn = !!who.data?.capabilities.voice_live && !routing?.choice && !routing?.problem;
 
   // --- LLM provider picker (multi-LLM) ---
   // The visible list = enabled deployment providers + the user's own; each carries
   // its reasoning capability so the Tune control below re-derives per pick (no whoami
   // refetch). Selection is remembered per chat (server pointer) + localStorage.
-  const llmList = useMyLlmProviders(chatId);
+  const llmList = useMyLlmProviders(chatId, !routing?.choice && !routing?.problem);
   const providers = useMemo(() => llmList.data?.providers ?? [], [llmList.data]);
   const [llmSel, setLlmSel] = useState<string | null>(null);
   const [llmMenu, setLlmMenu] = useState(false);
@@ -249,10 +254,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   function submit() {
     const content = input.trim();
     if (!content || !ready || sending || attachmentsBusy) return;
+    if (routing?.problem) {toast(routing.problem);return;}
+    if (routing?.choice && attachments.length) {toast("Remove the attachments before sending a routed message.");return;}
     const sent: ChatAttachmentMeta[] = attachments
       .filter((a) => a.status === "ready" && a.id)
       .map((a) => ({ id: a.id!, filename: a.filename, mime: a.mime, byte_size: a.size }));
-    onSubmit(content, { attachments: sent, reasoning: reasoningSpec(), llmProviderId: llmSel });
+    onSubmit(content, { attachments: sent, reasoning: routing?.choice ? null : reasoningSpec(), llmProviderId: routing?.choice ? null : llmSel, routingChoice:routing?.choice });
     setInput("");
     if (taRef.current) taRef.current.style.height = "auto";
     setAttachments([]);
@@ -279,6 +286,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           </div>
         )}
         {statusSlot}
+        {routing && (routing.supported || routing.choice || routing.problem) && <div className="composer-wrap" style={{paddingBottom:0}}><ChatModelSelection routing={routing} disabled={sending || dictation.status!=="idle" || live.active}/></div>}
         <div className="composer-wrap">
           <div className="composer glass glass--bar glass-noise" style={{ position: "relative" }}>
             {slashActive && slashItems.length > 0 && (
@@ -296,7 +304,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               <button ref={attachBtnRef} className="comp-attach" title="Attach" onClick={() => setAttachMenu((v) => !v)}><Icon.Plus size={18} /></button>
               <Popover anchorRef={attachBtnRef} open={attachMenu} onClose={() => setAttachMenu(false)} placement="top-start" offset={8} className="menu glass glass--menu" role="menu">
                 <div style={{ minWidth: 250, maxHeight: 360, overflowY: "auto" }}>
-                  <button className="menu-item" onClick={() => attachFileInput.current?.click()}><Icon.Attach size={15} /> Attach file (this turn)</button>
+                  <button className="menu-item" disabled={!!routing?.choice || !!routing?.problem} onClick={() => attachFileInput.current?.click()}><Icon.Attach size={15} /> Attach file (this turn)</button>
                   {groundingSlot?.(() => setAttachMenu(false))}
                 </div>
               </Popover>
@@ -319,7 +327,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
               }}
             />
-            {providers.length > 1 && (
+            {!routing?.choice && !routing?.problem && providers.length > 1 && (
               <div className="menu-wrap">
                 <button ref={llmBtnRef} className="comp-attach comp-model" title="LLM provider" onClick={() => setLlmMenu((v) => !v)} style={{ width: "auto", padding: "0 10px", gap: 5 }}>
                   <span className="mono" style={{ fontSize: 12, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -345,7 +353,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 </Popover>
               </div>
             )}
-            {reasonMode !== "none" && (
+            {!routing?.choice && !routing?.problem && reasonMode !== "none" && (
               <div className="menu-wrap">
                 <button ref={thinkBtnRef} className={"comp-attach comp-think" + (thinking !== "off" ? " on" : "")} title={thinking === "off" ? "Reasoning" : `Reasoning: ${thinking}`} onClick={() => setThinkMenu((v) => !v)}>
                   <Icon.Tune size={20} />
@@ -380,7 +388,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 </Popover>
               </div>
             )}
-            {voiceOn && (
+            {voiceOn && !routing?.choice?.options.local_only && !routing?.problem && (
               <button className={"comp-attach comp-mic" + (dictation.status !== "idle" ? " recording" : "")} onClick={dictate} title={dictation.status === "listening" ? "Stop dictation" : dictation.status === "transcribing" ? "Transcribing…" : "Dictate"}>
                 <Icon.Mic size={18} />
               </button>
@@ -392,7 +400,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             {sending ? (
               <button className="comp-send stop" title="Stop generating" onClick={onCancel}><Icon.Stop size={15} /></button>
             ) : input.trim() ? (
-              <button className="comp-send ready" onClick={submit} disabled={!ready || attachmentsBusy}>
+              <button className="comp-send ready" onClick={submit} disabled={!ready || attachmentsBusy || !!routing?.problem}>
                 <Icon.Send size={17} />
               </button>
             ) : liveVoiceOn ? (

@@ -68,6 +68,9 @@ impl ChatOrigin {
 /// identity it belongs to and cannot be dropped on the way to chat creation.
 #[derive(Clone, Copy)]
 pub struct TurnContext<'a> {
+    /// Internal opt-in only. Public selection/wire activation follows completion
+    /// of the routed call graph. Never rebuild this runtime from a user ID.
+    pub routing: Option<&'a crate::model_routing::run::RoutedRun>,
     pub auth: &'a AuthContext,
     pub origin: ChatOrigin,
     /// Which paired machine this turn came in from, when it came in from one.
@@ -102,6 +105,7 @@ impl<'a> TurnContext<'a> {
     /// provenance is not tracked (scheduler, workflows, voice).
     pub fn web(auth: &'a AuthContext) -> Self {
         Self {
+            routing: None,
             auth,
             origin: ChatOrigin::Web,
             device_id: None,
@@ -112,7 +116,11 @@ impl<'a> TurnContext<'a> {
     }
 
     pub fn new(auth: &'a AuthContext, origin: ChatOrigin) -> Self {
-        Self { auth, origin, device_id: None, workspace_id: None, automation_id: None, call_id: None }
+        Self { auth, origin, device_id: None, workspace_id: None, automation_id: None, call_id: None, routing:None }
+    }
+
+    pub fn with_routing(mut self,run:&'a crate::model_routing::run::RoutedRun) -> Self {
+        self.routing=Some(run); self
     }
 
     /// The same turn, knowing which machine it arrived from.

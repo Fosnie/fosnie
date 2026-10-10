@@ -26,7 +26,7 @@ from typing import AsyncIterator
 from ..web import progress as web_progress
 from . import pipeline, progress
 
-_log = logging.getLogger("pai.research.stream")
+_log = logging.getLogger("fosnie.research.stream")
 
 _QUEUE_MAX = 256
 _DONE = object()

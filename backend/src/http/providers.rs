@@ -699,6 +699,9 @@ async fn set_llm_default_row(
 }
 
 // Admin (deployment) llm CRUD -------------------------------------------------
+fn alias_collision(error:AppError)->AppError {
+    match error {AppError::Database(error)=>super::v1::alias::provider_error(error),error=>error}
+}
 
 /// `POST /api/admin/providers/llm` — create a named deployment llm provider.
 pub async fn create_admin_llm(
@@ -707,7 +710,7 @@ pub async fn create_admin_llm(
     Json(body): Json<UpsertLlm>,
 ) -> Result<Json<serde_json::Value>> {
     state.rbac.require_permission(&state.pg, &ctx, permissions::PROVIDERS_MANAGE).await?;
-    create_llm_row(&state, &ctx, "deployment", None, body).await
+    create_llm_row(&state, &ctx, "deployment", None, body).await.map_err(alias_collision)
 }
 
 /// `PUT /api/admin/providers/llm/{id}` — edit a named deployment llm provider.
@@ -718,7 +721,7 @@ pub async fn update_admin_llm(
     Json(body): Json<UpsertLlm>,
 ) -> Result<Json<serde_json::Value>> {
     state.rbac.require_permission(&state.pg, &ctx, permissions::PROVIDERS_MANAGE).await?;
-    update_llm_row(&state, &ctx, "deployment", None, id, body).await
+    update_llm_row(&state, &ctx, "deployment", None, id, body).await.map_err(alias_collision)
 }
 
 /// `DELETE /api/admin/providers/llm/{id}` — remove a named deployment llm provider.
@@ -757,7 +760,7 @@ pub async fn create_my_llm(
         return Err(AppError::Forbidden("bring-your-own-key is not enabled on this deployment".into()));
     }
     let uid = ctx.user_id.ok_or_else(|| AppError::Forbidden("no user".into()))?;
-    create_llm_row(&state, &ctx, "user", Some(uid), body).await
+    create_llm_row(&state, &ctx, "user", Some(uid), body).await.map_err(alias_collision)
 }
 
 /// `PUT /api/me/providers/llm/{id}` — edit a personal named llm provider (BYOK).
@@ -773,7 +776,7 @@ pub async fn update_my_llm(
         return Err(AppError::Forbidden("bring-your-own-key is not enabled on this deployment".into()));
     }
     let uid = ctx.user_id.ok_or_else(|| AppError::Forbidden("no user".into()))?;
-    update_llm_row(&state, &ctx, "user", Some(uid), id, body).await
+    update_llm_row(&state, &ctx, "user", Some(uid), id, body).await.map_err(alias_collision)
 }
 
 /// `DELETE /api/me/providers/llm/{id}` — remove a personal named llm provider.
@@ -874,6 +877,14 @@ pub async fn set_chat_llm_provider(
     Json(body): Json<SetChatLlm>,
 ) -> Result<Json<serde_json::Value>> {
     let uid = ctx.user_id.ok_or_else(|| AppError::Forbidden("no user".into()))?;
+    // Lock before checking admission: another selection update must not race a
+    // legacy pointer write and discard a just-saved Auto intent. Check ownership
+    // first so a caller cannot discover another conversation's routing state.
+    let mut tx = state.pg.begin().await?;
+    let owned: Option<Uuid> = sqlx::query_scalar("SELECT id FROM chats WHERE id=$1 AND owner_user_id=$2 FOR UPDATE")
+        .bind(chat_id).bind(uid).fetch_optional(&mut *tx).await?;
+    if owned.is_none() { return Err(AppError::NotFound("chat not found".into())); }
+    crate::model_routing::admission::require_legacy_chat(&state, Some(chat_id)).await?;
     if let Some(pid) = body.provider_id {
         if !crate::providers::visible_llm(&state.pg, ctx.user_id, pid).await? {
             return Err(AppError::Validation("that provider is not available to you".into()));
@@ -883,11 +894,12 @@ pub async fn set_chat_llm_provider(
         "UPDATE chats SET llm_provider_id = $2 WHERE id = $1 AND owner_user_id = $3",
         chat_id, body.provider_id, uid,
     )
-    .execute(&state.pg)
+    .execute(&mut *tx)
     .await?;
     if n.rows_affected() == 0 {
         return Err(AppError::NotFound("chat not found".into()));
     }
+    tx.commit().await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -898,12 +910,10 @@ async fn probe_llm_overrides(
     user_id: Option<Uuid>,
     id: Option<Uuid>,
     body: &UpsertProvider,
-) -> crate::ml::ProviderOverrides {
+) -> Result<crate::ml::ProviderOverrides> {
     let saved = match id {
-        Some(id) => crate::providers::resolve_llm(&state.pg, state.message_key, user_id, None, Some(id))
-            .await
-            .ok()
-            .flatten(),
+        Some(id) => crate::providers::resolve_llm(state, user_id, None, Some(id))
+            .await?,
         None => None,
     };
     let base_url = nz(&body.base_url).or_else(|| saved.as_ref().and_then(|r| r.base_url.clone()));
@@ -912,8 +922,8 @@ async fn probe_llm_overrides(
     let mut map = crate::ml::ProviderOverrides::new();
     if let Some(v) = base_url { map.insert("llm_base_url".into(), v.into()); }
     if let Some(v) = model { map.insert("llm_model".into(), v.into()); }
-    if let Some(v) = api_key { map.insert("llm_api_key".into(), v.into()); }
-    map
+    map.insert("llm_api_key".into(), api_key.unwrap_or_default().into());
+    Ok(map)
 }
 
 #[derive(Deserialize)]
@@ -932,7 +942,7 @@ async fn run_llm_probe(
     scope: &str,
     body: &LlmTestBody,
 ) -> Result<Json<crate::ml::ProviderTestResult>> {
-    let overrides = probe_llm_overrides(state, user_id, body.id, &body.form).await;
+    let overrides = probe_llm_overrides(state, user_id, body.id, &body.form).await?;
     let result = crate::ml::test_provider(&state.http, &state.boot.ml.base_url, "llm", overrides).await?;
     let mut event = crate::audit::AuditEvent::action("provider.tested", ctx.role.as_str());
     event.actor_user_id = ctx.user_id;
@@ -1083,21 +1093,36 @@ pub async fn embedding_index_status(
 /// `POST /api/admin/embedding-index/reindex` — enqueue the durable blue-green
 /// re-index for the staged desired embed model (or retry a failed one).
 pub async fn reindex_embeddings(
-    State(state): State<AppState>,
-    AuthUser(ctx): AuthUser,
-) -> Result<Json<serde_json::Value>> {
-    state.rbac.require_permission(&state.pg, &ctx, permissions::PROVIDERS_MANAGE).await?;
-    match crate::embedding_index::get(&state.pg).await? {
-        Some(p) if p.status == "reindexing" => {
-            return Err(AppError::Validation("a re-index is already running".into()));
-        }
-        Some(p) if p.desired_model.is_some() => {}
-        _ => {
-            return Err(AppError::Validation(
-                "no embed-model change is pending — change the embed provider first".into(),
-            ));
-        }
+    State(state): State<AppState>,AuthUser(ctx): AuthUser,
+)->Result<Json<serde_json::Value>> {
+    let task=crate::model_routing::reindex::queue(&state,&ctx).await?;
+    Ok(Json(json!({"ok":true,"task_id":task})))
+}
+
+
+pub async fn cleanup_embedding_indices(State(state):State<AppState>,AuthUser(ctx):AuthUser)->Result<Json<serde_json::Value>> {
+    let count=crate::embedding_retention::cleanup(&state,&ctx).await?;
+    Ok(Json(json!({"deleted":count,"minimum_retention_hours":24,"newest_retired_preserved":true})))
+}
+
+
+/// Cancels only the caller's current maintenance run; it never resumes a ledger.
+pub async fn cancel_embedding_reindex(State(state):State<AppState>,AuthUser(ctx):AuthUser)->Result<Json<serde_json::Value>> {
+    state.rbac.require_permission(&state.pg,&ctx,permissions::PROVIDERS_MANAGE).await?;
+    let context=crate::model_routing::RoutingContext {actor:ctx.clone(),run_id:Uuid::now_v7(),purpose:crate::model_routing::CallPurpose::Embed,chat_id:None,project_id:None};
+    crate::model_routing::durable::Context::capture(&context)?.validate(&state.pg).await?;
+    let mut tx=state.pg.begin().await?;
+    let row:Option<(Uuid,Uuid,i64)>=sqlx::query_as("SELECT j.id,j.task_id,a.desired_revision FROM routed_jobs j JOIN embedding_rebuild_attempts a ON a.routed_job_id=j.id WHERE j.kind='reindex' AND j.actor_user_id=$1 AND j.status IN ('queued','running') AND a.status='building' ORDER BY j.created_at DESC LIMIT 1 FOR UPDATE OF j,a")
+        .bind(ctx.user_id).fetch_optional(&mut *tx).await?;
+    if let Some((id,task,revision))=row {
+        sqlx::query("UPDATE routed_jobs SET status='cancelled',owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE embedding_rebuild_attempts SET status='failed' WHERE task_id=$1 AND status='building'").bind(task).execute(&mut *tx).await?;
+        sqlx::query("UPDATE tasks SET status='dead_letter',finished_at=now(),last_error='Embedding inference cancelled; no automatic replay' WHERE id=$1 AND status IN ('queued','running')").bind(task).execute(&mut *tx).await?;
+        sqlx::query("UPDATE embedding_index SET status='failed',error='Embedding inference cancelled; explicitly start a new attempt' WHERE id=1 AND desired_routing_revision=$1 AND NOT EXISTS(SELECT 1 FROM embedding_promotions WHERE status='pending') AND NOT EXISTS(SELECT 1 FROM routed_jobs WHERE kind='reindex' AND id<>$2 AND status IN ('queued','running'))")
+            .bind(revision).bind(id).execute(&mut *tx).await?;
+        let mut event=crate::audit::AuditEvent::action("routing.reindex.cancelled",ctx.role.as_str());event.actor_user_id=ctx.user_id;event.resource_type=Some("routed_job".into());event.resource_id=Some(id);
+        crate::audit::append_with(&mut tx,&event).await?;
     }
-    let id = crate::scheduler::enqueue(&state.pg, crate::scheduler::TaskType::ReindexEmbeddings, json!({})).await?;
-    Ok(Json(json!({ "ok": true, "task_id": id })))
+    tx.commit().await?;
+    Ok(Json(json!({"cancelled":row.map(|v|v.0),"inference_only":true})))
 }

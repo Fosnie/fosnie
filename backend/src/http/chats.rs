@@ -103,6 +103,8 @@ pub async fn list_chats(
 
 #[derive(Serialize)]
 pub struct MessageOut {
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub routing: Option<serde_json::Value>,
     pub id: Uuid,
     pub role: String,
     pub content: String,
@@ -165,6 +167,8 @@ pub async fn list_messages(
     .fetch_all(&state.pg)
     .await?;
     rows.reverse();
+    let ids:Vec<Uuid>=rows.iter().map(|r|r.id).collect();
+    let mut routing=crate::chat::browser::message_metadata(&state,&ctx,&ids).await?;
 
     // Durable attachments for this chat, grouped per message (one query).
     let mut by_msg: std::collections::HashMap<Uuid, Vec<AttachmentOut>> = std::collections::HashMap::new();
@@ -189,10 +193,14 @@ pub async fn list_messages(
     // Persisted citations for this chat, grouped per message (RAG then web) — so the
     // Sources list survives a reload (it was previously live-frame only).
     let mut by_msg_cit = crate::chat::load_citations(&state.pg, chat_id).await;
+    // Recheck after loading: a source revocation or private continuation must
+    // not be returned using a grant captured before the database reads.
+    crate::http::export::require_chat_read(&state, &ctx, chat_id).await?;
 
     Ok(Json(
         rows.into_iter()
             .map(|r| MessageOut {
+                routing:routing.remove(&r.id),
                 attachments: by_msg.remove(&r.id).unwrap_or_default(),
                 citations: by_msg_cit.remove(&r.id).unwrap_or_default(),
                 id: r.id,
@@ -288,6 +296,7 @@ pub async fn share_chat(
     Json(body): Json<ShareChat>,
 ) -> Result<Json<serde_json::Value>> {
     let (_pid, title) = crate::http::export::require_chat_read(&state, &ctx, chat_id).await?;
+    crate::workflows::delivery::check_share_target(&state,chat_id,body.group_chat_id).await?;
     let uid = ctx.user_id.ok_or_else(|| AppError::Forbidden("a user is required".into()))?;
     if !crate::http::messaging::is_member(&state, uid, body.group_chat_id).await? {
         return Err(AppError::Forbidden("not a member of the target chat".into()));

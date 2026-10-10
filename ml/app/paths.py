@@ -17,11 +17,26 @@ passes trusted paths under the storage tree, but the ML service must not honour
 traversal/absolute escapes from any caller (defence-in-depth). When no storage
 root is configured (dev), the check is skipped but null bytes are still rejected."""
 
+import os
 from pathlib import Path
 
 from fastapi import HTTPException
 
 from .config import settings
+
+
+def _resolved(candidate: str) -> Path:
+    resolved = Path(candidate).resolve()
+    # Windows canonical file handles use extended drive/UNC spelling. Resolve
+    # links first, then compare the same filesystem identity with the root.
+    if os.name == "nt":
+        value = str(resolved)
+        prefix = chr(92) * 2 + "?" + chr(92)
+        if value.startswith(prefix + "UNC" + chr(92)):
+            resolved = Path(chr(92) * 2 + value[8:])
+        elif value.startswith(prefix) and len(value) > 6 and value[5:7] == ":" + chr(92):
+            resolved = Path(value[4:])
+    return resolved
 
 
 def safe_path(candidate: str) -> str:
@@ -33,8 +48,8 @@ def safe_path(candidate: str) -> str:
     root = settings.storage_root.strip()
     if not root:
         return candidate  # confinement disabled (dev)
-    base = Path(root).resolve()
-    resolved = Path(candidate).resolve()
+    base = _resolved(root)
+    resolved = _resolved(candidate)
     if not resolved.is_relative_to(base):
         raise HTTPException(status_code=400, detail="path outside storage root")
     return str(resolved)

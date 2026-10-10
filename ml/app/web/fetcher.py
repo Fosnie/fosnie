@@ -29,6 +29,7 @@ interception."""
 
 import ipaddress
 import logging
+from contextlib import aclosing
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -38,7 +39,7 @@ from ..config import settings
 from . import ssrf
 from .pacing import pacer
 
-_log = logging.getLogger("pai.web.fetch")
+_log = logging.getLogger("fosnie.web.fetch")
 
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 _TEXT_TYPES = ("text/html", "application/xhtml", "text/plain")
@@ -98,7 +99,16 @@ async def fetch_page(url: str) -> FetchResult:
     current = url
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            for _hop in range(settings.web_max_redirects + 1):
+            from ..rag_ctx import cfg
+            bounded_research = cfg("bounded_research_web", False)
+            redirect_cap = min(settings.web_max_redirects, 5) if bounded_research else settings.web_max_redirects
+            byte_cap = min(settings.web_fetch_max_bytes, 4*1024*1024) if bounded_research else settings.web_fetch_max_bytes
+            for _hop in range(redirect_cap + 1):
+                from ..rag_ctx import cfg
+                if cfg("bounded_research_web", False):
+                    from .pipeline import _domain_allowed
+                    if not _domain_allowed(current):
+                        raise FetchError("research redirect denied by domain policy")
                 scheme, host, port = ssrf.validate_url(current)
                 ip = await ssrf.resolve_and_validate(host)
                 parts = urlsplit(current)
@@ -125,10 +135,11 @@ async def fetch_page(url: str) -> FetchResult:
                     if ctype and not is_pdf and not ctype.startswith(_TEXT_TYPES):
                         raise FetchError(f"unsupported content-type {ctype} from {current}")
                     raw = b""
-                    async for chunk in resp.aiter_bytes():
-                        raw += chunk
-                        if len(raw) > settings.web_fetch_max_bytes:
-                            raise FetchError(f"body over {settings.web_fetch_max_bytes} bytes: {current}")
+                    async with aclosing(resp.aiter_bytes()) as chunks:
+                        async for chunk in chunks:
+                            raw += chunk
+                            if len(raw) > byte_cap:
+                                raise FetchError(f"body over {byte_cap} bytes: {current}")
                     if is_pdf:
                         # PDF branch: hand the bytes to the document extraction
                         # path (pypdf native text + OCR for scanned).

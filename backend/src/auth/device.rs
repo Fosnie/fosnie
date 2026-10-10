@@ -51,13 +51,32 @@ use crate::state::AppState;
 #[derive(Debug, Clone, Copy)]
 pub struct DeviceAuth(pub Uuid);
 
+/// The credential that actually authenticated this request, rather than a key
+/// looked up later by device ID. Carried through WS tickets and resume tokens.
+#[derive(Debug,Clone,Copy)]
+pub struct DeviceCredential {pub device_id:Uuid,pub key_id:Uuid}
+impl DeviceCredential {
+    pub async fn validate(&self,state:&AppState,actor:&AuthContext)->Result<(),AppError> {
+        let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM api_keys k JOIN devices d ON d.id=k.device_id JOIN users u ON u.id=k.user_id WHERE k.id=$1 AND k.kind='device' AND k.device_id=$2 AND k.user_id=$3 AND d.user_id=k.user_id AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND d.revoked_at IS NULL AND u.deactivated_at IS NULL AND u.role::text=$4)")
+            .bind(self.key_id).bind(self.device_id).bind(actor.user_id).bind(actor.role.as_str()).fetch_one(&state.pg).await?;
+        if !live || actor.break_glass || actor.mfa_enroll_only {return Err(AppError::Forbidden("device credential or original principal is no longer valid".into()));}Ok(())
+    }
+}
+pub struct MaybeDeviceCredential(pub Option<DeviceCredential>);
+impl FromRequestParts<AppState> for MaybeDeviceCredential {
+    type Rejection=Infallible;
+    async fn from_request_parts(parts:&mut Parts,_:&AppState)->Result<Self,Self::Rejection> {
+        Ok(Self(parts.extensions.get::<DeviceCredential>().copied()))
+    }
+}
+
 /// Resolve a native-surface device token, or `None` if the header is absent or
 /// carries anything but a live one of ours.
 ///
 /// An error from the token itself is folded into `None` on purpose: the caller
 /// has already failed session authentication and will return its own
 /// unauthorised error, which must not vary with what the header contained.
-pub async fn try_device_auth(parts: &Parts, state: &AppState) -> Option<(AuthContext, Uuid)> {
+pub async fn try_device_auth(parts: &Parts, state: &AppState) -> Option<(AuthContext, DeviceCredential)> {
     let token = api_key::bearer_token(parts)?;
     if !token.starts_with(api_key::TOKEN_PREFIX) {
         return None;
@@ -68,7 +87,7 @@ pub async fn try_device_auth(parts: &Parts, state: &AppState) -> Option<(AuthCon
     // treat its absence as a failure rather than authenticating without one.
     let device_id = device_id?;
     api_key::touch_used(state, key_id, Some(device_id)).await;
-    Some((ctx, device_id))
+    Some((ctx, DeviceCredential {device_id,key_id}))
 }
 
 /// The device behind the current request, when it was authenticated by a device

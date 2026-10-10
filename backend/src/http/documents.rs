@@ -275,7 +275,7 @@ pub async fn version_text(
     require_document_read(&state, &ctx, doc_id).await?;
     let path = version_bytes_path(&state.pg, &state.boot.storage.workspace_dir, doc_id, ver_id).await?;
     crate::upload::ensure_within_storage(&state.boot.storage.workspace_dir, &path)?;
-    let text = crate::ml::read_document(&state.http, &state.boot.ml.base_url, &path, Some(DOCX_MIME), None, crate::ml::provider_overrides(&state, ctx.user_id).await).await?;
+    let text = crate::ml::read_document(&state.http, &state.boot.ml.base_url, &path, Some(DOCX_MIME), None, crate::ml::provider_overrides(&state, ctx.user_id).await?).await?;
     audit_doc(&state, &ctx, "document.accessed", doc_id, Some(serde_json::json!({ "version_id": ver_id, "as": "text" }))).await;
     Ok(Json(serde_json::json!({ "text": text })))
 }

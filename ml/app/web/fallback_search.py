@@ -27,7 +27,7 @@ from . import fetcher
 from .pacing import pacer
 from .provider import SerpResult
 
-_log = logging.getLogger("pai.web.fallback")
+_log = logging.getLogger("fosnie.web.fallback")
 
 ENGINE_KEY = "engine:ddg-html"
 _COOLDOWN_S = 120.0  # DDG blocks aggressively; back off harder than SearXNG

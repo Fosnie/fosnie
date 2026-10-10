@@ -6,7 +6,7 @@
 //! passing is the end-to-end proof; if it does not, the turn still proves the seam
 //! did not break retrieval.
 //!
-//! Gated on `PAI_E2E=1`; needs Postgres + Qdrant + the ML service up and a live LLM
+//! Gated on `FOSNIE_E2E=1`; needs Postgres + Qdrant + the ML service up and a live LLM
 //! reachable via `OPENAI_TEST_KEY` (an OpenAI key; model `gpt-5.4`). The key is read
 //! from the environment and never written to disk.
 
@@ -35,13 +35,13 @@ const KB_ID: &str = "019e7d35-1a32-7d70-aa78-6a25d1a6bded";
 const OWNER_ID: &str = "85c9882a-3828-4b68-bc3b-06a341f40f7e";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn live_rag_turn_authorises_search_library() {
     if !enabled() {
-        eprintln!("skip: set PAI_E2E=1 with the stack up");
+        eprintln!("skip: set FOSNIE_E2E=1 with the stack up");
         return;
     }
     let Ok(api_key) = std::env::var("OPENAI_TEST_KEY") else {
@@ -50,9 +50,9 @@ async fn live_rag_turn_authorises_search_library() {
     };
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let ml_url =
-        std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
 
     let pg = db::connect(&db_url, 5).await.unwrap();
     let redis = cache::create_pool(&redis_url).unwrap();

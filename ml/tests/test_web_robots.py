@@ -36,7 +36,7 @@ def _reset():
     rag_ctx.set_overrides({})
 
 
-_ROBOTS_BLOCK_PAI = "User-agent: PAIPlatform\nDisallow: /private/\n\nUser-agent: *\nAllow: /\n"
+_ROBOTS_BLOCK_UA = "User-agent: Fosnie\nDisallow: /private/\n\nUser-agent: *\nAllow: /\n"
 _ROBOTS_BLOCK_ALL = "User-agent: *\nDisallow: /\n"
 
 
@@ -59,7 +59,7 @@ def test_respect_blocks_disallowed_path(monkeypatch):
 
     async def fake_fetch(url):
         assert url.endswith("/robots.txt")
-        return FetchResult(final_url=url, status=200, body=_ROBOTS_BLOCK_PAI, content_type="text/plain")
+        return FetchResult(final_url=url, status=200, body=_ROBOTS_BLOCK_UA, content_type="text/plain")
 
     monkeypatch.setattr(fetcher, "fetch_page", fake_fetch)
     assert not _run(robots.allowed("https://example.com/private/doc")), "agent-specific disallow honoured"
@@ -98,7 +98,7 @@ def test_robots_cached_per_host(monkeypatch):
 
     async def counting_fetch(url):
         calls["n"] += 1
-        return FetchResult(final_url=url, status=200, body=_ROBOTS_BLOCK_PAI, content_type="text/plain")
+        return FetchResult(final_url=url, status=200, body=_ROBOTS_BLOCK_UA, content_type="text/plain")
 
     monkeypatch.setattr(fetcher, "fetch_page", counting_fetch)
     _run(robots.allowed("https://example.com/a"))
@@ -109,4 +109,4 @@ def test_robots_cached_per_host(monkeypatch):
 
 
 def test_agent_token():
-    assert robots._agent_token() == "PAIPlatform"
+    assert robots._agent_token() == "Fosnie"

@@ -63,7 +63,7 @@ VAD_SPEECH = float(os.environ.get("VOICE_VAD_THRESHOLD", "0.5"))
 # Smart-Turn completion probability at/above which the turn is judged complete.
 TURN_COMPLETE = float(os.environ.get("VOICE_TURN_THRESHOLD", "0.5"))
 
-app = FastAPI(title="PAI voice turn detector", version="1.0")
+app = FastAPI(title="Fosnie voice turn detector", version="1.0")
 
 # --- Silero VAD (loaded at boot) ---------------------------------------------
 _vad_model, _ = torch.hub.load("snakers4/silero-vad", "silero_vad", trust_repo=True)

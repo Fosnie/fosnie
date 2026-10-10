@@ -37,8 +37,9 @@ from urllib.parse import urlparse
 from . import http_client, thinking_cache
 from .config import settings
 from .rag_ctx import cfg
+from .inference_target import strict
 
-logger = logging.getLogger("pai-ml.anthropic")
+logger = logging.getLogger("fosnie-ml.anthropic")
 
 ANTHROPIC_VERSION = "2023-06-01"  # stable contract value — do NOT "update".
 _MAX_RETRIES = 3  # for 429 / 529 overloaded
@@ -266,6 +267,14 @@ def _map_usage(u: dict[str, Any] | None) -> dict[str, Any]:
     pt = u.get("input_tokens") or 0
     ct = u.get("output_tokens") or 0
     out = {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}
+    if strict():
+        # Anthropic reports cache reads/writes outside input_tokens.
+        # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+        cached = u.get("cache_read_input_tokens", 0)
+        written = u.get("cache_creation_input_tokens", 0)
+        pt = pt + cached + written
+        out.update(prompt_tokens=pt, total_tokens=pt + ct,
+                   prompt_tokens_details={"cached_tokens":cached,"cache_creation_tokens":written}, raw_provider_usage=dict(u))
     # Normalise any thinking-token count Anthropic reports into the platform's
     # single `reasoning_tokens` field. Field naming has
     # varied across API versions, so probe the known spellings; absent ⇒ omit
@@ -273,6 +282,8 @@ def _map_usage(u: dict[str, Any] | None) -> dict[str, Any]:
     tt = u.get("thinking_tokens") or u.get("reasoning_output_tokens")
     if tt:
         out["reasoning_tokens"] = tt
+    if strict() and not u:
+        out["prompt_tokens"] = out["completion_tokens"] = out["total_tokens"] = None
     return out
 
 
@@ -330,6 +341,8 @@ def _build_body(
         # budget_tokens must be < max_tokens — bump the cap if it isn't.
         budget = (think_frag.get("thinking") or {}).get("budget_tokens")
         if budget and budget >= body["max_tokens"]:
+            if strict():
+                raise ValueError("thinking budget exceeds routed output limit")
             body["max_tokens"] = budget + 1024
         # Sampling params are removed under thinking (adaptive models 400 on
         # temperature/top_p/top_k) — do not send them.
@@ -349,6 +362,8 @@ def _build_body(
         if tc:
             # Forced tool_choice (any/tool) is forbidden with thinking — downgrade to auto.
             if thinking_on and tc.get("type") in ("any", "tool"):
+                if strict():
+                    raise ValueError("forced tool choice is incompatible with thinking")
                 tc = {"type": "auto"}
             body["tool_choice"] = tc
     return body
@@ -362,9 +377,9 @@ async def _post(body: dict[str, Any]):
     client = http_client.get_client()
     url, headers = _url(), _headers()
     dropped_sampling = False
-    for attempt in range(_MAX_RETRIES):
-        r = await client.post(url, json=body, headers=headers)
-        if r.status_code in (429, 529) and attempt < _MAX_RETRIES - 1:
+    for attempt in range(1 if strict() else _MAX_RETRIES):
+        r = await http_client.post(client, url, json=body, headers=headers)
+        if r.status_code in (429, 529) and attempt < _MAX_RETRIES - 1 and not strict():
             retry_after = float(r.headers.get("retry-after") or 0) or (2**attempt)
             logger.warning(
                 "Anthropic %s (req-id %s); backoff %.1fs", r.status_code, r.headers.get("request-id"), retry_after
@@ -373,6 +388,7 @@ async def _post(body: dict[str, Any]):
             continue
         if (
             r.status_code == 400
+            and not strict()
             and not dropped_sampling
             and ("temperature" in body or "top_p" in body)
             and ("temperature" in r.text or "top_p" in r.text)
@@ -402,7 +418,7 @@ async def a_chat_step(
     body = _build_body(messages, sampling, model, stream=False, tools=tools)
     r = await _post(body)
     if r.status_code != 200:
-        logger.warning("Anthropic chat_step %s: %.500r", r.status_code, r.text)
+        logger.warning("Anthropic chat_step %s: %.500r", r.status_code, "[routed details omitted]" if strict() else r.text)
         r.raise_for_status()
     data = r.json()
     usage = _map_usage(data.get("usage"))
@@ -433,7 +449,7 @@ async def a_complete(system: str, user: str, max_tokens: int = 512) -> str:
     body = _build_body(msgs, {"max_tokens": max_tokens, "temperature": 0}, None, stream=False)
     r = await _post(body)
     if r.status_code != 200:
-        logger.warning("Anthropic complete %s: %.500r", r.status_code, r.text)
+        logger.warning("Anthropic complete %s: %.500r", r.status_code, "[routed details omitted]" if strict() else r.text)
         r.raise_for_status()
     data = r.json()
     llm._record_usage(stage, _map_usage(data.get("usage")))
@@ -503,6 +519,8 @@ def _handle_stream_event(obj: dict[str, Any], state: dict[str, Any]) -> list[dic
             # message_delta carries cumulative output_tokens; merge with the
             # input_tokens captured at message_start.
             merged = dict(state.get("usage") or {})
+            if strict():
+                merged["raw_provider_usage"] = {**merged.get("raw_provider_usage", {}), **u}
             ct = u.get("output_tokens")
             if ct is not None:
                 merged["completion_tokens"] = ct
@@ -510,6 +528,8 @@ def _handle_stream_event(obj: dict[str, Any], state: dict[str, Any]) -> list[dic
             state["usage"] = merged
     elif t == "error":
         err = obj.get("error") or {}
+        if strict():
+            raise LlmError("selected Anthropic stream failed")
         raise LlmError(f"Anthropic stream error: {err.get('type')}: {err.get('message')}")
     # ping / a non-tool content_block_start / message_stop -> no event
     return []
@@ -533,12 +553,13 @@ async def a_stream_chat(
     # Drop temperature/top_p and retry once if a newer model rejects them (mirrors
     # `_post`); model names churn, so react to the 400 rather than hardcode.
     for attempt in range(2):
-        async with client.stream("POST", _url(), json=body, headers=_headers()) as resp:
+        async with http_client.stream(client, "POST", _url(), json=body, headers=_headers()) as resp:
             if resp.status_code != 200:
                 err_body = await resp.aread()
                 btext = err_body.decode("utf-8", "replace") if isinstance(err_body, bytes) else str(err_body)
                 if (
                     attempt == 0
+                    and not strict()
                     and resp.status_code == 400
                     and ("temperature" in body or "top_p" in body)
                     and ("temperature" in btext or "top_p" in btext)
@@ -547,8 +568,8 @@ async def a_stream_chat(
                     body.pop("temperature", None)
                     body.pop("top_p", None)
                     continue
-                logger.warning("Anthropic stream %s: %.500r", resp.status_code, btext)
-                raise LlmError(f"Anthropic upstream returned {resp.status_code}")
+                logger.warning("Anthropic stream %s: %.500r", resp.status_code, "[routed details omitted]" if strict() else btext)
+                raise await LlmError.from_response(resp)
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line.startswith("data:"):

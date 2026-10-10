@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Optional boot config file (figment layer: defaults → this file → PAI__ env).
-# Point at it with PAI_CONFIG_FILE; env vars override anything set here.
+# Optional boot config file (figment layer: defaults → this file → FOSNIE__ env).
+# Point at it with FOSNIE_CONFIG_FILE; env vars override anything set here.
 # Secrets belong in env, not in a committed file.
 
 log_level = "info"

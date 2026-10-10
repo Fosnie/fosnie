@@ -42,7 +42,7 @@ from .bank import Bank
 from .budgets import ResearchBudgets
 from .outline import Outline
 
-_log = logging.getLogger("pai.research.verify")
+_log = logging.getLogger("fosnie.research.verify")
 
 _WID_RE = re.compile(r"\[[WD]\d+\]")
 _WID_CAPTURE = re.compile(r"\[([WD]\d+)\]")

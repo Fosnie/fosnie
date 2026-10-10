@@ -55,7 +55,7 @@ pub trait FeatureResolver: Send + Sync {
 /// verify). Any `None` field means "no override for this field" — the ML service
 /// keeps its own default. The decrypted `api_key` is plaintext (never persisted
 /// or logged in clear).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedProvider {
     pub base_url: Option<String>,
     pub model: Option<String>,
@@ -65,6 +65,14 @@ pub struct ResolvedProvider {
     /// budget|always_on`); `None`/`"auto"` ⇒ auto-detect. Only meaningful for the
     /// `llm` role. See [`crate::reasoning`].
     pub reasoning_mode: Option<String>,
+}
+
+impl std::fmt::Debug for ResolvedProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedProvider")
+            .field("model", &self.model).field("enabled", &self.enabled)
+            .field("api_key", &"[redacted]").finish_non_exhaustive()
+    }
 }
 
 /// Resolves the provider configuration for a role. The Core default
@@ -80,6 +88,33 @@ pub trait ProviderRegistry: Send + Sync {
         role: &str,
         user_id: Option<Uuid>,
     ) -> Result<Option<ResolvedProvider>>;
+
+    /// Named selection must use the injected registry too. An implementation
+    /// that has not opted in must fail, never fall through to the Core database.
+    async fn resolve_llm_id(
+        &self,
+        _pool: &PgPool,
+        _user_id: Option<Uuid>,
+        _provider_id: Uuid,
+    ) -> Result<Option<ResolvedProvider>> {
+        Err(AppError::Unavailable("this provider registry does not support named model selection".into()))
+    }
+
+    /// Strict embedding calls use active-index provenance, never the desired
+    /// migration target. Wrappers must explicitly forward/implement this seam.
+    async fn resolve_active_embed(&self, _pool:&PgPool, _provider_id:Uuid, _index_revision:i64) -> Result<Option<ResolvedProvider>> {
+        Err(AppError::Unavailable("this provider registry does not support active embedding targets".into()))
+    }
+    /// Explicit staged-index identity, independent from active embeddings.
+    async fn resolve_desired_embed(&self, _pool:&PgPool, _provider_id:Uuid, _index_revision:i64) -> Result<Option<ResolvedProvider>> {
+        Err(AppError::Unavailable("this provider registry does not support desired embedding targets".into()))
+    }
+
+    /// Resolve exactly the fixed-role row already authorized by the caller.
+    /// Never fall back from a deleted/disabled BYOK row to a deployment key.
+    async fn resolve_fixed_id(&self, _pool:&PgPool, _role:&str, _user_id:Option<Uuid>, _provider_id:Uuid) -> Result<Option<ResolvedProvider>> {
+        Err(AppError::Unavailable("this provider registry does not support fixed inference targets".into()))
+    }
 }
 
 /// Resolves the implementation of a data-source (DMS) connector for a
@@ -109,6 +144,13 @@ pub trait ConnectorRegistry: Send + Sync {
 /// hot path — it must never block TTFT or panic.
 #[async_trait]
 pub trait ModerationHook: Send + Sync {
+    /// Extensions must explicitly adopt the routed runtime. Never silently call
+    /// the legacy hook, which may create unplanned inference or detached jobs.
+    fn supports_routed_turn(&self) -> bool { false }
+    async fn on_routed_turn_completed(&self,_state:&AppState,_run:crate::model_routing::run::RoutedRun,
+        _message_id:Uuid,_prompt:String) -> crate::Result<()> {
+        Err(crate::AppError::Unavailable("moderation extension has not adopted routed execution".into()))
+    }
     async fn on_turn_completed(
         &self,
         state: &AppState,
@@ -261,6 +303,9 @@ pub struct NoopModerationHook;
 
 #[async_trait]
 impl ModerationHook for NoopModerationHook {
+    fn supports_routed_turn(&self) -> bool { true }
+    async fn on_routed_turn_completed(&self,_state:&AppState,_run:crate::model_routing::run::RoutedRun,
+        _message_id:Uuid,_prompt:String) -> crate::Result<()> { Ok(()) }
     async fn on_turn_completed(
         &self,
         _state: &AppState,
@@ -497,6 +542,17 @@ pub trait RbacPolicy: Send + Sync {
     ) -> Result<Vec<Uuid>> {
         let _ = (pool, ctx, kb_ids);
         Ok(Vec::new())
+    }
+
+    /// Authorise background connector ingestion and capture an opaque revision
+    /// witness. The extension must require captured provenance/ACLs and current
+    /// source access; missing support denies. Core never assumes an admin actor.
+    /// The witness is persisted and compared before dispatch and publication.
+    async fn connector_ingestion_witness(
+        &self, pool: &PgPool, ctx: &AuthContext, doc_id: Uuid,
+    ) -> Result<String> {
+        let _ = (pool, ctx, doc_id);
+        Err(AppError::Forbidden("connector ingestion authorisation unavailable".into()))
     }
 
     /// [`can`](Self::can) as a guard. 403 when denied.

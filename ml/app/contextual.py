@@ -42,6 +42,7 @@ def augment(blurb: str, chunk: str) -> str:
 async def contextualise(doc_text: str, chunk: str) -> str:
     """Return a 1–2 sentence situating blurb for `chunk` within `doc_text`.
     Best-effort: any failure yields an empty blurb (→ plain chunk via `augment`)."""
+    token=llm._stage_var.set("ingest.context")
     try:
         user = (
             f"<document>\n{doc_text[: settings.contextual_doc_budget]}\n</document>\n\n"
@@ -49,4 +50,8 @@ async def contextualise(doc_text: str, chunk: str) -> str:
         )
         return (await llm.complete(_SYSTEM, user, max_tokens=80)).strip()
     except Exception:
+        from .inference_target import strict
+        if strict():raise
         return ""
+    finally:
+        llm._stage_var.reset(token)

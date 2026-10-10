@@ -1,6 +1,6 @@
 //! End-to-end: an Agent with tools drives a turn through the tool-call loop.
 //! Asks for the current time → the model calls `current_time` → we observe
-//! chat.tool frames + a tool.invoked audit row + completion. Gated on PAI_E2E=1
+//! chat.tool frames + a tool.invoked audit row + completion. Gated on FOSNIE_E2E=1
 //! (needs Postgres + Keycloak + ML + Ollama up).
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use fosnie_backend::{auth, cache, db, http};
 const KC: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 async fn token(user: &str) -> Option<String> {
@@ -44,14 +44,14 @@ async fn token(user: &str) -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn agent_tool_loop_calls_current_time() {
     if !enabled() {
-        eprintln!("skipping agent_tool_loop (set PAI_E2E=1 with full stack up)");
+        eprintln!("skipping agent_tool_loop (set FOSNIE_E2E=1 with full stack up)");
         return;
     }
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let ml_url =
-        std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let tok = token("alice").await.expect("keycloak token");
 
     let pg = db::connect(&db_url, 5).await.unwrap();
@@ -164,7 +164,7 @@ async fn agent_version_history_and_rollback() {
     }
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let tok = token("alice").await.expect("keycloak token");
 
     let pg = db::connect(&db_url, 5).await.unwrap();

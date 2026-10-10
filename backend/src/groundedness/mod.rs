@@ -39,6 +39,11 @@ use uuid::Uuid;
 use crate::audit::{self, AuditEvent};
 use crate::state::AppState;
 
+pub mod routed;
+pub mod routed_draft;
+pub mod durable;
+pub mod jobs;
+
 /// Post-stream live groundedness check for one RAG answer. Fire-and-forget:
 /// callers spawn this; it never blocks generation and never panics (all errors
 /// are logged and swallowed). `context` is the retrieved evidence the answer was
@@ -58,6 +63,13 @@ pub async fn verify_message(
     // Ask the ML service. Transport/decode errors fail open (the verifier engine
     // being down is already absorbed there → score=None).
     let overrides = crate::ml::groundedness_overrides(&state.pg).await;
+    let providers = match crate::ml::provider_overrides(state, Some(user_id)).await {
+        Ok(providers) => providers,
+        Err(error) => {
+            tracing::warn!(%error, "groundedness provider resolution failed; skipping");
+            return;
+        }
+    };
     let res = match crate::ml::verify_live(
         &state.http,
         &state.boot.ml.base_url,
@@ -65,7 +77,7 @@ pub async fn verify_message(
         &question,
         &answer,
         &overrides,
-        crate::ml::provider_overrides(state, None).await,
+        providers,
     )
     .await
     {
@@ -227,6 +239,9 @@ pub async fn verify_draft(
         .and_then(|v| v.as_str())
         .and_then(|s| Uuid::parse_str(s).ok())
         .ok_or_else(|| crate::error::AppError::Other(anyhow::anyhow!("verify_draft: bad run_id")))?;
+    if jobs::is_routed(state, run_id).await? {
+        return Err(crate::model_routing::RoutingError::Incompatible("this verification requires its routed worker").into());
+    }
     let path = payload.get("path").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let mime = payload.get("mime").and_then(|v| v.as_str()).map(|s| s.to_string());
     let kb_ids: Vec<String> = payload
@@ -268,7 +283,7 @@ pub async fn verify_draft(
         mime.as_deref(),
         &kb_ids,
         &overrides,
-        crate::ml::provider_overrides(state, None).await,
+        crate::ml::provider_overrides(state, None).await?,
     )
     .await
     {
@@ -422,6 +437,7 @@ pub async fn repair_run(
         .and_then(|s| Uuid::parse_str(s).ok())
         .ok_or_else(|| crate::error::AppError::Other(anyhow::anyhow!("repair_run: bad run_id")))?;
 
+    routed_draft::reject_legacy_resume(state,run_id).await?;
     let run = sqlx::query!(
         r#"SELECT target_type::text AS "target_type!", target_id, status, strictness, created_by
            FROM verification_runs WHERE id = $1"#,

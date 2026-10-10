@@ -28,7 +28,7 @@ from .bank import Bank
 from .budgets import ResearchBudgets
 from .templates import Template
 
-_log = logging.getLogger("pai.research.outline")
+_log = logging.getLogger("fosnie.research.outline")
 
 
 @dataclass

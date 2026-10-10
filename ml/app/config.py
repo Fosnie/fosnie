@@ -16,6 +16,7 @@
 (Ollama) and prod (vLLM) — the platform is not engine-locked. All LLM access
 is OpenAI-shape; swapping engines is a base-URL/model change."""
 
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -221,6 +222,7 @@ class Settings(BaseSettings):
     # or image needs OCR and it is disabled/unreachable, ingestion fails loudly
     # (status=error) rather than indexing empty text.
     ocr_enabled: bool = True
+    ocr_pdf_mode: Literal["document", "page_images"] = "document"
     ocr_base_url: str = ""  # blank → fall back to llm_base_url
     ocr_model: str = "hf.co/ggml-org/GLM-OCR-GGUF:Q8_0"
     ocr_api_key: str = "ollama"
@@ -338,7 +340,7 @@ class Settings(BaseSettings):
     web_max_redirects: int = 5     # each hop re-validated by the SSRF guard
     web_fetch_concurrency: int = 3
     # Honest, stable fetcher UA (resolved decision 4) — never a spoofed browser.
-    web_user_agent: str = "PAIPlatform/1.0 (+https://private-ai.example)"
+    web_user_agent: str = "Fosnie/1.0 (+https://fosnie.dev)"
     # Playwright render escalation + rendered fallback search. Off by default:
     # the service must boot and pass tests without Chromium installed.
     web_render_enabled: bool = False
@@ -386,7 +388,7 @@ class Settings(BaseSettings):
     rerank_timeout: float = 120.0
     port: int = 8090
 
-    # Shared secret the Rust backend sends as `X-PAI-ML-Key`. When set, every
+    # Shared secret the Rust backend sends as `X-Fosnie-ML-Key`. When set, every
     # request (bar /health) must carry the exact value. Empty (default) = open,
     # for localhost dev; set SHARED_SECRET in production.
     shared_secret: str = ""
@@ -413,8 +415,8 @@ class Settings(BaseSettings):
     pandoc_timeout: float = 60.0
     # ML file logging. uvicorn ships console-only, so a diagnostic
     # run is lost when the process restarts. A RotatingFileHandler on
-    # the root logger persists INFO+ (incl. the `rag turn …` summary) to `<log_dir>/pai-ml.log`.
-    # log_dir resolves relative to the process CWD (the container WORKDIR /opt/pai/ml → /opt/pai/ml/data).
+    # the root logger persists INFO+ (incl. the `rag turn …` summary) to `<log_dir>/fosnie-ml.log`.
+    # log_dir resolves relative to the process CWD (the container WORKDIR /opt/fosnie/ml → /opt/fosnie/ml/data).
     # Empty log_dir disables the file handler (console only).
     log_dir: str = "./data"
     log_max_bytes: int = 10_000_000  # ~10 MB before rotation
@@ -431,7 +433,7 @@ class Settings(BaseSettings):
 
     # HTML artefacts: self-contained, offline-
     # portable pages (dashboards; the Deep Research "Create page" button). The model
-    # writes content with `<!-- pai:echarts -->` / `<!-- pai:theme -->` markers; the
+    # writes content with `<!-- fosnie:echarts -->` / `<!-- fosnie:theme -->` markers; the
     # html engine inlines the vendored ECharts build + theme there and injects a
     # strict CSP <meta> (zero-egress inside the artefact). `html_theme` empty = the
     # bundled neutral default (app/assets/html/theme.css); a deployment overrides it

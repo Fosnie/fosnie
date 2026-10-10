@@ -103,7 +103,7 @@ pub async fn upload_attachment(
     // Whole-document read at upload time — no task is known yet, so this is a
     // plain stuff read (the per-turn injection caps it to MAX_TEXT_CHARS below).
     let text_res =
-        crate::ml::read_document(&state.http, &state.boot.ml.base_url, &path_str, q.mime.as_deref(), None, crate::ml::provider_overrides(&state, ctx.user_id).await).await;
+        crate::ml::read_document(&state.http, &state.boot.ml.base_url, &path_str, q.mime.as_deref(), None, crate::ml::provider_overrides(&state, ctx.user_id).await?).await;
     let mut text = match text_res {
         Ok(t) => t,
         Err(e) => {

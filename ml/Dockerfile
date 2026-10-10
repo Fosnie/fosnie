@@ -23,14 +23,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --create-home --home-dir /var/lib/pai pai
+    && useradd --system --uid 10001 --create-home --home-dir /var/lib/fosnie fosnie
 
-WORKDIR /opt/pai/ml
-ENV UV_PROJECT_ENVIRONMENT=/opt/pai/ml/.venv \
+WORKDIR /opt/fosnie/ml
+ENV UV_PROJECT_ENVIRONMENT=/opt/fosnie/ml/.venv \
     UV_COMPILE_BYTECODE=1 \
-    PATH=/opt/pai/ml/.venv/bin:$PATH \
-    HF_HOME=/opt/pai/models \
-    FASTEMBED_CACHE_PATH=/opt/pai/models
+    PATH=/opt/fosnie/ml/.venv/bin:$PATH \
+    HF_HOME=/opt/fosnie/models \
+    FASTEMBED_CACHE_PATH=/opt/fosnie/models
 
 # Install deps first (cache layer), then app code.
 COPY ml/pyproject.toml ml/uv.lock ./
@@ -43,10 +43,10 @@ RUN uv sync --frozen --no-dev
 # here so the download can happen. fastembed ignores HF_HOME; it only respects
 # FASTEMBED_CACHE_PATH (default /tmp/fastembed_cache), hence that env above.
 RUN python -c "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25').embed(['warm'])" \
-    && chown -R pai:pai /opt/pai/models
+    && chown -R fosnie:fosnie /opt/fosnie/models
 
-RUN mkdir -p /var/lib/pai && chown -R pai:pai /var/lib/pai /opt/pai/ml
-USER pai
+RUN mkdir -p /var/lib/fosnie && chown -R fosnie:fosnie /var/lib/fosnie /opt/fosnie/ml
+USER fosnie
 
 EXPOSE 8090
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \

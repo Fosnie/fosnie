@@ -31,7 +31,7 @@ is worth stating plainly.
   each write and deletion is copied aside so it can be restored per file or per
   turn (`src-tauri/src/backup.rs`). What undo does not cover — files a command
   changed — is said the first time you use it.
-- **A command inherits none of the client's credentials.** `FOSNIE_*`, `PAI__*`
+- **A command inherits none of the client's credentials.** `FOSNIE_*`, `FOSNIE__*`
   and the instance token are stripped from a spawned command's environment.
 
 Two other decisions worth knowing before reading the code:

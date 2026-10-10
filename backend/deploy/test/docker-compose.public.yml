@@ -34,8 +34,8 @@ services:
       args:
         VITE_KEYCLOAK_URL: "https://auth.example.com"
     environment:
-      PAI__SERVER__PUBLIC_URL: "https://chat.example.com"
-      PAI__KEYCLOAK__URL: "https://auth.example.com"
+      FOSNIE__SERVER__PUBLIC_URL: "https://chat.example.com"
+      FOSNIE__KEYCLOAK__URL: "https://auth.example.com"
 
   # Keycloak behind the Cloudflare proxy: trust X-Forwarded-* and advertise its
   # public hostname so issuer + redirect URLs are built as https://auth.example.com.

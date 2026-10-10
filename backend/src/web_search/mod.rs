@@ -20,6 +20,8 @@
 
 use std::time::Duration;
 
+pub mod routed;
+
 use serde_json::json;
 use uuid::Uuid;
 
@@ -43,8 +45,15 @@ pub async fn persist_web_citations(
     message_id: Option<Uuid>,
     citations: &[WebCitation],
 ) {
+    if let Err(e)=try_persist_web_citations(pool,turn_id,message_id,citations).await {
+        tracing::warn!(error = %e, rows = citations.len(), "web_citations batch insert failed");
+    }
+}
+
+/// Routed callers propagate persistence failures instead of losing all sources.
+pub async fn try_persist_web_citations(pool:&sqlx::PgPool,turn_id:Uuid,message_id:Option<Uuid>,citations:&[WebCitation]) -> Result<()> {
     if citations.is_empty() {
-        return;
+        return Ok(());
     }
     // One UNNEST insert instead of a row-per-round-trip loop (optimisation audit,
     // L4). Parse dates into parallel arrays first.
@@ -97,9 +106,8 @@ pub async fn persist_web_citations(
     .await;
     // Best-effort, but never silent: a batch failure now discards ALL rows (the
     // old loop lost one), so it must at least be visible (re-audit R5).
-    if let Err(e) = res {
-        tracing::warn!(error = %e, rows = citations.len(), "web_citations batch insert failed");
-    }
+    res?;
+    Ok(())
 }
 
 /// Build the WS citation payload directly from the ML result (the deep path
@@ -169,6 +177,7 @@ fn notify(state: &AppState, p: &DeepPayload, message_id: Uuid, citations: Vec<Ci
 /// the first DB write.
 pub async fn run_deep(state: &AppState, payload: &serde_json::Value) -> Result<()> {
     let p = parse(payload)?;
+    crate::model_routing::admission::require_legacy_chat(state, Some(p.chat_id)).await?;
 
     // Killed/expired before we started → do nothing (the kill already set the
     // run's terminal status). `alive` is only meaningful when agents are on.
@@ -209,7 +218,7 @@ pub async fn run_deep(state: &AppState, payload: &serde_json::Value) -> Result<(
             p.recency.as_deref(),
             Some("deep"),
             &overrides,
-            crate::ml::provider_overrides(state, None).await,
+            crate::ml::provider_overrides(state, None).await?,
             Some(Duration::from_secs(DEEP_ML_TIMEOUT_SECS)),
         )
         .await?;

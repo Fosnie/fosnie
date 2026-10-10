@@ -56,7 +56,7 @@ Each item maps to a finding from the platform-access security review.
 - [ ] **`directAccessGrantsEnabled: false`** unless a non-interactive API integration
       genuinely needs the resource-owner-password grant. *(Removes a weaker auth path.)*
 - [ ] Rotate the **client secret** (the seed value `fosnie-secret` is public);
-      deliver it to the backend via `PAI__KEYCLOAK__CLIENT_SECRET` (env), never committed.
+      deliver it to the backend via `FOSNIE__KEYCLOAK__CLIENT_SECRET` (env), never committed.
 
 ## Identity brokering (Enterprise SSO — SAML 2.0 / OIDC)
 
@@ -102,7 +102,7 @@ Keycloak. In production, keep this scope minimal and rotate the client secret (a
 ```sh
 # authenticate as the service account (or an admin)
 kcadm.sh config credentials --server https://<kc>/ --realm fosnie \
-  --client fosnie --secret "$PAI__KEYCLOAK__CLIENT_SECRET"
+  --client fosnie --secret "$FOSNIE__KEYCLOAK__CLIENT_SECRET"
 
 # create a SAML broker IdP from the customer's metadata
 kcadm.sh create identity-provider/instances -r fosnie \
@@ -118,7 +118,7 @@ kcadm.sh delete identity-provider/instances/<customer> -r fosnie
 
 ## Cross-checks (platform side)
 
-- [ ] `PAI__SERVER__PUBLIC_URL` and `PAI__KEYCLOAK__URL` are `https://…` — the backend
+- [ ] `FOSNIE__SERVER__PUBLIC_URL` and `FOSNIE__KEYCLOAK__URL` are `https://…` — the backend
       **refuses to boot otherwise** on a non-loopback host.
 - [ ] TLS terminates at the reverse proxy; the proxy sets `X-Forwarded-For`; the backend
       is not directly exposed.

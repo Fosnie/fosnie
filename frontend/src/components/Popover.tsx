@@ -55,17 +55,22 @@ export function Popover({
     // Reset ALL four offsets — the surface's own CSS (.menu sets top/right) would
     // otherwise fight the ones we set and stretch the panel off-screen.
     const s: React.CSSProperties = { position: "fixed", top: "auto", bottom: "auto", left: "auto", right: "auto" };
-    const openUp = placement === "top-start" || placement === "top-end";
+    const preferUp = placement === "top-start" || placement === "top-end";
     // Clamp the surface to the space available on the side it opens, and let it
     // scroll — otherwise a tall menu (many items + a footer) from a low/high anchor
     // spills past the viewport edge and its footer becomes unclickable.
     const margin = 8;
+    const above = Math.max(0, a.top - offset - margin);
+    const below = Math.max(0, window.innerHeight - a.bottom - offset - margin);
+    // A picker near the viewport edge needs to open on the other side; a
+    // zero-height scroll area cannot expose even one selectable option.
+    const openUp = preferUp ? !(above < 180 && below > above) : below < 180 && above > below;
     if (openUp) {
       s.bottom = window.innerHeight - a.top + offset;
-      s.maxHeight = a.top - offset - margin;
+      s.maxHeight = above;
     } else {
       s.top = a.bottom + offset;
-      s.maxHeight = window.innerHeight - a.bottom - offset - margin;
+      s.maxHeight = below;
     }
     s.overflowY = "auto";
     if (placement === "bottom-end" || placement === "top-end") s.right = window.innerWidth - a.right;

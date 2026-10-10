@@ -129,7 +129,7 @@ async def ensure_section_indexes(name: str = COLLECTION) -> None:
     await _create_section_indexes(client(), await alias_target(name))
 
 
-async def alias_target(alias: str) -> str:
+async def alias_target(alias: str, *, strict: bool = False) -> str:
     """Resolve which collection `alias` points to. When `alias` is itself a literal
     collection (pre-migration deploys), it IS the target. Falls back to the name."""
     c = client()
@@ -138,7 +138,8 @@ async def alias_target(alias: str) -> str:
             if a.alias_name == alias:
                 return a.collection_name
     except Exception:
-        pass
+        if strict:
+            raise
     return alias
 
 
@@ -254,31 +255,49 @@ async def count(name: str) -> int:
 
 
 async def swap_alias(alias: str, new_name: str) -> None:
-    """Atomically point `alias` at `new_name`. Handles the one-time transition where
-    `alias` is still a LITERAL collection (fresh deploys): drop the literal first,
-    then create the alias (a collection + alias of the same name cannot coexist).
-    Subsequent swaps are a single atomic delete+create alias action."""
-    c = client()
+    """Atomic repoint for aliases; snapshot first when a literal owns the name."""
+    import hashlib,json,os
+    from . import storage_writes
+    c=client();folder=storage_writes.root()
+    suffix=hashlib.sha256((alias+"|"+new_name).encode()).hexdigest()[:24]
+    backup="pai_kb__literal_backup_"+suffix
+    receipt=folder/("alias_"+suffix+".receipt") if folder is not None else None
     if await c.collection_exists(alias) and not await is_alias(alias):
-        # Literal collection occupies the name — remove it, then alias the name.
+        if receipt is None:
+            raise ValueError("literal index conversion requires configured shared storage")
+        info=await c.get_collection(alias)
+        if not await c.collection_exists(backup):
+            await c.create_collection(backup,vectors_config=info.config.params.vectors,sparse_vectors_config=info.config.params.sparse_vectors)
+        offset=None;copied=0
+        while True:
+            batch,offset=await c.scroll(alias,offset=offset,limit=128,with_payload=True,with_vectors=True)
+            await c.upsert(backup,points=[models.PointStruct(id=p.id,payload=p.payload,vector=p.vector) for p in batch],wait=True)
+            copied+=len(batch)
+            if offset is None:break
+        original=(await c.count(alias,exact=True)).count
+        retained=(await c.count(backup,exact=True)).count
+        if original!=copied or retained!=original:
+            raise ValueError("literal index backup count differs; publication stopped")
+        data={"alias":alias,"new_collection":new_name,"retained_collection":backup,"points":retained}
+        temp=receipt.with_suffix('.new')
+        with temp.open('wb') as file:
+            file.write(json.dumps(data).encode());file.flush();os.fsync(file.fileno())
+        os.replace(temp,receipt)
         await c.delete_collection(alias)
-        await c.update_collection_aliases(
-            change_aliases_operations=[
-                models.CreateAliasOperation(
-                    create_alias=models.CreateAlias(collection_name=new_name, alias_name=alias)
-                )
-            ]
-        )
+        await c.update_collection_aliases(change_aliases_operations=[models.CreateAliasOperation(create_alias=models.CreateAlias(collection_name=new_name,alias_name=alias))])
+    elif not await c.collection_exists(alias):
+        # The process may have died after removing the literal and before adding
+        # its alias. The fsynced receipt and intact backup authorise this repair.
+        if receipt is None or not receipt.exists() or receipt.is_symlink():
+            raise ValueError("missing source alias has no literal-conversion receipt")
+        data=json.loads(receipt.read_text())
+        if data.get('alias')!=alias or data.get('new_collection')!=new_name or data.get('retained_collection')!=backup or not await c.collection_exists(backup):
+            raise ValueError("literal-conversion receipt conflicts with publication")
+        await c.update_collection_aliases(change_aliases_operations=[models.CreateAliasOperation(create_alias=models.CreateAlias(collection_name=new_name,alias_name=alias))])
     else:
-        # Already an alias — atomic repoint (delete old + create new in one call).
-        await c.update_collection_aliases(
-            change_aliases_operations=[
-                models.DeleteAliasOperation(delete_alias=models.DeleteAlias(alias_name=alias)),
-                models.CreateAliasOperation(
-                    create_alias=models.CreateAlias(collection_name=new_name, alias_name=alias)
-                ),
-            ]
-        )
+        await c.update_collection_aliases(change_aliases_operations=[
+            models.DeleteAliasOperation(delete_alias=models.DeleteAlias(alias_name=alias)),
+            models.CreateAliasOperation(create_alias=models.CreateAlias(collection_name=new_name,alias_name=alias))])
 
 
 async def drop_collection(name: str) -> None:
@@ -291,7 +310,7 @@ async def drop_collection(name: str) -> None:
         pass
 
 
-async def delete_doc(kb_id: str, doc_id: str) -> None:
+async def delete_doc(kb_id: str, doc_id: str, *, collection: str | None = None) -> None:
     """Remove a document's chunks (re-index-replaces; KBs are not versioned),
     plus its L2 parents. Scoped to the KB and document."""
     c = client()
@@ -303,8 +322,9 @@ async def delete_doc(kb_id: str, doc_id: str) -> None:
             ]
         )
     )
-    if await c.collection_exists(COLLECTION):
-        await c.delete(COLLECTION, points_selector=by_doc)
+    target = collection if collection is not None else COLLECTION
+    if await c.collection_exists(target):
+        await c.delete(target, points_selector=by_doc)
     if await c.collection_exists(PARENTS):
         await c.delete(PARENTS, points_selector=by_doc)
     # Invalidate the cached Deep Research note (point id == doc_id). This is the
@@ -523,15 +543,25 @@ async def hybrid_search(
     reach here (fail-closed is the caller's job). Returns [{score, payload}]."""
     if not kb_ids:
         return []
+    collection = COLLECTION
+    from .inference_target import strict, InferenceEnvelope
+    from .rag_ctx import cfg
+    if strict():
+        target = InferenceEnvelope.model_validate(cfg("routing", None)).fixed_assignments.get("embed")
+        if target is None or target.active_index_revision is None or not target.embedding_collection:
+            raise ValueError("routed search needs a pinned physical index")
+        collection = target.embedding_collection
     c = client()
-    if not await c.collection_exists(COLLECTION):
+    if not await c.collection_exists(collection):
+        if strict():
+            raise ValueError("pinned evidence index is unavailable")
         return []
     flt = models.Filter(must=_kb_must(kb_ids), must_not=_deny_must_not())
     from .rag_ctx import cfg
 
     over = max(limit * cfg("over_retrieval", settings.over_retrieval), limit)
     res = await c.query_points(
-        collection_name=COLLECTION,
+        collection_name=collection,
         prefetch=[
             models.Prefetch(query=dense, using="dense", limit=over, filter=flt),
             models.Prefetch(
@@ -546,3 +576,14 @@ async def hybrid_search(
         with_payload=True,
     )
     return [{"score": p.score, "payload": p.payload} for p in res.points]
+
+
+# Fence each actual storage operation (and each streamed batch), not model calls.
+# Nested helpers inherit the same lock; pending journals recover before a read
+# can observe an incomplete replacement. All replicas need shared STORAGE_ROOT.
+from .storage_writes import guarded as _storage_guarded
+import inspect as _storage_inspect
+for _storage_name,_storage_function in list(globals().items()):
+    if (callable(_storage_function) and getattr(_storage_function,"__module__",None)==__name__
+            and (_storage_inspect.iscoroutinefunction(_storage_function) or _storage_inspect.isasyncgenfunction(_storage_function))):
+        globals()[_storage_name]=_storage_guarded(_storage_function)

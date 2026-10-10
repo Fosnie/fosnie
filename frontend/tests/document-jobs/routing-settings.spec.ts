@@ -1,0 +1,187 @@
+import { test,expect,type Page } from "@playwright/test";
+import type { ModelEntry,Profile,PolicyEntry,FixedEntry } from "../../src/api/routingSettings";
+const url="/tests/document-jobs/routing-settings.html";
+test("P12 evidence import and optional policy switches save drafts without inference",async({page})=>{
+  const s=await fixture(page);await page.goto(url);
+  await page.locator(".routing-card").filter({hasText:"Cloud reasoning"}).getByRole("button",{name:"Edit profile",exact:true}).click();
+  await page.getByText("Held-out model evaluations (0)",{exact:true}).click();
+  const row={id:"fixture-record",source:"synthetic",dataset_sha256:"a".repeat(64),families_sha256:"b".repeat(64),profile_sha256:"c".repeat(64),evaluator_version:"fixture",
+    purpose:"primary",families:40,passed:40,reviewed:false,workload:{task:"general",minimum_tier:"balanced",input_tokens:256,output_tokens:128,
+      tools:false,vision:false,structured_output:false,fresh_information:false,language:null,effort:null,uncertain:false}};
+  await page.getByLabel("Import evaluation JSON").setInputFiles({name:"evidence.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify([row]))});
+  await page.getByLabel("Reviewed evaluation fixture-record").check();
+  await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
+  expect(s.models[0].profile!.quality_evidence![0]).toMatchObject({source:"synthetic",reviewed:true});
+  await page.getByRole("button",{name:"policies",exact:true}).click();await page.getByRole("button",{name:"New deployment policy"}).click();
+  await page.getByLabel("Policy name").fill("Reviewed routing");await page.getByLabel("Checked default model").selectOption(cloud);
+  await page.getByLabel("Rank with reviewed model evaluations").check();await page.getByLabel("Quality escalation for stateless API").check();
+  await page.getByLabel("Maximum calls",{exact:true}).fill("2");await page.getByLabel("Run output limit per call").fill("128");
+  await page.getByLabel("Run total token limit").fill("16000");await page.getByLabel("Run duration limit (ms)").fill("30000");
+  await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
+  expect(s.policies.at(-1)!.policy).toMatchObject({learned_ranking:true,quality_escalation:true,rollout:"off"});
+  expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
+});
+const cloud="11111111-1111-4111-8111-111111111111",local="22222222-2222-4222-8222-222222222222",own="33333333-3333-4333-8333-333333333333";
+const constraints={allowed_providers:null,local_only:false,max_calls:null,max_output_tokens:null,max_total_tokens:null,max_duration_ms:null,max_cost_microusd:null};
+function profile(id:string,model:string):Profile {
+  return {provider_id:id,provider_revision:1,revision:5,model,adapter:"openai_chat",locality:"cloud",locality_trusted:false,auto_enabled:true,
+    capabilities:{tools:"declared",vision:"unknown",structured_output:"declared",context_tokens:32000,max_output_tokens:8192,efforts:["high"]},
+    tier:"balanced",task_tiers:{},quality_status:"declared",evaluation_samples:0,evaluation_version:null,latency_ms:null,
+    pricing:{input_microusd_per_million:1000000,output_microusd_per_million:2000000,source:null,checked_at:null}};
+}
+async function fixture(page:Page) {
+  page.on("pageerror",e=>console.error("Routing settings page error:",e.message));
+  const models:ModelEntry[]=[{id:cloud,label:"Cloud reasoning",model:"cloud-api-model",scope:"deployment",enabled:true,provider_revision:1,profile_revision:5,profile:profile(cloud,"cloud-api-model")},
+    {id:local,label:"Local small",model:"local-api-model",scope:"deployment",enabled:true,provider_revision:2,profile_revision:null,profile:null},
+    {id:own,label:"Personal model",model:"personal-api-model",scope:"user",enabled:true,provider_revision:1,profile_revision:5,profile:profile(own,"personal-api-model")}];
+  const policies:PolicyEntry[]=[{id:"44444444-4444-4444-8444-444444444444",label:"Shared hybrid",scope:"deployment",revision:10,is_default:true,
+    policy:{id:"44444444-4444-4444-8444-444444444444",revision:10,rollout:"off",strategy:"hybrid",objective:"economy",constraints:{...constraints},rules:[],default_provider_id:cloud,classifier_provider_id:cloud,utility_assignments:{},technical_fallback:false}}];
+  const fixed:FixedEntry[]=[{id:"55555555-5555-4555-8555-555555555555",role:"embed",scope:"deployment",enabled:true,model:"indexed-embedding",provider_revision:1,active_index_revision:7,desired_index_revision:null,profile_revision:null,profile:null},
+    {id:"55555555-5555-4555-8555-555555555555",role:"embed_desired",scope:"deployment",enabled:true,model:"next-embedding",provider_revision:1,active_index_revision:null,desired_index_revision:8,profile_revision:null,profile:null}];
+  const s={manager:true,byok:true,failed:false,conflict:false,enabled:false,aliasConflict:false,apiEnabled:false,
+    alias:{schema_version:1,name:"fosnie/auto",enabled:false,revision:7,objective:"balanced",status:"disabled",agent_field:"fosnie_agent_id"},
+    models,policies,fixed,requests:[] as {path:string;method:string;body:any}[]};
+  await page.route("**/api/**",async route=>{
+    const request=route.request();const path=new URL(request.url()).pathname;if(!path.startsWith("/api/"))return route.continue();
+    const method=request.method();const body=method==="GET" ? null : request.postDataJSON();s.requests.push({path,method,body});
+    const json=(value:unknown,status=200)=>route.fulfill({status,json:value});
+    if(path==="/api/auth/config")return json({mode:"local",local_enabled:true});
+    if(path==="/api/routing/management")return s.failed ? json({},503) : json({schema_version:1,deployment_manage:s.manager,user_byok_enabled:s.byok,personal_policies:true});
+    if(path==="/api/routing/catalog")return json(s.models.filter(m=>s.byok || m.scope==="deployment"));
+    if(path==="/api/routing/policies")return json(s.policies);
+    if(path==="/api/routing/fixed-catalog")return json(s.fixed);
+    if(path==="/api/routing/public-api") {if(method==="PUT")s.apiEnabled=body.enabled;return json({schema_version:1,enabled:s.apiEnabled});}
+    if(path==="/api/routing/public-api-alias") {
+      if(method==="PUT") {if(s.aliasConflict)return json({},409);s.alias={...s.alias,...body,revision:s.alias.revision+1,status:body.enabled ? s.apiEnabled ? "ready" : "routing_disabled" : "disabled"};}
+      return json({...s.alias,status:s.alias.enabled ? s.apiEnabled ? "ready" : "routing_disabled" : "disabled"});
+    }
+    if(path==="/api/routing/browser-chat" || path==="/api/routing/regenerate") {if(method==="PUT")s.enabled=body.enabled;return json({schema_version:1,enabled:s.enabled});}
+    if(path.startsWith("/api/routing/profiles/")) {
+      if(path.endsWith("/probe"))return json({compatible:true,quality_evaluated:false,inference_calls:1,usage:{prompt_tokens:10,completion_tokens:1}});
+      const entry=s.models.find(m=>path.endsWith(m.id))!;
+      if(s.conflict){s.conflict=false;entry.profile_revision=6;entry.profile={...entry.profile!,revision:6};return json({},409);}
+      entry.profile={...body.profile,revision:20};entry.profile_revision=20;return json(entry.profile);
+    }
+    if(path.startsWith("/api/routing/policies/")) {
+      const saved={id:body.policy.id,label:body.label,scope:body.scope,revision:21,is_default:body.is_default,policy:{...body.policy,revision:21}};
+      const index=s.policies.findIndex(p=>p.id===saved.id);if(index>=0)s.policies[index]=saved;else s.policies.push(saved);return json(saved.policy);
+    }
+    if(path.startsWith("/api/routing/fixed-profiles/")) {
+      const entry=s.fixed.find(f=>f.id===body.profile.provider_id && f.role===body.profile.role)!;
+      entry.profile={...body.profile,revision:22};entry.profile_revision=22;return json(entry.profile);
+    }
+    if(path==="/api/routing/preview")return json({dry_run:true,inference_calls:0,classifier_required:false,rollout:"off",execution_target:{model:"cloud-api-model",effort:null},
+      decision:{proposed:null,actual:null,policy_revision:10,reason_codes:["routing_off"],estimated_cost_microusd:null},requirements:body.requirements,constraints});
+    if(path==="/api/routing/classifier-probe")return json({ok:true,judge_model:"cloud-api-model",requirements:{task:"current_fact",minimum_tier:"economy",fresh_information:true,tools:true,vision:false,structured_output:false,uncertain:false},usage:{calls:1,tokens:400,cost_microusd:123,unknown_cost_calls:0,exhausted:false},answer_calls:0,quality_evaluated:false});
+    return json([]);
+  });return s;
+}
+test("Management loads without paid calls or gate changes; profiles retain drafts on conflict",async({page})=>{
+  const s=await fixture(page);await page.goto(url);await expect(page.getByText("Cloud reasoning",{exact:true})).toBeVisible();
+  expect(s.requests.filter(r=>r.method!=="GET")).toHaveLength(0);await expect(page.getByText("Personal model",{exact:true})).toHaveCount(0);
+  await page.locator(".routing-card").filter({hasText:"Local small"}).getByRole("button",{name:"Edit profile",exact:true}).click();
+  await page.getByLabel("Context tokens",{exact:true}).fill("32000");await page.getByLabel("Maximum output tokens",{exact:true}).fill("4096");
+  await page.getByLabel("Quality evidence",{exact:true}).selectOption("declared");await page.getByLabel("Locality",{exact:true}).selectOption("local");
+  await page.getByLabel("Administrator attests locality",{exact:true}).check();await page.getByLabel("Eligible for Auto").check();
+  await page.getByLabel("Supported efforts").pressSequentially("high, xhigh");await page.getByLabel("Auto effort preset",{exact:true}).selectOption("xhigh");await page.getByLabel("Input price (USD / million tokens)").fill("0");
+  await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
+  const saved=s.requests.find(r=>r.method==="PUT" && r.path.endsWith(local))!.body;
+  expect(saved.expected_revision).toBe(0);expect(saved.profile.provider_revision).toBe(2);expect(saved.profile.model).toBe("local-api-model");
+  expect(saved.profile.auto_effort).toBe("xhigh");expect(saved.profile.capabilities.efforts).toEqual(["high","xhigh"]);expect(saved.profile.pricing.input_microusd_per_million).toBe(0);expect(saved.profile.pricing.output_microusd_per_million).toBeNull();
+  expect(saved.profile.capabilities.tools).toBe("unknown");expect(saved.profile.quality_status).toBe("declared");
+  await page.locator(".routing-card").filter({hasText:"Cloud reasoning"}).getByRole("button",{name:"Edit profile",exact:true}).click();
+  await page.getByLabel("Model tier",{exact:true}).selectOption("advanced");s.conflict=true;await page.getByRole("button",{name:"Save",exact:true}).click();
+  await expect(page.getByRole("alert")).toContainText("draft is preserved");await expect(page.getByLabel("Model tier",{exact:true})).toHaveValue("advanced");
+  await page.getByRole("button",{name:"Reload latest (discard draft)",exact:true}).click();await expect(page.getByLabel("Model tier",{exact:true})).toHaveValue("balanced");
+  await page.screenshot({path:"test-results/routing-settings-profile.png",fullPage:true});
+  await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
+  expect(s.requests.filter(r=>r.path.endsWith(cloud) && r.method==="PUT").at(-1)!.body.expected_revision).toBe(6);
+  await page.getByText("Routing rollout gates",{exact:true}).click();await page.getByRole("button",{name:"Enable browser routed chat",exact:true}).click();
+  expect(s.requests.filter(r=>r.path==="/api/routing/browser-chat" && r.method==="PUT")).toHaveLength(1);
+  expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
+});
+test("Policy rules, separate embedding stages and explicit bounded previews use saved revisions",async({page})=>{
+  const s=await fixture(page);await page.goto(url);await page.getByRole("button",{name:"policies",exact:true}).click();await page.getByRole("button",{name:"New deployment policy"}).click();
+  await page.getByLabel("Policy name").fill("Weather routing");await page.getByLabel("Strategy",{exact:true}).selectOption("hybrid");await page.getByLabel("Rollout",{exact:true}).selectOption("shadow");
+  await page.getByLabel("Checked default model").selectOption(cloud);await page.getByLabel("Judge model",{exact:true}).selectOption(cloud);await page.getByLabel("Run cost limit (USD)").fill("0.01");
+  await page.getByLabel("Restrict provider pool").check();await page.getByLabel("Cloud reasoning",{exact:true}).check();await page.getByLabel("Local small",{exact:true}).check();
+  await page.getByRole("button",{name:"Add rule",exact:true}).click();await page.getByLabel("Priority",{exact:true}).fill("20");await page.getByLabel("Rule action").selectOption("select");
+  await page.getByLabel("Rule model").selectOption(local);await page.getByLabel("Languages",{exact:true}).pressSequentially("en, ru");await page.getByLabel("current fact",{exact:true}).check();
+  await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
+  const body=s.requests.find(r=>r.path.startsWith("/api/routing/policies/") && r.method==="PUT")!.body;
+  expect(body.expected_revision).toBe(0);expect(body.scope).toBe("deployment");expect(body.policy.classifier_provider_id).toBe(cloud);
+  expect(body.policy.constraints.allowed_providers).toEqual([cloud,local]);expect(body.policy.constraints.max_cost_microusd).toBe(10000);
+  expect(body.policy.rules[0]).toMatchObject({priority:20,conditions:{languages:["en","ru"],tasks:["current_fact"]},action:{kind:"select",provider_id:local}});
+  await page.getByRole("button",{name:"fixed services",exact:true}).click();await page.locator(".routing-card").filter({hasText:"embed desired"}).getByRole("button",{name:"Edit fixed profile"}).click();
+  await expect(page.getByLabel("Fixed service model")).toHaveValue("next-embedding");await page.getByLabel("Fixed service locality",{exact:true}).selectOption("local");await page.getByLabel("Administrator attests fixed service locality").check();
+  await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
+  const fixed=s.requests.find(r=>r.path.startsWith("/api/routing/fixed-profiles/"))!.body;
+  expect(fixed.profile).toMatchObject({role:"embed_desired",desired_index_revision:8,active_index_revision:null,model:"next-embedding",locality_trusted:true});
+  await page.getByRole("button",{name:"preview",exact:true}).click();await page.getByLabel("Preview saved policy").selectOption(s.policies[0].id);
+  await page.getByRole("button",{name:"Preview without inference"}).click();await expect(page.getByRole("status")).toContainText("Inference calls: 0");
+  expect(s.requests.filter(r=>r.path==="/api/routing/classifier-probe")).toHaveLength(0);
+  await page.getByLabel("Judge test conversation").fill("Weather in Glasgow?");await page.getByLabel("Judge cost cap (USD)").fill("0.001");
+  await page.getByRole("button",{name:"Run one judge call",exact:true}).click();await expect(page.getByText("Answer calls: 0.",{exact:false})).toBeVisible();
+  const judge=s.requests.find(r=>r.path==="/api/routing/classifier-probe")!.body;expect(judge.max_cost_microusd).toBe(1000);expect(judge.expected_policy_revision).toBe(10);
+  await page.screenshot({path:"test-results/routing-settings-preview.png",fullPage:true});
+  await page.getByRole("button",{name:"models",exact:true}).click();await page.locator(".routing-card").filter({hasText:"Cloud reasoning"}).getByRole("button",{name:"Test compatibility"}).click();
+  await page.getByLabel("Probe cost cap (USD)").fill("0.001");await page.getByRole("button",{name:"Run one synthetic model call"}).click();await expect(page.getByRole("status")).toContainText("Quality was not evaluated");
+  expect(s.requests.filter(r=>r.path.endsWith("/probe"))).toHaveLength(1);
+});
+test("Personal policies remain available with BYOK off; shared writes and failed discovery are blocked",async({page})=>{
+  const s=await fixture(page);s.manager=false;s.byok=false;s.failed=true;await page.goto(`${url}?surface=personal`);
+  await expect(page.getByRole("alert")).toContainText("unavailable");expect(s.requests.filter(r=>r.path.endsWith("/catalog"))).toHaveLength(0);
+  s.failed=false;await page.getByRole("button",{name:"Retry routing management"}).click();await expect(page.getByText("Cloud reasoning",{exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Edit profile",exact:true})).toHaveCount(0);await expect(page.getByText("Personal model",{exact:true})).toHaveCount(0);
+  await page.getByRole("button",{name:"policies",exact:true}).click();await expect(page.getByRole("button",{name:"Edit policy",exact:true})).toHaveCount(0);
+  await page.getByRole("button",{name:"New personal policy"}).click();await page.getByLabel("Policy name").fill("My cloud policy");await page.getByLabel("Checked default model").selectOption(cloud);
+  await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
+  expect(s.requests.find(r=>r.path.startsWith("/api/routing/policies/") && r.method==="PUT")!.body.scope).toBe("user");
+  expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
+  await page.setViewportSize({width:390,height:844});await page.screenshot({path:"test-results/routing-settings-personal-mobile.png",fullPage:true});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+test("API alias activation is explicit, collision conflicts preserve the draft and gate stays separate",async({page})=>{
+  const s=await fixture(page);await page.goto(url);await page.getByText("API Auto alias",{exact:true}).click();
+  expect(s.requests.filter(r=>r.method!=="GET")).toHaveLength(0);
+  await page.getByLabel("API Auto alias name",{exact:true}).fill("fosnie-route/auto");await page.getByLabel("Enable API Auto alias",{exact:true}).check();
+  s.aliasConflict=true;await page.getByRole("button",{name:"Save API alias",exact:true}).click();
+  await expect(page.getByRole("alert")).toContainText("draft is preserved");await expect(page.getByLabel("API Auto alias name",{exact:true})).toHaveValue("fosnie-route/auto");
+  s.aliasConflict=false;await page.getByRole("button",{name:"Save API alias",exact:true}).click();await expect(page.getByText("Alias is configured, but API routing is disabled.",{exact:false})).toBeVisible();
+  expect(s.requests.filter(r=>r.path==="/api/routing/public-api-alias" && r.method==="PUT")[0].body.expected_revision).toBe(7);
+  expect(s.requests.filter(r=>r.path==="/api/routing/public-api" && r.method==="PUT")).toHaveLength(0);
+  await page.getByRole("button",{name:"Enable API routing",exact:true}).click();await expect(page.getByText("Saved status: ready.",{exact:false})).toBeVisible();
+  expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
+  await page.screenshot({path:"test-results/routing-api-alias.png",fullPage:true});
+});
+
+test("Nested rules, main model pool and judge limits survive save and reload",async({page})=>{
+  const s=await fixture(page);await page.goto(url);await page.getByRole("button",{name:"policies",exact:true}).click();
+  await page.getByRole("button",{name:"New deployment policy"}).click();await page.getByLabel("Policy name").fill("Local executor with cloud judge");
+  await page.getByLabel("Strategy",{exact:true}).selectOption("hybrid");await page.getByLabel("Checked default model").selectOption(local);
+  await page.getByLabel("Judge model",{exact:true}).selectOption(cloud);await page.getByText("Judge limits",{exact:true}).click();
+  await page.getByLabel("Judge effort",{exact:true}).selectOption("high");await page.getByLabel("Require native JSON schema from judge",{exact:true}).check();
+  await page.getByLabel("Judge input budget",{exact:true}).fill("8192");await page.getByLabel("Judge output limit",{exact:true}).fill("256");
+  await page.getByLabel("Local judge timeout (ms)", {exact:true}).fill("6000");await page.getByLabel("Cloud judge timeout (ms)", {exact:true}).fill("2000");
+  await page.getByLabel("Technical fallback before output",{exact:true}).check();await page.getByRole("button",{name:"Add rule",exact:true}).click();
+  await page.getByLabel("Rule action",{exact:true}).selectOption("restrict_pool");await page.getByLabel("Local small",{exact:true}).check();
+  await page.getByLabel("fresh information condition",{exact:true}).selectOption("yes");
+  await page.getByText("Condition groups",{exact:true}).click();await page.getByRole("button",{name:"Add all condition",exact:true}).click();
+  const all=page.getByRole("group",{name:"ALL condition 1",exact:true});await all.getByLabel("tools condition",{exact:true}).selectOption("yes");
+  await page.getByRole("button",{name:"Add any condition",exact:true}).first().click();
+  const any=page.getByRole("group",{name:"ANY condition 1",exact:true});await any.getByLabel("Languages",{exact:true}).fill("ru, en-GB");
+  await any.getByLabel("current fact",{exact:true}).check();await page.getByRole("button",{name:"Save",exact:true}).click();
+  await expect(page.getByRole("status")).toContainText("saved");
+  const body=s.requests.filter(r=>r.method==="PUT" && r.path.startsWith("/api/routing/policies/")).at(-1)!.body;
+  expect(body.policy.classifier).toEqual({native_schema:true,effort:"high",min_confidence:0.75,max_input_tokens:8192,max_output_tokens:256,local_timeout_ms:6000,cloud_timeout_ms:2000});
+  expect(body.policy.technical_fallback).toBe(true);expect(body.policy.classifier_provider_id).toBe(cloud);
+  expect(body.policy.rules[0]).toMatchObject({action:{kind:"restrict_pool",allowed_providers:[local]},conditions:{fresh_information:true,
+    all:[{tools:true}],any:[{languages:["ru","en-GB"],tasks:["current_fact"]}]}});
+  expect(body.policy.rollout).toBe("off");expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
+  await page.locator(".routing-card").filter({hasText:"Local executor with cloud judge"}).getByRole("button",{name:"Edit policy",exact:true}).click();
+  await page.getByText("Judge limits",{exact:true}).click();await expect(page.getByLabel("Judge input budget",{exact:true})).toHaveValue("8192");await expect(page.getByLabel("Judge effort",{exact:true})).toHaveValue("high");await expect(page.getByLabel("Require native JSON schema from judge",{exact:true})).toBeChecked();
+  await expect(page.getByRole("group",{name:"ALL condition 1",exact:true}).getByLabel("tools condition",{exact:true})).toHaveValue("yes");
+  await expect(page.getByRole("group",{name:"ANY condition 1",exact:true}).getByLabel("Languages",{exact:true})).toHaveValue("ru, en-GB");
+  await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:"test-results/routing-nested-rules-mobile.png",fullPage:true});
+});

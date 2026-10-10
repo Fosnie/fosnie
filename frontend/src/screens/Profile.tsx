@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import { useEffect, useRef, useState } from "react";
+import { RoutingSettings } from "@/components/RoutingSettings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
@@ -283,7 +284,7 @@ function MyLlmCard() {
   const [edits, setEdits] = useState<Record<string, MyLlmDraft>>({});
   const [adding, setAdding] = useState<MyLlmDraft | null>(null);
   const [tests, setTests] = useState<Record<string, ProviderTestResult | "loading">>({});
-  const refresh = () => qc.invalidateQueries({ queryKey: ["my-llm-providers"] });
+  const refresh = () => Promise.all(["my-llm-providers","routing-models","public-api-routing-alias"].map(key=>qc.invalidateQueries({queryKey:[key]})));
   const toBody = (d: MyLlmDraft) => ({ label: d.label.trim(), base_url: d.base_url || undefined, model: d.model || undefined, api_key: d.api_key || undefined, enabled: d.enabled });
   async function act(fn: () => Promise<unknown>, msg: string) {
     setBusy(true);
@@ -351,7 +352,7 @@ function MyProvidersSection() {
   const [busy, setBusy] = useState(false);
   const [tests, setTests] = useState<Record<string, ProviderTestResult | "loading">>({});
   const [saved, setSaved] = useState<Record<string, boolean>>({});
-  const refresh = () => qc.invalidateQueries({ queryKey: ["my-providers"] });
+  const refresh = () => Promise.all(["my-providers","routing-fixed"].map(key=>qc.invalidateQueries({queryKey:[key]})));
   const runTest = (role: string, d: PDraft) => {
     setTests((t) => ({ ...t, [role]: "loading" }));
     testMyProvider(role, { base_url: d.base_url || undefined, model: d.model || undefined, api_key: d.api_key || undefined, enabled: d.enabled })
@@ -778,7 +779,7 @@ function DevicesSection() {
   );
 }
 
-type ProfileTab = "account" | "security" | "providers" | "api-keys" | "devices" | "connections" | "appearance" | "danger";
+type ProfileTab = "account" | "security" | "providers" | "routing" | "api-keys" | "devices" | "connections" | "appearance" | "danger";
 
 export function Profile() {
   const nav = useNavigate();
@@ -883,6 +884,7 @@ export function Profile() {
     // Security (2FA + password) is a local-auth surface; Keycloak owns its own.
     ...(isLocalAuth ? ([["security", "Security"]] as [ProfileTab, string][]) : []),
     ...(byokEnabled ? ([["providers", "Providers"]] as [ProfileTab, string][]) : []),
+    ["routing", "Model routing"],
     ...(publicApiEnabled ? ([["api-keys", "API keys"]] as [ProfileTab, string][]) : []),
     // Pairing a desktop app is a core capability, so the tab is always present.
     ["devices", "Connected devices"],
@@ -980,6 +982,7 @@ export function Profile() {
 
         {/* My Providers — per-user BYOK, only when the deployment enables it. */}
         {tab === "providers" && <MyProvidersSection />}
+        {tab === "routing" && <RoutingSettings surface="personal" />}
 
         {/* Platform API keys — credentials for external applications. */}
         {tab === "api-keys" && <ApiKeysSection />}

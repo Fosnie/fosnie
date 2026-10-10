@@ -502,7 +502,7 @@ mod tests {
             eprintln!("skipping: {lib:?}/SKILL.md not found from cwd");
             return;
         }
-        let dst = std::env::temp_dir().join(format!("pai-skill-test-{}", Uuid::new_v4()));
+        let dst = std::env::temp_dir().join(format!("fosnie-skill-test-{}", Uuid::new_v4()));
         write_runtime(lib, &dst).expect("materialise runtime copy");
 
         let body = crate::http::skills::read_skill_body(&dst.to_string_lossy())
@@ -511,6 +511,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dst);
 
         assert!(!body.trim().is_empty(), "dashboard body must not be empty");
-        assert!(body.contains("pai:echarts"), "dashboard body must carry the ECharts marker");
+        assert!(body.contains("fosnie:echarts"), "dashboard body must carry the ECharts marker");
     }
 }

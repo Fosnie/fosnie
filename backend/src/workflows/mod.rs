@@ -34,6 +34,10 @@ use crate::error::{AppError, Result};
 use crate::events::{self, ActorType, EventRow};
 use crate::scheduler::TaskType;
 use crate::state::AppState;
+pub mod routing;
+pub mod sources;
+pub(crate) mod delivery;
+pub(crate) mod agents;
 
 /// Loop-guard depth cap when `workflows.max_depth` is unset.
 const DEFAULT_MAX_DEPTH: i32 = 3;
@@ -459,6 +463,7 @@ async fn try_create_run(
     if inserted.is_none() {
         return Ok(RunOutcome::Duplicate);
     }
+    routing::capture(conn,run_id).await?;
 
     // Enqueue a low-priority durable task (behind ingest/automation) in the same tx.
     sqlx::query!(
@@ -560,6 +565,7 @@ fn actor_str(a: ActorType) -> &'static str {
 /// outcome. A genuine execution error is returned so the task queue retries /
 /// dead-letters; an unsupported action is a clean `skipped` (no retry).
 pub async fn run(state: &AppState, run_id: Uuid) -> Result<()> {
+    if routing::run(state,run_id).await? {return Ok(());}
     // Fleet kill-switch / mid-flight disable: don't act, don't retry.
     if !feature_enabled(state).await || paused(state).await {
         finish(state, run_id, "skipped", None, Some("workflows paused / feature disabled")).await?;

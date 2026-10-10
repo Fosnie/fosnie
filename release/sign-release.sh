@@ -33,10 +33,10 @@
 #   sign-release.sh --gen-test-key DIR     # RSA keypair for local/CI verification ONLY
 #
 # Env (all optional; a missing key skips that path with a note):
-#   PAI_RELEASE_OPENSSL_KEY   private PEM (RSA or ECDSA) for the openssl signature
-#   PAI_RELEASE_OPENSSL_PUB   matching public PEM (copied into the tree as SIGNING-PUBKEY.pem)
-#   PAI_RELEASE_MINISIGN_KEY  minisign secret key file
-#   PAI_RELEASE_COSIGN_KEY    cosign private key file (COSIGN_PASSWORD in env)
+#   FOSNIE_RELEASE_OPENSSL_KEY   private PEM (RSA or ECDSA) for the openssl signature
+#   FOSNIE_RELEASE_OPENSSL_PUB   matching public PEM (copied into the tree as SIGNING-PUBKEY.pem)
+#   FOSNIE_RELEASE_MINISIGN_KEY  minisign secret key file
+#   FOSNIE_RELEASE_COSIGN_KEY    cosign private key file (COSIGN_PASSWORD in env)
 
 set -uo pipefail
 
@@ -48,7 +48,7 @@ gen_test_key() {
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$dir/release-test.key" 2>/dev/null
   openssl rsa -in "$dir/release-test.key" -pubout -out "$dir/release-test.pub" 2>/dev/null
   echo "test keypair written to $dir/release-test.{key,pub}"
-  echo "use: PAI_RELEASE_OPENSSL_KEY=$dir/release-test.key PAI_RELEASE_OPENSSL_PUB=$dir/release-test.pub sign-release.sh RELEASE_DIR"
+  echo "use: FOSNIE_RELEASE_OPENSSL_KEY=$dir/release-test.key FOSNIE_RELEASE_OPENSSL_PUB=$dir/release-test.pub sign-release.sh RELEASE_DIR"
 }
 
 if [ "${1:-}" = "--gen-test-key" ]; then
@@ -79,34 +79,34 @@ echo "  ✓ manifest: $(wc -l < "$MANIFEST") files → $MANIFEST"
 signed=0
 
 # 2a. openssl detached signature (RSA/ECDSA).
-if [ -n "${PAI_RELEASE_OPENSSL_KEY:-}" ] && command -v openssl >/dev/null 2>&1; then
-  if openssl dgst -sha256 -sign "$PAI_RELEASE_OPENSSL_KEY" -out "$MANIFEST.sig" "$MANIFEST"; then
+if [ -n "${FOSNIE_RELEASE_OPENSSL_KEY:-}" ] && command -v openssl >/dev/null 2>&1; then
+  if openssl dgst -sha256 -sign "$FOSNIE_RELEASE_OPENSSL_KEY" -out "$MANIFEST.sig" "$MANIFEST"; then
     echo "  ✓ openssl signature: $MANIFEST.sig"
     signed=1
-    [ -n "${PAI_RELEASE_OPENSSL_PUB:-}" ] && cp "$PAI_RELEASE_OPENSSL_PUB" SIGNING-PUBKEY.pem \
+    [ -n "${FOSNIE_RELEASE_OPENSSL_PUB:-}" ] && cp "$FOSNIE_RELEASE_OPENSSL_PUB" SIGNING-PUBKEY.pem \
       && echo "  ✓ public key: SIGNING-PUBKEY.pem"
   else
     echo "  ✗ openssl signing failed" >&2
   fi
 else
-  echo "  .. openssl path skipped (set PAI_RELEASE_OPENSSL_KEY)"
+  echo "  .. openssl path skipped (set FOSNIE_RELEASE_OPENSSL_KEY)"
 fi
 
 # 2b. minisign alternative.
-if [ -n "${PAI_RELEASE_MINISIGN_KEY:-}" ] && command -v minisign >/dev/null 2>&1; then
-  if minisign -Sm "$MANIFEST" -s "$PAI_RELEASE_MINISIGN_KEY" -x "$MANIFEST.minisig" >/dev/null 2>&1; then
+if [ -n "${FOSNIE_RELEASE_MINISIGN_KEY:-}" ] && command -v minisign >/dev/null 2>&1; then
+  if minisign -Sm "$MANIFEST" -s "$FOSNIE_RELEASE_MINISIGN_KEY" -x "$MANIFEST.minisig" >/dev/null 2>&1; then
     echo "  ✓ minisign signature: $MANIFEST.minisig"
     signed=1
   else
     echo "  ✗ minisign signing failed" >&2
   fi
 else
-  echo "  .. minisign path skipped (needs minisign + PAI_RELEASE_MINISIGN_KEY)"
+  echo "  .. minisign path skipped (needs minisign + FOSNIE_RELEASE_MINISIGN_KEY)"
 fi
 
 # 2c. cosign (self-managed keypair) — blob signature + CycloneDX attestations.
-if [ -n "${PAI_RELEASE_COSIGN_KEY:-}" ] && command -v cosign >/dev/null 2>&1; then
-  if cosign sign-blob --yes --key "$PAI_RELEASE_COSIGN_KEY" --output-signature "$MANIFEST.cosig" "$MANIFEST" >/dev/null 2>&1; then
+if [ -n "${FOSNIE_RELEASE_COSIGN_KEY:-}" ] && command -v cosign >/dev/null 2>&1; then
+  if cosign sign-blob --yes --key "$FOSNIE_RELEASE_COSIGN_KEY" --output-signature "$MANIFEST.cosig" "$MANIFEST" >/dev/null 2>&1; then
     echo "  ✓ cosign signature: $MANIFEST.cosig"
     signed=1
   else
@@ -115,12 +115,12 @@ if [ -n "${PAI_RELEASE_COSIGN_KEY:-}" ] && command -v cosign >/dev/null 2>&1; th
   # Attest each CycloneDX SBOM present (predicate = the SBOM file).
   for sbom in sbom/*.cdx.json; do
     [ -e "$sbom" ] || continue
-    cosign attest-blob --yes --key "$PAI_RELEASE_COSIGN_KEY" --type cyclonedx \
+    cosign attest-blob --yes --key "$FOSNIE_RELEASE_COSIGN_KEY" --type cyclonedx \
       --predicate "$sbom" --output-attestation "$sbom.att" "$sbom" >/dev/null 2>&1 \
       && echo "  ✓ cosign attest: $sbom.att"
   done
 else
-  echo "  .. cosign path skipped (needs cosign + PAI_RELEASE_COSIGN_KEY)"
+  echo "  .. cosign path skipped (needs cosign + FOSNIE_RELEASE_COSIGN_KEY)"
 fi
 
 if [ "$signed" -eq 0 ]; then

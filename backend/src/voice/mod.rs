@@ -31,6 +31,7 @@
 pub mod aggregate;
 pub mod dictation;
 pub mod session;
+pub mod routed;
 pub mod sink;
 pub mod spec_retrieval;
 pub mod stt_openai_realtime;

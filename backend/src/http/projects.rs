@@ -30,7 +30,6 @@ use crate::auth::{AuthContext, PlatformRole};
 use crate::db;
 use crate::kb;
 use crate::error::{AppError, Result};
-use crate::scheduler::{self, TaskType};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -239,9 +238,10 @@ pub async fn upload_document(
     .execute(&state.pg)
     .await?;
 
-    scheduler::enqueue(&state.pg, TaskType::Ingest, json!({ "doc_id": doc_id }))
-        .await
-        .map_err(AppError::from)?;
+    if let Err(error)=crate::model_routing::ingestion::queue(&state,&ctx,doc_id).await {
+        let _=sqlx::query("UPDATE kb_documents SET ingest_status='error' WHERE id=$1").bind(doc_id).execute(&state.pg).await;
+        return Err(error);
+    }
 
     Ok(Json(UploadedDoc {
         doc_id,
@@ -349,7 +349,7 @@ pub async fn knowledge_doc_source(
     kb::require_read(&state.pg, &ctx, row.kb_id).await?;
     let doc_abs = crate::storage::resolve_file(&state.boot.storage.documents_dir, &row.bytes_path);
     let text =
-        crate::ml::read_document(&state.http, &state.boot.ml.base_url, &doc_abs.to_string_lossy(), row.mime.as_deref(), None, crate::ml::provider_overrides(&state, ctx.user_id).await)
+        crate::ml::read_document(&state.http, &state.boot.ml.base_url, &doc_abs.to_string_lossy(), row.mime.as_deref(), None, crate::ml::provider_overrides(&state, ctx.user_id).await?)
             .await?;
     Ok(Json(KnowledgeSource { filename: row.original_filename, mime: row.mime, text }))
 }

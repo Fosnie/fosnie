@@ -156,6 +156,14 @@ impl DesktopCalls {
 #[derive(Clone, Default)]
 pub struct VoiceSessions(Arc<Mutex<HashMap<Uuid, Arc<crate::voice::Session>>>>);
 
+#[derive(Clone, Default)]
+pub struct RoutedVoiceSessions(Arc<Mutex<HashMap<Uuid, Arc<crate::voice::routed::Session>>>>);
+impl RoutedVoiceSessions {
+    pub fn insert(&self,id:Uuid,session:Arc<crate::voice::routed::Session>) {self.0.lock().unwrap().insert(id,session);}
+    pub fn get(&self,id:Uuid)->Option<Arc<crate::voice::routed::Session>> {self.0.lock().unwrap().get(&id).cloned()}
+    pub fn remove(&self,id:Uuid)->Option<Arc<crate::voice::routed::Session>> {self.0.lock().unwrap().remove(&id)}
+}
+
 impl VoiceSessions {
     pub fn insert(&self, socket_id: Uuid, session: Arc<crate::voice::Session>) {
         self.0.lock().unwrap().insert(socket_id, session);
@@ -215,6 +223,8 @@ pub struct AppState {
     /// `provider_configs`); a private `fosnie-enterprise` crate can wrap it with org
     /// policy via [`AppStateBuilder::with_providers`].
     pub providers: Arc<dyn crate::ext::ProviderRegistry>,
+    /// Optional additional restrictions; Core routing always enforces its own filters.
+    pub inference_policy: Arc<dyn crate::model_routing::InferencePolicy>,
     /// Data-source (DMS) connector registry (extension seam). Core default is
     /// [`crate::integrations::dms::DefaultConnectorRegistry`] (dormant `NotBuilt`);
     /// a private `fosnie-enterprise` crate injects real adapters via
@@ -262,6 +272,7 @@ pub struct AppState {
     pub desktop_calls: DesktopCalls,
     /// Live-voice sessions, keyed by socket id.
     pub voice: VoiceSessions,
+    pub routed_voice: RoutedVoiceSessions,
     pub dictation: DictationSessions,
     /// Telephone calls in progress, keyed by the carrier's identifier for each. Also
     /// the ceiling on how many run at once, which is held here rather than in the cache
@@ -301,6 +312,7 @@ pub struct AppStateBuilder {
     auth: Option<Arc<dyn crate::ext::AuthProvider>>,
     rbac: Option<Arc<dyn crate::ext::RbacPolicy>>,
     providers: Option<Arc<dyn crate::ext::ProviderRegistry>>,
+    inference_policy: Option<Arc<dyn crate::model_routing::InferencePolicy>>,
     connectors: Option<Arc<dyn crate::ext::ConnectorRegistry>>,
     moderation: Option<Arc<dyn crate::ext::ModerationHook>>,
     evidence: Option<Arc<dyn crate::ext::EvidenceSink>>,
@@ -313,7 +325,7 @@ pub struct AppStateBuilder {
 
 impl AppStateBuilder {
     pub fn new(pg: PgPool, redis: RedisPool, boot: Arc<BootConfig>) -> Self {
-        Self { pg, redis, boot, features: None, auth: None, rbac: None, providers: None, connectors: None, moderation: None, evidence: None, jobs: None, retention: None, group_policy: None, seats: None, export_kinds: None }
+        Self { pg, redis, boot, features: None, auth: None, rbac: None, providers: None, inference_policy: None, connectors: None, moderation: None, evidence: None, jobs: None, retention: None, group_policy: None, seats: None, export_kinds: None }
     }
 
     /// Override the [`FeatureResolver`](crate::ext::FeatureResolver) seam.
@@ -337,6 +349,11 @@ impl AppStateBuilder {
     /// Override the [`ProviderRegistry`](crate::ext::ProviderRegistry) seam.
     pub fn with_providers(mut self, p: Arc<dyn crate::ext::ProviderRegistry>) -> Self {
         self.providers = Some(p);
+        self
+    }
+
+    pub fn with_inference_policy(mut self, policy: Arc<dyn crate::model_routing::InferencePolicy>) -> Self {
+        self.inference_policy = Some(policy);
         self
     }
 
@@ -389,7 +406,7 @@ impl AppStateBuilder {
     }
 
     pub fn build(self) -> AppState {
-        let AppStateBuilder { pg, redis, boot, features, auth, rbac, providers, connectors, moderation, evidence, jobs, retention, group_policy, seats, export_kinds } = self;
+        let AppStateBuilder { pg, redis, boot, features, auth, rbac, providers, inference_policy, connectors, moderation, evidence, jobs, retention, group_policy, seats, export_kinds } = self;
         let http = build_ml_client(&boot.ml.shared_secret);
         let (audit_tx, audit_writer) = crate::audit::spawn_writer(pg.clone());
         // The DEK is resolved by the KeyProvider seam at boot (`install_key_provider`);
@@ -414,6 +431,7 @@ impl AppStateBuilder {
             rbac: rbac.unwrap_or_else(|| Arc::new(crate::auth::rbac::FlatRbacPolicy)),
             providers: providers
                 .unwrap_or_else(|| Arc::new(crate::providers::DbProviderRegistry::new(message_key))),
+            inference_policy: inference_policy.unwrap_or_else(|| Arc::new(crate::model_routing::CoreInferencePolicy)),
             connectors: connectors
                 .unwrap_or_else(|| Arc::new(crate::integrations::dms::DefaultConnectorRegistry)),
             moderation: moderation.unwrap_or_else(|| Arc::new(crate::ext::NoopModerationHook)),
@@ -427,6 +445,7 @@ impl AppStateBuilder {
             approvals: Approvals::default(),
             desktop_calls: DesktopCalls::default(),
             voice: VoiceSessions::default(),
+            routed_voice: RoutedVoiceSessions::default(),
             dictation: DictationSessions::default(),
             telephony: crate::telephony::TelephonyCalls::default(),
             mcp: crate::mcp::McpManager::new(),
@@ -437,7 +456,7 @@ impl AppStateBuilder {
     }
 }
 
-/// The ML HTTP client carries the shared secret as a default `X-PAI-ML-Key`
+/// The ML HTTP client carries the shared secret as a default `X-Fosnie-ML-Key`
 /// header on every request (the ML service rejects calls without it). `state.http`
 /// only ever targets the ML service, so a default header cannot leak elsewhere.
 /// An empty secret (dev) yields a plain client — the ML side then runs open.
@@ -450,7 +469,7 @@ pub(crate) fn build_ml_client(secret: &str) -> reqwest::Client {
         Ok(mut value) => {
             value.set_sensitive(true);
             let mut headers = HeaderMap::new();
-            headers.insert(HeaderName::from_static("x-pai-ml-key"), value);
+            headers.insert(HeaderName::from_static("x-fosnie-ml-key"), value);
             reqwest::Client::builder()
                 .default_headers(headers)
                 .build()

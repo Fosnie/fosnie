@@ -21,7 +21,7 @@ import json
 import logging
 from dataclasses import dataclass
 
-_log = logging.getLogger("pai.web.extract")
+_log = logging.getLogger("fosnie.web.extract")
 
 # A page whose extraction lands under this is "near-empty" — likely a
 # JS-rendered shell; the pipeline may escalate to Playwright rendering.

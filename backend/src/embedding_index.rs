@@ -99,6 +99,7 @@ pub async fn get(pg: &sqlx::PgPool) -> Result<Option<Provenance>> {
 /// callers then fall back to the `provider_configs` embed override (legacy path),
 /// so an un-seeded deployment behaves exactly as before.
 pub async fn active(pg: &sqlx::PgPool, message_key: Option<[u8; 32]>) -> Result<Option<ActiveEmbed>> {
+    crate::embedding_promotion::require_ready(pg).await?;
     let row = sqlx::query!(
         r#"SELECT embed_model, embed_base_url, embed_api_key_encrypted, dim,
                   collection_name, status
@@ -178,6 +179,9 @@ pub async fn set_desired(
     dim: i32,
     by: Option<Uuid>,
 ) -> Result<()> {
+    let mut tx=pg.begin().await?;
+    sqlx::query("SELECT id FROM embedding_index WHERE id=1 FOR UPDATE").execute(&mut *tx).await?;
+    crate::embedding_promotion::require_ready(pg).await?;
     let enc = match (api_key_plain.filter(|k| !k.is_empty()), message_key) {
         (Some(k), Some(_mk)) => Some(crate::crypto::encrypt_at_rest(k)?),
         _ => None,
@@ -194,8 +198,9 @@ pub async fn set_desired(
         dim,
         by,
     )
-    .execute(pg)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -225,6 +230,7 @@ pub async fn set_progress(pg: &sqlx::PgPool, done: i32) -> Result<()> {
 /// Promote desired → active after a successful swap, recording the collection the
 /// ML build actually created (from the build's `built` event), and clear desired.
 pub async fn finish_reindex(pg: &sqlx::PgPool, new_collection: &str) -> Result<()> {
+    crate::embedding_promotion::require_ready(pg).await?;
     sqlx::query!(
         r#"UPDATE embedding_index
            SET embed_model = COALESCE(desired_model, embed_model),
@@ -248,6 +254,7 @@ pub async fn finish_reindex(pg: &sqlx::PgPool, new_collection: &str) -> Result<(
 
 /// Mark the re-index failed (alias untouched; old index stays live; Retry-able).
 pub async fn fail_reindex(pg: &sqlx::PgPool, error: &str) -> Result<()> {
+    if crate::embedding_promotion::pending(pg).await? {return Ok(());}
     sqlx::query!(
         "UPDATE embedding_index SET status = 'failed', error = $1, updated_at = now() WHERE id = 1",
         error,

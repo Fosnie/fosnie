@@ -14,7 +14,7 @@
 
 import { toast } from "@/components/dialogs";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { renderAsync } from "docx-preview";
 import {
@@ -42,6 +42,8 @@ import { Icon } from "@/components/icons";
 import { Dropdown } from "@/components/Dropdown";
 import { markFlaggedText } from "@/components/docHighlight";
 import { VerificationReport } from "@/components/verificationReport";
+import { DocumentVerificationJob } from "@/components/DocumentVerificationJob";
+import { useDocumentJobCapabilities } from "@/api/documentJobs";
 import { wsStore } from "@/ws/store";
 import type { ServerFrame } from "@/ws/protocol";
 
@@ -57,16 +59,26 @@ function isPdfMime(mime: string | null, filename: string): boolean {
 }
 
 export function DocumentViewer() {
+  const { documentId } = useParams();
+  return <DocumentViewerContent key={documentId} />;
+}
+
+function DocumentViewerContent() {
   const { projectId, documentId } = useParams();
+  const [search, setSearch] = useSearchParams();
+  const jobId = search.get("verificationJob");
   const nav = useNavigate();
   const qc = useQueryClient();
   const doc = useDocument(documentId);
   const edits = useDocEdits(documentId, "pending");
   const who = useWhoami();
   const groundednessOn = !!who.data?.capabilities.groundedness;
+  const routing = useDocumentJobCapabilities(groundednessOn || !!jobId);
+  const routedUi = !!jobId || !!routing.data?.enabled;
+  const legacyEnabled = routing.isSuccess && !routing.isError && !routing.data.enabled && !jobId;
   const latestVerify = useLatestVerification("document", documentId);
   const [verifyRunId, setVerifyRunId] = useState<string | null>(null);
-  const effectiveRunId = verifyRunId ?? latestVerify.data?.id ?? null;
+  const effectiveRunId = jobId ? (verifyRunId === jobId ? verifyRunId : null) : verifyRunId ?? latestVerify.data?.id ?? null;
   const verifyRun = useVerificationRun(effectiveRunId ?? undefined);
   const [groundView, setGroundView] = useState(false);
   const flaggedClaims = useMemo<VerifyClaim[]>(
@@ -248,6 +260,8 @@ export function DocumentViewer() {
         <div className="panel" style={{ color: "var(--red)" }}>
           Could not load document. {(doc.error as Error | undefined)?.message}
         </div>
+        {documentId && jobId && <DocumentVerificationJob key={`${documentId}:${jobId}`} documentId={documentId} jobId={jobId}
+          docx={false} repairEnabled={false} disabled onResult={setVerifyRunId} onJob={() => {}} />}
       </div>
     );
   }
@@ -283,7 +297,7 @@ export function DocumentViewer() {
               <button onClick={() => selectedVersionId && act("Open PDF", () => openVersionPdf(documentId!, selectedVersionId))} disabled={!!busy || !selectedVersionId} className="btn btn-ghost">
                 <Icon.External size={14} /> Open PDF
               </button>
-              {groundednessOn && (
+              {groundednessOn && legacyEnabled && (
                 <button onClick={verifyDraft} disabled={!!busy} className="btn btn-line" title="Verify the draft against your sources">
                   <Icon.Shield size={14} /> Verify draft
                 </button>
@@ -297,7 +311,7 @@ export function DocumentViewer() {
                   <Icon.Flag size={14} /> {groundView ? "Document" : "Groundedness"}
                 </button>
               )}
-              {repairOn && canHighlight && docx && (
+              {repairOn && legacyEnabled && canHighlight && docx && (
                 <button
                   onClick={repairDraft}
                   disabled={!!busy || repairing}
@@ -330,7 +344,15 @@ export function DocumentViewer() {
 
         {/* Right — changes panel */}
         <aside className="dv-side">
-          {groundednessOn && effectiveRunId && (
+          {(groundednessOn || jobId) && routedUi && <DocumentVerificationJob key={`${documentId}:${jobId ?? "new"}`}
+            documentId={documentId!} jobId={jobId} capabilities={groundednessOn && !routing.isError ? routing.data : undefined}
+            docx={docx} repairEnabled={repairOn} disabled={!!busy || selectedVersionId !== data.current_version_id}
+            onResult={setVerifyRunId} onJob={id => setSearch(prev => { const next = new URLSearchParams(prev); next.set("verificationJob", id); return next; })} />}
+          {groundednessOn && routing.isPending && <p className="gd-note">Loading verification options…</p>}
+          {groundednessOn && routing.isError && <p role="alert" className="gd-note">Verification options are unavailable.
+            <button className="btn btn-ghost" onClick={() => void routing.refetch()}>Retry</button></p>}
+          {routedUi && selectedVersionId !== data.current_version_id && <p className="gd-note">Select the current version to verify or repair.</p>}
+          {groundednessOn && (!routedUi || !jobId) && effectiveRunId && (
             <div style={{ padding: "12px 14px 4px" }}>
               <span className="side-label mono">Groundedness</span>
               <VerificationReport runId={effectiveRunId} />

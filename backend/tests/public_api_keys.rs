@@ -55,7 +55,7 @@ pub async fn mk_user(pg: &sqlx::PgPool) -> Uuid {
 async fn setup() -> Option<(AppState, sqlx::PgPool, u16)> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 5).await.ok()?;
     let redis = cache::create_pool(&redis_url).ok()?;
     let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };

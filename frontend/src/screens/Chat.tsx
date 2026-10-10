@@ -15,6 +15,11 @@
 import { confirmDialog, toast } from "@/components/dialogs";
 import { Dropzone } from "@/components/Dropzone";
 import { Composer, type ComposerHandle } from "@/components/Composer";
+import { useChatRouting, useRoutedRegeneration, routedChatFrame, type RoutingChoice, type RoutingMessage } from "@/api/chatRouting";
+import { ModelBadge } from "@/components/ChatModelSelection";
+import { routingFailure,type RoutingFailure } from "@/api/routingFailure";
+import { RoutingFailureNotice } from "@/components/RoutingFailureNotice";
+import { isShell } from "@/shell/detect";
 import { forwardRef, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import { useNavigate, useParams } from "react-router-dom";
@@ -32,6 +37,7 @@ import { FolderMenu } from "@/components/FolderMenu";
 import { rememberPrefix } from "@/components/FolderApproval";
 import { cancelLocalCall } from "@/shell/folders";
 import { useChatWorkspace } from "@/api/client";
+import { ResearchJobStatus } from "@/components/ResearchJob";
 import { Groundedness } from "@/components/groundedness";
 import { useFeedback } from "@/components/feedback";
 import { useActiveProject } from "@/app/ProjectContext";
@@ -70,6 +76,7 @@ interface Msg {
   content: string;
   pending?: boolean;
   error?: boolean;
+  failure?:RoutingFailure;
   citations?: Citation[];
   agent?: string;
   time?: string;
@@ -90,6 +97,7 @@ interface Msg {
   reasoningTokens?: number;
   /** Files the user attached to this message — rendered under the bubble + in the rail. */
   attachments?: ChatAttachmentMeta[];
+  routing?: RoutingMessage;
   /** The turn that produced this message, so a folder change made during it can
    * be listed and undone from its inline summary (desktop only). */
   turnId?: string;
@@ -186,6 +194,9 @@ export function Chat() {
   // A folder chosen in the composer on a brand-new chat, before it has an id to
   // bind to. It rides the first `chat.send`; from then the binding lives server-side.
   const [pendingWorkspace, setPendingWorkspace] = useState<string | null>(null);
+  const routing = useChatRouting(chatId ?? null, mode === "general" && !pendingWorkspace && !boundWorkspace.data?.id);
+  const routedRegeneration = useRoutedRegeneration();
+  const routedBranchPending = useRef(false);
 
   // "Actions only": hide the assistant's prose and leave the plan, tool cards,
   // approvals, summaries and artefacts — for reviewing what a long agentic turn
@@ -453,6 +464,7 @@ export function Chat() {
             groundedness: m.groundedness ?? live?.groundedness,
             reviewDecision: m.review_decision,
             attachments: m.attachments ?? live?.attachments,
+            routing: m.routing ?? live?.routing,
           };
         });
         // Preserve a live, still-streaming assistant bubble that hasn't landed in
@@ -476,17 +488,18 @@ export function Chat() {
   // only the activity, so a still-streaming turn is never disturbed.
   useEffect(() => {
     if (!history.data) return;
-    const byId = new Map(history.data.map((m) => [m.id, m.activity] as const));
+    const byId = new Map(history.data.map((m) => [m.id, m] as const));
     setMessages((prev) => {
       let changed = false;
       const next = prev.map((m) => {
         if (m.pending) return m;
-        const dbActivity = byId.get(m.id);
-        if (!dbActivity || dbActivity === m.activity) return m;
+        const persisted = byId.get(m.id);
+        const dbActivity = persisted?.activity;
+        if ((!dbActivity || dbActivity === m.activity) && (!persisted?.routing || persisted.routing === m.routing)) return m;
         // Only fill in the server-only side (files/commands); keep whatever the
         // live frames already put on steps/tools if the DB somehow lacks them.
         changed = true;
-        return { ...m, activity: { ...m.activity, ...dbActivity } };
+        return { ...m, activity: dbActivity ? { ...m.activity, ...dbActivity } : m.activity, routing: persisted?.routing ?? m.routing };
       });
       return changed ? next : prev;
     });
@@ -505,10 +518,17 @@ export function Chat() {
       switch (f.type) {
         case "chat.created": {
           const id = (f as { chat_id: string }).chat_id;
-          createdLocally.current = id;
+          createdLocally.current = routedBranchPending.current ? null : id;
+          if (routedBranchPending.current) setMessages(p=>p.filter(m=>m.pending));
+          routedBranchPending.current = false;
           chatRef.current = id;
           nav(`/c/${id}`, { replace: true });
           qc.invalidateQueries({ queryKey: ["chats"] });
+          qc.invalidateQueries({ queryKey: ["chat-routing", id] });
+          break;
+        }
+        case "chat.routing_started": {
+          turnId.current=(f as {turn_id:string}).turn_id;
           break;
         }
         case "chat.started": {
@@ -635,6 +655,7 @@ export function Chat() {
         }
         case "chat.completed": {
           const c = f as { message_id: string; chat_id?: string; reasoning_tokens?: number };
+          qc.invalidateQueries({ queryKey: ["chat-routing", c.chat_id ?? chatRef.current] });
           flushTokens.current(); // apply the final buffered tokens before the id-swap
           // Capture the pending id BEFORE reassigning the ref: the setMessages
           // updater runs later (React defers it), so reading pendingId.current
@@ -743,11 +764,22 @@ export function Chat() {
             qc.invalidateQueries({ queryKey: ["artefacts", chatRef.current] });
           }
           break;
+        case "chat.routing_failure": {
+          const frame=f as {turn_id:string;chat_id?:string|null;message_id?:string|null;failure:unknown};
+          if(frame.chat_id && chatRef.current && frame.chat_id!==chatRef.current)break;
+          if(turnId.current && frame.turn_id!==turnId.current)break;
+          const failure=routingFailure(frame.failure);
+          if(failure)setMessages(prev=>prev.map(m=>m.id===(frame.message_id??pendingId.current) || (m.role==="assistant"&&m.pending)
+            ? {...m,failure}:m));
+          break;
+        }
         case "chat.error": {
           const e = f as { message: string };
+          routedBranchPending.current = false;
+          setRunningTool(null);setRunningToolDetail(null);
           flushTokens.current();
           setMessages((p) => p.map((m) => {
-            if (m.id === pendingId.current) return { ...m, pending: false, error: true, content: m.content || `Error: ${e.message}` };
+            if (m.id === pendingId.current) return { ...m, pending: false, error: true, content: m.content || (m.failure?"":`Error: ${e.message}`) };
             return m.role === "assistant" && m.pending ? { ...m, pending: false } : m;
           }));
           turnId.current = null;
@@ -806,8 +838,11 @@ export function Chat() {
 
   // Core send: build the optimistic bubbles + emit the chat.send frame with the
   // composer's per-turn extras (attachments + reasoning). Called by <Composer>.
-  function sendWith(content: string, extras: { attachments: ChatAttachmentMeta[]; reasoning: ReasoningSpec | null; llmProviderId?: string | null }) {
+  function sendWith(content: string, extras: { attachments: ChatAttachmentMeta[]; reasoning: ReasoningSpec | null; llmProviderId?: string | null; routingChoice?: RoutingChoice | null }) {
     if (!content || !agentId || sending) return;
+    if (routing.problem) {toast(routing.problem);return;}
+    const choice=extras.routingChoice ?? routing.choice;
+    if (choice && (extras.attachments.length || pendingWorkspace || boundWorkspace.data?.id)) {toast("Routed browser chat does not support attachments or connected folders yet.");return;}
     const nowIso = new Date().toISOString();
     const userMsg: Msg = {
       id: crypto.randomUUID(),
@@ -830,7 +865,7 @@ export function Chat() {
     panel.beginTurn();
     setRunningTool(null); // a new turn starts fresh; the new message holds its own activity
     setRunningToolDetail(null);
-    wsStore.send({
+    wsStore.send(choice ? routedChatFrame(choice,content,chatRef.current,chatRef.current ? null : agentId,chatRef.current ? null : active?.id ?? null) : {
       type: "chat.send",
       content,
       agent_id: agentId,
@@ -871,6 +906,22 @@ export function Chat() {
   // the backend's branch-replace is reflected immediately (no prompt duplication).
   function regenerate(fromId: string, editedContent?: string) {
     if (!chatRef.current || sending) return;
+    const source=messages.find(m=>m.id===fromId);
+    if (routing.adopted || source?.routing) {
+      if (source?.role!=="assistant" || !source.routing || source.routing.status!=="completed" || editedContent!==undefined) {
+        toast("Select a completed routed answer to regenerate into a new conversation. Editing and restarting routed history are not supported yet.");return;
+      }
+      if (routedRegeneration.data?.schema_version!==1 || !routedRegeneration.data.enabled || !routedRegeneration.data.preserves_original || (isShell() && routedRegeneration.data.desktop!==true)) {
+        toast("Routed regeneration is unavailable on this server.");return;
+      }
+      const pid=crypto.randomUUID();pendingId.current=pid;
+      routedBranchPending.current=true;
+      setMessages(p=>[...p,{id:pid,role:"assistant",content:"",pending:true,startedAt:Date.now()}]);
+      setSending(true);setRunningTool(null);setRunningToolDetail(null);
+      wsStore.send({type:"chat.routed.regenerate",chat_id:chatRef.current,from_message_id:fromId});
+      scrollToBottom();return;
+    }
+    if (routing.supported && (routing.saved.isPending || routing.saved.isError)) {toast("Load the saved model selection before regenerating.");return;}
     setMessages((p) => {
       const i = p.findIndex((m) => m.id === fromId);
       if (i < 0) return p;
@@ -1127,9 +1178,15 @@ export function Chat() {
                       {m.agent ?? agentName(agentId)}
                       {m.time && <span className="ai-time"> · {m.time}</span>}
                     </div>
-
-                    {m.error ? (
-                      <div className="ai-text" style={{ color: "var(--red)" }}>{m.content}</div>
+                    <ModelBadge routing={m.routing}/>
+                    {(m.failure??routingFailure(m.routing?.failure)) && <RoutingFailureNotice failure={(m.failure??routingFailure(m.routing?.failure))!}
+                      onChoose={routing.allowed?()=>{document.querySelector<HTMLSelectElement>('[aria-label="Chat model"]')?.focus();}:undefined}
+                      onPrepareRetry={()=>{const at=messages.findIndex(row=>row.id===m.id);const question=messages.slice(0,at).reverse().find(row=>row.role==="user");
+                        if(question)composerRef.current?.prepareText(question.content);}}/>}
+                    {m.error || routingFailure(m.routing?.failure) ? (
+                      m.content && (m.failure??routingFailure(m.routing?.failure))
+                        ? <MessageMarkdown answer={splitThink(m.content).answer} pending={false} />
+                        : <div className="ai-text" style={{ color: "var(--red)" }}>{m.content}</div>
                     ) : (
                       <>
                         {!actionsOnly && reasoning && reasoning.trim() && (
@@ -1237,7 +1294,7 @@ export function Chat() {
                       <div className="msg-actions">
                         <button onClick={() => copyMsg(m.id, copyText)} title={copiedId === m.id ? "Copied" : "Copy"}><Icon.Copy size={15} /></button>
                         <button onClick={() => regenerate(m.id)} title="Regenerate"><Icon.Refresh size={15} /></button>
-                        {voiceOn && (
+                        {voiceOn && !m.routing?.local_only && (
                           <button
                             onClick={() => (readAloud.speakingId === m.id ? readAloud.stop() : readAloud.play(m.id, copyText))}
                             disabled={readAloud.busy && readAloud.speakingId !== m.id}
@@ -1373,7 +1430,12 @@ export function Chat() {
         messages={messages}
         onCancel={cancel}
         onSubmit={sendWith}
-        statusSlot={deepRunId && deepRoadmap ? (
+        routing={routing}
+        statusSlot={researchParams?.routed_job_id && chatId ? (
+          <div className="composer-wrap" style={{ paddingBottom: 0 }}>
+            <ResearchJobStatus key={researchParams.routed_job_id} jobId={researchParams.routed_job_id} chatId={chatId} />
+          </div>
+        ) : deepRunId && deepRoadmap ? (
           <div className="composer-wrap" style={{ paddingBottom: 0 }}>
             <div className="mono deep-status glass glass--pill">
               <span className="think-dots"><span /><span /><span /></span>

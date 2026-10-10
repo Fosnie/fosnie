@@ -256,6 +256,16 @@ async fn run(
 
 /// Claim a batch of due tasks, mark them running, then process each.
 async fn poll_once(state: &AppState, registry: &JobRegistry, batch: i64) -> Result<u64, sqlx::Error> {
+    if let Err(error)=crate::groundedness::durable::recover(state).await {
+        tracing::error!(%error,"routed job recovery failed; deferring queue dispatch");
+        return Ok(0);
+    }
+    if let Err(error)=crate::embedding_promotion::recover(state).await {
+        tracing::warn!(%error,"embedding publication recovery pending; inference remains fenced");
+    }
+    if let Err(error)=crate::model_routing::reindex::recover(state).await {
+        tracing::warn!(%error,"built routed rebuild publication recovery pending");
+    }
     let pool = &state.pg;
     let mut tx = pool.begin().await?;
 
@@ -297,6 +307,31 @@ async fn poll_once(state: &AppState, registry: &JobRegistry, batch: i64) -> Resu
         // Known Core kind → the hard-coded handler; otherwise an Enterprise kind
         // registered in the JobRegistry; otherwise dead-letter (never panic).
         let outcome = match TaskType::from_key(&row.task_type) {
+            Some(TaskType::Ingest) if row.payload.get("routed_job_id").is_some() => {
+                match row.payload.get("routed_job_id").and_then(|v|v.as_str()).and_then(|s|Uuid::parse_str(s).ok()) {
+                    Some(id)=>crate::model_routing::ingestion::handle_task(state,id,row.id).await.map_err(|e|e.to_string()),
+                    None=>Err("invalid routed ingestion task identity".into()),
+                }
+            }
+            Some(TaskType::DeepResearch) if row.payload.get("routed_job_id").is_some() => {
+                match row.payload.get("routed_job_id").and_then(|v|v.as_str()).and_then(|s|Uuid::parse_str(s).ok()) {
+                    Some(id)=>crate::research::jobs::handle_task(state,id,row.id).await.map_err(|e|e.to_string()),
+                    None=>Err("invalid routed research task identity".into()),
+                }
+            }
+            Some(TaskType::VerifyDraft) if row.payload.get("routed_job_id").is_some() => {
+                match row.payload.get("routed_job_id").and_then(|v|v.as_str()).and_then(|s|Uuid::parse_str(s).ok()) {
+                    Some(id)=>crate::groundedness::durable::handle_task(state,id,row.id).await.map_err(|e|e.to_string()),
+                    None=>Err("invalid routed task identity".into()),
+                }
+            }
+            Some(TaskType::ReindexEmbeddings) if row.payload.get("routed_job_id").is_some()=>{
+                match row.payload.get("routed_job_id").and_then(|v|v.as_str()).and_then(|s|Uuid::parse_str(s).ok()) {
+                    Some(id)=>crate::model_routing::reindex::handle_task(state,id,row.id).await.map_err(|e|e.to_string()),
+                    None=>Err("invalid routed rebuild identity".into()),
+                }
+            }
+            Some(TaskType::ReindexEmbeddings)=>run_reindex(state,row.id).await,
             Some(tt) => handle(state, tt, &row.payload).await,
             None => match registry.task_handler(&row.task_type) {
                 Some(h) => h.handle(state, &row.payload).await,
@@ -306,6 +341,23 @@ async fn poll_once(state: &AppState, registry: &JobRegistry, batch: i64) -> Resu
                 }
             },
         };
+        if ttype=="workflow_run" {
+            if let Some(id)=row.payload.get("workflow_run_id").and_then(|v|v.as_str()).and_then(|s|Uuid::parse_str(s).ok()) {
+                match crate::workflows::routing::sync_task(state,row.id,id).await {
+                    Ok(true)=>{processed+=1;continue;},Ok(false)=>{},
+                    Err(error)=>{tracing::error!(%error,%id,"workflow queue sync failed; recovery will reconcile it");processed+=1;continue;}
+                }
+            }
+        }
+        if matches!(ttype.as_str(),"verify_draft"|"deep_research"|"reindex_embeddings") {
+            if let Some(id)=row.payload.get("routed_job_id").and_then(|v|v.as_str()).and_then(|s|Uuid::parse_str(s).ok()) {
+                if let Err(error)=crate::groundedness::durable::sync_task(state,row.id,id).await {
+                    tracing::error!(%error,%id,"routed queue status sync failed; recovery will reconcile it");
+                }
+                if let Err(error)=&outcome {tracing::warn!(%error,%id,"routed job stopped or already owned");}
+                processed+=1;continue;
+            }
+        }
         match outcome {
             Ok(()) => {
                 sqlx::query!(
@@ -520,6 +572,10 @@ async fn handle(
             crate::workflows::run(state, run_id).await.map_err(|e| e.to_string())
         }
         TaskType::VerifyDraft => {
+            if let Some(id)=payload.get("routed_job_id") {
+                let id=id.as_str().and_then(|s|Uuid::parse_str(s).ok()).ok_or_else(||"invalid routed job id".to_string())?;
+                return crate::groundedness::durable::handle(state,id).await.map_err(|e|e.to_string());
+            }
             // A "Verify draft" (groundedness Mode B) job: decompose the target
             // document into claims and verify each against the caller's sources.
             // Terminal — the run row carries success/error; payload has
@@ -543,6 +599,9 @@ async fn handle(
             crate::web_search::run_deep(state, payload).await.map_err(|e| e.to_string())
         }
         TaskType::DeepResearch => {
+            if payload.get("routed_job_id").is_some() {
+                return Err("routed research requires the scheduler delivery identity".into());
+            }
             // A Deep Research run: the ML synthesis
             // pipeline streams progress and a final report, posted back into
             // the research chat with citations + an MD artefact. Terminal —
@@ -552,25 +611,33 @@ async fn handle(
             // template?, template_spec?}.
             crate::research::run_research(state, payload).await.map_err(|e| e.to_string())
         }
-        TaskType::ReindexEmbeddings => {
-            // Blue-green embedding re-index: re-embed every
-            // chunk from payload text into a new collection, then atomic alias swap.
-            // On failure, mark the provenance `failed` (old index intact, Retry-able).
-            match run_reindex(state).await {
-                Ok(()) => Ok(()),
-                Err(e) => {
-                    let _ = crate::embedding_index::fail_reindex(&state.pg, &e).await;
-                    Err(e)
-                }
-            }
-        }
+        TaskType::ReindexEmbeddings => Err("embedding rebuild requires scheduler delivery identity".into()),
     }
 }
 
 /// Drive the blue-green re-index: stream the ML build (updating progress in the
 /// provenance row), then swap the alias and promote desired → active.
-async fn run_reindex(state: &AppState) -> Result<(), String> {
+async fn run_reindex(state: &AppState,task:Uuid) -> Result<(), String> {
+    let result=run_reindex_attempt(state,task).await;
+    if result.is_err() {
+        let _=sqlx::query("UPDATE embedding_rebuild_attempts SET status='failed' WHERE task_id=$1 AND status='building'").bind(task).execute(&state.pg).await;
+        let _=crate::embedding_index::fail_reindex(&state.pg,"Embedding build/publication stopped; inference is not automatically replayed").await;
+    }
+    result
+}
+async fn run_reindex_attempt(state:&AppState,task:Uuid)->Result<(),String> {
     use futures_util::StreamExt;
+    let attempt:Option<(String,i64,Option<String>,Option<String>)>=sqlx::query_as("SELECT status,desired_revision,new_collection,old_collection FROM embedding_rebuild_attempts WHERE task_id=$1")
+        .bind(task).fetch_optional(&state.pg).await.map_err(|e|e.to_string())?;
+    if let Some((status,revision,new,old))=attempt {
+        return match status.as_str() {
+            "completed"=>Ok(()),
+            "built"=>crate::embedding_promotion::promote(state,&new.ok_or("missing publication target")?,&old.ok_or("missing publication source")?,revision).await.map_err(|e|e.to_string()),
+            _=>Err("embedding inference attempt already consumed; explicitly start a new rebuild".into()),
+        };
+    }
+    let revision:i64=sqlx::query_scalar("SELECT desired_routing_revision FROM embedding_index WHERE id=1")
+        .fetch_one(&state.pg).await.map_err(|e|e.to_string())?;
 
     let key = state.message_key;
     let d = crate::embedding_index::desired(&state.pg, key)
@@ -578,6 +645,11 @@ async fn run_reindex(state: &AppState) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "reindex: no desired embed target staged".to_string())?;
 
+    let after:i64=sqlx::query_scalar("SELECT desired_routing_revision FROM embedding_index WHERE id=1").fetch_one(&state.pg).await.map_err(|e|e.to_string())?;
+    if revision!=after {return Err("desired embedding target changed before build".into());}
+    let claimed=sqlx::query("INSERT INTO embedding_rebuild_attempts(task_id,desired_revision) VALUES($1,$2) ON CONFLICT DO NOTHING")
+        .bind(task).bind(revision).execute(&state.pg).await.map_err(|e|e.to_string())?.rows_affected();
+    if claimed!=1 {return Err("embedding build delivery already claimed".into());}
     crate::embedding_index::begin_reindex(&state.pg, 0, None).await.map_err(|e| e.to_string())?;
 
     let url = format!("{}/reindex-embeddings", state.boot.ml.base_url.trim_end_matches('/'));
@@ -634,20 +706,11 @@ async fn run_reindex(state: &AppState) -> Result<(), String> {
     }
     let new_c = new_collection.ok_or_else(|| "reindex did not complete (no built event)".to_string())?;
 
-    // Atomic alias swap + provenance promotion (adjacent so they can't diverge).
-    let swap_url = format!("{}/swap-embedding-alias", state.boot.ml.base_url.trim_end_matches('/'));
-    let swap = state
-        .http
-        .post(swap_url)
-        .json(&serde_json::json!({ "new_collection": new_c, "old_collection": old_collection }))
-        .send()
-        .await
-        .map_err(|e| format!("ml /swap-embedding-alias: {e}"))?;
-    if !swap.status().is_success() {
-        return Err(format!("ml /swap-embedding-alias returned {}", swap.status()));
-    }
-    crate::embedding_index::finish_reindex(&state.pg, &new_c).await.map_err(|e| e.to_string())?;
-    tracing::info!(collection = %new_c, "embedding re-index complete; alias swapped");
+    let old=old_collection.ok_or_else(||"embedding build omitted source collection".to_string())?;
+    sqlx::query("UPDATE embedding_rebuild_attempts SET status='built',new_collection=$2,old_collection=$3 WHERE task_id=$1 AND status='building'")
+        .bind(task).bind(&new_c).bind(&old).execute(&state.pg).await.map_err(|e|e.to_string())?;
+    crate::embedding_promotion::promote(state,&new_c,&old,revision).await.map_err(|e|e.to_string())?;
+    tracing::info!(collection=%new_c,"embedding publication confirmed; old collection retained");
     Ok(())
 }
 
@@ -778,7 +841,7 @@ async fn run_tabular_generate(
     }
 
     let mut stream =
-        crate::ml::generate_review(&state.http, &state.boot.ml.base_url, &documents, &columns, crate::ml::provider_overrides(state, None).await).await?;
+        crate::ml::generate_review(&state.http, &state.boot.ml.base_url, &documents, &columns, crate::ml::provider_overrides(state, None).await?).await?;
 
     while let Some(ev) = stream.recv().await {
         // Cell-level interrupt: a cancel request stops the run between cells.
@@ -881,7 +944,7 @@ async fn run_tabular_generate(
 /// Best-effort live push of a document's ingest status to its uploader (the
 /// `created_by`), so the Libraries / project view updates without polling.
 /// Postgres remains the source of truth; a dropped frame is fine.
-fn emit_ingest_status(
+pub(crate) fn emit_ingest_status(
     state: &AppState,
     created_by: Option<Uuid>,
     doc_id: Uuid,
@@ -906,6 +969,11 @@ fn emit_ingest_status(
 /// the doc + knowledge-base status as it goes (and pushing each transition to
 /// the uploader over WebSocket).
 async fn run_ingest(state: &AppState, doc_id: Uuid) -> Result<i64, crate::error::AppError> {
+    // Tasks queued before a gate change cannot bypass the new source contract.
+    if crate::model_routing::ingestion::connector_enabled(state).await? {
+        let connector:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM kb_documents WHERE id=$1 AND source='connector_import')").bind(doc_id).fetch_one(&state.pg).await?;
+        if connector {return Err(crate::error::AppError::Forbidden("connector ingestion requires an authorised routed job".into()));}
+    }
     let doc = sqlx::query!(
         r#"SELECT kd.bytes_path, kd.mime, kd.kb_id, kd.created_by, kd.original_filename,
                   kb.embedding_dimension, kb.origin_project_id, kb.parent_child
@@ -964,7 +1032,7 @@ async fn run_ingest(state: &AppState, doc_id: Uuid) -> Result<i64, crate::error:
         crate::config::runtime::get(&state.pg, "ingest.pdfplumber").await.ok().flatten().map(|e| e.value == "true"),
         // Resolve providers as the uploader; `provider_overrides` overlays the
         // ACTIVE embed model (provenance), so ingest is consistent with the index.
-        crate::ml::provider_overrides(state, doc.created_by).await,
+        crate::ml::provider_overrides(state, doc.created_by).await?,
         dual,
         // Per-KB parent–child chunking. The column is NOT NULL,
         // so this is always a concrete choice for the KB.
@@ -1016,7 +1084,7 @@ async fn run_ingest(state: &AppState, doc_id: Uuid) -> Result<i64, crate::error:
 
 /// Parse an ISO `YYYY-MM-DD` date into a UTC-midnight timestamp; `None` on any
 /// malformed input (extraction is best-effort).
-fn parse_iso_date(s: &str) -> Option<OffsetDateTime> {
+pub(crate) fn parse_iso_date(s: &str) -> Option<OffsetDateTime> {
     let mut it = s.splitn(3, '-');
     let y: i32 = it.next()?.trim().parse().ok()?;
     let m: u8 = it.next()?.trim().parse().ok()?;
@@ -1593,4 +1661,3 @@ fn backoff_secs(attempt: i32) -> u64 {
     let exp = 2u64.saturating_pow(attempt.max(0) as u32);
     exp.min(300)
 }
-

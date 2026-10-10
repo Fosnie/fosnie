@@ -40,6 +40,7 @@ pub mod profile;
 pub mod export;
 pub mod feedback;
 pub mod groundedness;
+pub mod document_verification_jobs;
 pub mod groundedness_admin;
 pub mod health;
 pub mod mcp_admin;
@@ -54,6 +55,7 @@ pub mod projects;
 pub mod providers;
 pub mod prompts;
 pub mod research;
+pub mod research_jobs;
 pub mod research_templates;
 pub mod skills;
 pub mod superadmin;
@@ -70,8 +72,11 @@ pub mod tools;
 pub mod users_admin;
 pub mod v1;
 pub mod voice;
+pub mod voice_routing;
 pub mod voice_admin;
 pub mod workflows;
+pub mod model_routing;
+pub mod routing_evaluation;
 pub mod workspaces;
 
 use std::path::Path;
@@ -459,6 +464,8 @@ pub fn router(
             .route("/api/tabular-reviews/{id}/export", get(tabular::export_review))
             .route("/api/tabular-reviews/{id}/chat", post(tabular::create_review_chat))
             .route("/api/verify-draft", post(groundedness::start))
+            .merge(document_verification_jobs::routes())
+            .merge(research_jobs::routes())
             .route("/api/verification-runs", get(groundedness::latest_for_target))
             .route("/api/verification-runs/{id}", get(groundedness::get_run))
             .route("/api/verification-runs/{id}/report", get(groundedness::export_report))
@@ -524,6 +531,7 @@ pub fn router(
             axum::routing::patch(telephony_lines::update_line).delete(telephony_lines::delete_line),
         )
         .route("/api/admin/telephony/calls", get(telephony_lines::list_calls))
+        .route("/api/admin/telephony/numbers/{id}/routing", get(crate::telephony::routing::get).put(crate::telephony::routing::set))
         // The same readiness list as the deployment's own settings screen, for whoever
         // wires the lines.
         .route("/api/admin/telephony/check", get(telephony_lines::check))
@@ -568,6 +576,8 @@ pub fn router(
         )
             .route("/api/admin/embedding-index", get(providers::embedding_index_status))
             .route("/api/admin/embedding-index/reindex", post(providers::reindex_embeddings))
+            .route("/api/admin/embedding-index/cleanup", post(providers::cleanup_embedding_indices))
+            .route("/api/admin/embedding-index/cancel", post(providers::cancel_embedding_reindex))
             .route("/api/me/providers", get(providers::list_my_providers))
             // Multi-LLM: personal (BYOK) named llm CRUD + the composer selection list.
             .route("/api/me/providers/llm", post(providers::create_my_llm))
@@ -577,6 +587,22 @@ pub fn router(
                 axum::routing::put(providers::update_my_llm).delete(providers::delete_my_llm),
             )
             .route("/api/me/llm-providers", get(providers::list_llm_providers))
+            .route("/api/routing/catalog", get(model_routing::catalog))
+            .route("/api/routing/management", get(model_routing::management))
+            .route("/api/routing/ingestion", get(model_routing::ingestion_gate).put(model_routing::set_ingestion_gate))
+            .route("/api/routing/connector-ingestion", get(model_routing::connector_ingestion_gate).put(model_routing::set_connector_ingestion_gate))
+            .route("/api/routing/connector-ingestion/{id}/queue", post(model_routing::queue_connector_ingestion))
+            .route("/api/routing/browser-chat", get(crate::chat::browser::settings).put(crate::chat::browser::set_enabled))
+            .route("/api/chats/{chat_id}/routing", get(crate::chat::browser::saved_surface))
+            .route("/api/routing/fixed-catalog", get(model_routing::fixed_catalog))
+            .route("/api/routing/fixed-profiles/{id}", axum::routing::put(model_routing::save_fixed_profile).delete(model_routing::delete_fixed_profile))
+            .route("/api/routing/profiles/{id}", axum::routing::put(model_routing::save_profile).delete(model_routing::delete_profile))
+            .route("/api/routing/profiles/{id}/probe", post(model_routing::probe))
+            .route("/api/routing/policies", get(model_routing::policies))
+            .route("/api/routing/policies/{id}", axum::routing::put(model_routing::save_policy).delete(model_routing::delete_policy))
+            .route("/api/routing/preview", post(model_routing::preview))
+            .route("/api/routing/classifier-probe", post(model_routing::classifier_probe))
+            .route("/api/routing/evaluate", post(routing_evaluation::evaluate))
             .route("/api/me/chats/{chat_id}/llm-provider", axum::routing::put(providers::set_chat_llm_provider))
             .route(
                 "/api/me/providers/{role}",
@@ -627,6 +653,13 @@ pub fn router(
                 post(workflows::create_workflow).get(workflows::list_workflows),
             )
             .route("/api/workflows/triggers", get(workflows::list_triggers))
+            .route("/api/routing/workflow-jobs", get(workflows::routing_capabilities).put(workflows::set_routing_enabled))
+            .route("/api/routing/public-api", get(v1::routed::settings).put(v1::routed::set_enabled))
+            .route("/api/routing/public-api-alias", get(v1::alias::settings).put(v1::alias::save))
+            .route("/api/routing/voice", get(voice_routing::settings).put(voice_routing::set_enabled))
+            .route("/api/routing/voice-live", get(voice_routing::live_settings).put(voice_routing::set_live_enabled))
+            .route("/api/routing/regenerate", get(crate::chat::regenerate::settings).put(crate::chat::regenerate::set_enabled))
+            .route("/api/routing/artefacts", get(crate::chat::routed_artefact::settings).put(crate::chat::routed_artefact::set_enabled))
             .route(
                 "/api/workflows/{id}",
                 get(workflows::get_workflow)
@@ -639,6 +672,8 @@ pub fn router(
                 post(voice::transcribe).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
             )
             .route("/api/voice/speech", post(voice::speak))
+            .route("/api/voice/routed/transcribe", post(voice_routing::transcribe).layer(DefaultBodyLimit::max(crate::model_routing::run::MAX_AUDIO_BYTES)))
+            .route("/api/voice/routed/speech", post(voice_routing::speak))
             .route("/api/integrations", get(integrations::list_enabled))
             .route("/api/admin/integrations", get(integrations::list_all))
             // Activation (PUT) is break-glass-gated above; viewing one connector
@@ -1101,7 +1136,7 @@ async fn whoami(State(state): State<AppState>, AuthUser(ctx): AuthUser) -> impl 
         // the deployment default (multi-LLM). The composer's LIVE reasoning control is
         // re-derived per selected provider from GET /api/me/llm-providers; this is the
         // fallback for a draft chat / single-provider deploy.
-        let p = crate::providers::resolve_llm(&state.pg, state.message_key, ctx.user_id, None, None).await.ok().flatten();
+        let p = crate::providers::resolve_llm(&state, ctx.user_id, None, None).await.ok().flatten();
         let (base_url, model, mode) = match &p {
             Some(p) => (p.base_url.as_deref(), p.model.as_deref(), p.reasoning_mode.as_deref()),
             None => (None, None, None),
@@ -1231,6 +1266,7 @@ async fn ws_ticket(
     State(state): State<AppState>,
     AuthUser(ctx): AuthUser,
     MaybeDevice(device_id): MaybeDevice,
+    crate::auth::device::MaybeDeviceCredential(credential):crate::auth::device::MaybeDeviceCredential,
 ) -> impl IntoResponse {
     let Some(user_id) = ctx.user_id else {
         return (axum::http::StatusCode::FORBIDDEN, "no user").into_response();
@@ -1238,7 +1274,7 @@ async fn ws_ticket(
     if !crate::cache::rate_limit_ok(&state.redis, &format!("ws-ticket:{user_id}"), 30, 60).await {
         return (axum::http::StatusCode::TOO_MANY_REQUESTS, "rate limited").into_response();
     }
-    match crate::ws::session::issue_ticket(&state.redis, user_id, device_id).await {
+    match crate::ws::session::issue_bound_ticket(&state.redis, user_id, device_id,credential.map(|c|c.key_id)).await {
         Ok(ticket) => Json(json!({ "ticket": ticket })).into_response(),
         Err(e) => {
             tracing::warn!(error = %e, "ws-ticket mint failed");

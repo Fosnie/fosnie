@@ -44,26 +44,26 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --create-home --home-dir /var/lib/pai pai
+    && useradd --system --uid 10001 --create-home --home-dir /var/lib/fosnie fosnie
 
 COPY --from=build    /app/backend/target/release/fosnie-backend /usr/local/bin/fosnie-backend
-COPY --from=frontend /app/frontend/dist                          /opt/pai/frontend/dist
+COPY --from=frontend /app/frontend/dist                          /opt/fosnie/frontend/dist
 # Default-skill library (read-only source the boot seeder copies into skills_dir).
-COPY skills/ /opt/pai/skills/
+COPY skills/ /opt/fosnie/skills/
 
 # Image-baked config so the container runs with only DATABASE_URL / REDIS_URL /
 # ML base+secret + secrets supplied by compose. Everything here is a sensible
-# container default; override any of it with PAI__* env if needed.
-ENV PAI__SERVER__HOST=0.0.0.0 \
-    PAI__SERVER__PORT=8080 \
-    PAI__SERVER__STATIC_DIR=/opt/pai/frontend/dist \
-    PAI__STORAGE__SKILLS_LIBRARY_DIR=/opt/pai/skills
+# container default; override any of it with FOSNIE__* env if needed.
+ENV FOSNIE__SERVER__HOST=0.0.0.0 \
+    FOSNIE__SERVER__PORT=8080 \
+    FOSNIE__SERVER__STATIC_DIR=/opt/fosnie/frontend/dist \
+    FOSNIE__STORAGE__SKILLS_LIBRARY_DIR=/opt/fosnie/skills
 
 # WORKDIR under the persisted volume: the default relative storage paths
 # (./data/*) and the runtime skills dir land here and survive restarts.
-WORKDIR /var/lib/pai
-RUN mkdir -p /var/lib/pai/data && chown -R pai:pai /var/lib/pai
-USER pai
+WORKDIR /var/lib/fosnie
+RUN mkdir -p /var/lib/fosnie/data && chown -R fosnie:fosnie /var/lib/fosnie
+USER fosnie
 
 EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=5 \

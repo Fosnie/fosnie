@@ -82,6 +82,8 @@ impl IntoResponse for AppError {
             AppError::Conflict(m) => (StatusCode::CONFLICT, Some(m)),
             AppError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, Some(m)),
             AppError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, Some(m)),
+            AppError::Other(e) if e.downcast_ref::<crate::model_routing::fallback::OpenFailure>().is_some() =>
+                (StatusCode::SERVICE_UNAVAILABLE, Some("routed inference transport failed")),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, None),
         };
         tracing::error!(error = %self, "request failed");

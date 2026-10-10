@@ -15,9 +15,9 @@
 """Self-contained HTML artefacts. The model writes a page with placeholder markers; this engine turns it
 into a true single file that opens offline anywhere:
 
-- `<!-- pai:echarts -->` → the vendored Apache ECharts build inlined in a <script>
+- `<!-- fosnie:echarts -->` → the vendored Apache ECharts build inlined in a <script>
   (the model never spends tokens on library code; charts work with no CDN).
-- `<!-- pai:theme -->`   → the neutral (or deployment-branded) theme inlined in a
+- `<!-- fosnie:theme -->`   → the neutral (or deployment-branded) theme inlined in a
   <style>.
 - a strict CSP `<meta>` is injected into <head> if absent — `default-src 'none'`
   with no `connect-src`, so even a malicious inline script in the sandboxed preview
@@ -55,8 +55,10 @@ _CSP_META = f'<meta http-equiv="Content-Security-Policy" content="{_CSP}">'
 _HAS_HTML = re.compile(r"<html[\s>]", re.IGNORECASE)
 _HAS_CSP = re.compile(r'http-equiv\s*=\s*["\']?content-security-policy', re.IGNORECASE)
 _HEAD_OPEN = re.compile(r"<head[^>]*>", re.IGNORECASE)
-_ECHARTS_MARKER = re.compile(r"<!--\s*pai:echarts\s*-->", re.IGNORECASE)
-_THEME_MARKER = re.compile(r"<!--\s*pai:theme\s*-->", re.IGNORECASE)
+# `pai:` is the pre-rename spelling of the marker. Both are accepted so an artefact
+# written before the rename (or by a skill a deployment has customised) still builds.
+_ECHARTS_MARKER = re.compile(r"<!--\s*(?:fosnie|pai):echarts\s*-->", re.IGNORECASE)
+_THEME_MARKER = re.compile(r"<!--\s*(?:fosnie|pai):theme\s*-->", re.IGNORECASE)
 
 
 def _theme_css() -> str:

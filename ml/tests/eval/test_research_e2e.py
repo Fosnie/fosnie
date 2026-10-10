@@ -3,7 +3,7 @@ stack (SearXNG + network + LLM + reranker) and asserts the structural
 contract — multi-section report, resolving [W#] citations, references section,
 citation list aligned with the numbering.
 
-Run: `PAI_RESEARCH_EVAL=1 .venv/Scripts/python -m pytest tests/eval/test_research_e2e.py -q -s`
+Run: `FOSNIE_RESEARCH_EVAL=1 .venv/Scripts/python -m pytest tests/eval/test_research_e2e.py -q -s`
 """
 
 import asyncio
@@ -17,8 +17,8 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 pytestmark = pytest.mark.skipif(
-    os.getenv("PAI_RESEARCH_EVAL") != "1",
-    reason="research E2E needs the live stack + network (set PAI_RESEARCH_EVAL=1)",
+    os.getenv("FOSNIE_RESEARCH_EVAL") != "1",
+    reason="research E2E needs the live stack + network (set FOSNIE_RESEARCH_EVAL=1)",
 )
 
 
@@ -29,7 +29,7 @@ def test_research_run_live():
         pipeline.run(
             "What are the main approaches to running large language models fully "
             "on-premise in 2026, and what are their trade-offs?",
-            template_id="exploration",
+            template_id="exploration",
         )
     )
     report = out["report_md"]
@@ -86,7 +86,7 @@ def test_research_files_run_live(tmp_path):
         pipeline.run(
             "What do our internal notes conclude about self-hosting LLM "
             "infrastructure, and what did we not test?",
-            template_id="formal",
+            template_id="formal",
             source="files",
             kb_ids=["00000000-0000-0000-0000-0000000000aa"],
             docs=docs,

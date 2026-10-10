@@ -14,7 +14,7 @@ use fosnie_backend::{cache, db};
 async fn pg() -> Option<sqlx::PgPool> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pool = db::connect(&db_url, 5).await.ok()?;
     let _ = AppState::new(pool.clone(), cache::create_pool(&redis_url).ok()?, Arc::new(BootConfig::default()));
     Some(pool)

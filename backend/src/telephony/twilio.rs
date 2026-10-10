@@ -221,12 +221,15 @@ pub async fn answer(
     // as raw samples from a streaming synthesiser or the line is silent; and the
     // recognition rate has to be one the carrier's 8 kHz audio can be converted to.
     let vc = crate::voice::VoiceLiveResolved::load(&state.pg, state.message_key, &state.boot.voice_live).await;
-    if !vc.tts_stream || vc.tts_stream_url.is_empty() {
+    let routing=match super::routing::selection(&state,line.id).await {
+        Ok(value)=>value,Err(_)=>{audit_refusal(&state,"telephony.refused","routing_unavailable",&from).await;return reject();}
+    };
+    if routing.is_none() && (!vc.tts_stream || vc.tts_stream_url.is_empty()) {
         tracing::warn!("a telephone line needs a streaming synthesiser configured");
         audit_refusal(&state, "telephony.refused", "no_streaming_synthesiser", &from).await;
         return reject();
     }
-    if !matches!(vc.stt_sample_rate.max(8_000), 8_000 | 16_000) {
+    if routing.is_none() && !matches!(vc.stt_sample_rate.max(8_000), 8_000 | 16_000) {
         tracing::warn!(rate = vc.stt_sample_rate, "a telephone line cannot be converted to this recognition rate");
         audit_refusal(&state, "telephony.refused", "unsupported_rate", &from).await;
         return reject();
@@ -251,6 +254,7 @@ pub async fn answer(
     }
 
     let details = CallDetails {
+        routing,
         owner_user_id: owner,
         agent_id,
         opening: line.opening.clone(),
@@ -794,7 +798,7 @@ async fn wait_for_start(
 
 /// Everything the carrier sends us, until the call ends.
 async fn read_from_carrier(
-    voice: &Arc<crate::voice::Session>,
+    voice: &Arc<super::routing::CallVoice>,
     line: &Arc<TelephonySink>,
     stream: &mut futures_util::stream::SplitStream<WebSocket>,
     call_sid: &str,

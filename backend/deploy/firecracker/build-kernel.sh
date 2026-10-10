@@ -34,7 +34,7 @@ set -euo pipefail
 
 # --- pinned inputs (bump version + sha together) ---------------------------
 : "${ARCH:=x86_64}"
-: "${OUT_DIR:=/opt/pai/firecracker}"
+: "${OUT_DIR:=/opt/fosnie/firecracker}"
 : "${FC_VERSION:=v1.10.1}"                 # firecracker binary release to install
 : "${KERNEL_VERSION:=5.10.225}"            # Firecracker CI guest kernel (has vsock)
 : "${KERNEL_CI_CHANNEL:=v1.11}"            # spec.ccfc.min firecracker-ci channel
@@ -86,7 +86,7 @@ fi
 # --- 3. sanity: is vsock present in this kernel? ----------------------------
 # Best-effort: the CI kernel bundles no separate config, so we grep the image for
 # the virtio-vsock driver signature. Absence here is a WARNING, not fatal (the
-# real proof is `PAI_FIRECRACKER=1 cargo test --test firecracker` booting a VM and
+# real proof is `FOSNIE_FIRECRACKER=1 cargo test --test firecracker` booting a VM and
 # the guest agent binding AF_VSOCK). If the boot hangs at "guest vsock not
 # reachable", rebuild from source with the vsock configs (see fallback above).
 if strings "$dst" 2>/dev/null | grep -qiE 'virtio.?vsock|vhost.?vsock|vmw_vsock'; then

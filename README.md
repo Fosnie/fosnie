@@ -42,6 +42,10 @@ Built for teams that hold other people's confidential data under a duty of care
 
 ## Features
 
+- **Model routing**: choose among local/cloud models or use Auto with rules,
+  a configurable judge, capability profiles and usage limits. Available in both
+  editions behind explicit activation; see [setup and supported scope](docs/model-routing-release.md).
+
 - **🔒 Offline by default**: no data, prompt, or document leaves your infrastructure unless you enable a connector; every outbound connector ships dormant and opt-in.
 - **🧠 Agentic RAG**: decompose → hybrid (dense + sparse) search → rerank → grade → answer, with inline citations.
 - **🔌 Model-agnostic + BYOK**: point each capability (LLM, embeddings, rerank, OCR, STT/TTS) at a local engine or any external API, configured in the UI. Native Anthropic adapter (tools + extended thinking).
@@ -90,7 +94,7 @@ Ollama + reranker stack is wired up automatically, so chat works immediately.
 
 - **Fully-local models:** `--local` adds Ollama (LLM + embeddings) and a llama.cpp reranker; the
   backend auto-configures them. First run pulls the models (a few GB).
-- **Managed Postgres** (Supabase, Neon, RDS, Cloud SQL, Azure): set `PAI__DATABASE_URL` in `.env`
+- **Managed Postgres** (Supabase, Neon, RDS, Cloud SQL, Azure): set `FOSNIE__DATABASE_URL` in `.env`
   and drop the bundled `postgres` service (see the comments in `example.env`).
 - **Bare-metal (systemd), the offline air-gap bundle, backups, upgrades, and reverse-proxy TLS:**
   see **[`backend/deploy/README.md`](backend/deploy/README.md)** and the

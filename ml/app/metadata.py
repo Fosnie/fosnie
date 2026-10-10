@@ -26,7 +26,7 @@ from datetime import date
 
 from . import llm
 
-_log = logging.getLogger("pai.metadata")
+_log = logging.getLogger("fosnie.metadata")
 
 _SYSTEM = (
     "You extract the EFFECTIVE DATE of a document — the date the document itself "
@@ -101,12 +101,17 @@ async def extract_effective_date(
     date (YYYY-MM-DD) or None. Never raises."""
     head = "\n\n".join(t for _, t in (pages[:2] if pages else [])).strip()[:4000]
     if head:
+        token=llm._stage_var.set("ingest.metadata")
         try:
             out = (await llm.complete(_SYSTEM, head, max_tokens=12)).strip()
             if m := _ISO.search(out):
                 if iso := _norm(m.group(1), m.group(2), m.group(3)):
                     return iso
         except Exception as e:
+            from .inference_target import strict
+            if strict():raise
             _log.warning("effective-date LLM extraction failed: %s", e)
+        finally:
+            llm._stage_var.reset(token)
     # Fallbacks: file metadata, then a page-1 regex.
     return _metadata_date(mime, path) or (_regex_date(head) if head else None)

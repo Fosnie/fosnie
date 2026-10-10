@@ -1,7 +1,7 @@
 //! Workspace documents + tracked changes over the real stack. Upload → version
 //! chain → download/text/PDF → soft-delete; and the assistant `edit_document`
 //! round-trip (propose tracked changes → accept → new version). Gated on
-//! `PAI_E2E=1` (needs Postgres + Redis + Keycloak + ML + Ollama + LibreOffice).
+//! `FOSNIE_E2E=1` (needs Postgres + Redis + Keycloak + ML + Ollama + LibreOffice).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +18,7 @@ use fosnie_backend::{auth, cache, db, documents, http};
 const KC: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 fn fixture() -> Vec<u8> {
@@ -50,9 +50,9 @@ async fn token(user: &str) -> Option<String> {
 async fn setup() -> (sqlx::PgPool, AppState, u16, String) {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let ml_url =
-        std::env::var("PAI__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+        std::env::var("FOSNIE__ML__BASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
     let tok = token("alice").await.expect("keycloak token");
 
     let pg = db::connect(&db_url, 5).await.unwrap();
@@ -108,7 +108,7 @@ async fn upload_doc(api: &reqwest::Client, base: &str, tok: &str, project_id: &s
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspace_document_lifecycle() {
     if !enabled() {
-        eprintln!("skipping workspace lifecycle (set PAI_E2E=1 with full stack up)");
+        eprintln!("skipping workspace lifecycle (set FOSNIE_E2E=1 with full stack up)");
         return;
     }
     let (pg, _state, port, tok) = setup().await;
@@ -204,7 +204,7 @@ async fn workspace_document_lifecycle() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tracked_changes_round_trip() {
     if !enabled() {
-        eprintln!("skipping tracked-changes round-trip (set PAI_E2E=1 with full stack up)");
+        eprintln!("skipping tracked-changes round-trip (set FOSNIE_E2E=1 with full stack up)");
         return;
     }
     let (pg, _state, port, tok) = setup().await;

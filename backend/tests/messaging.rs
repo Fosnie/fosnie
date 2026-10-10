@@ -1,6 +1,6 @@
 //! Team messaging (channels-messaging): chats, members, reliable messages with
 //! WS live delivery + since-seq replay, shared notes (optimistic concurrency),
-//! search, and the memory→project-chat system notification. Gated on PAI_E2E=1
+//! search, and the memory→project-chat system notification. Gated on FOSNIE_E2E=1
 //! (Postgres + Redis + Keycloak; no LLM, so these are quick).
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use fosnie_backend::{auth, cache, db, http};
 const KC: &str = "http://localhost:8081/realms/fosnie";
 
 fn enabled() -> bool {
-    std::env::var("PAI_E2E").as_deref() == Ok("1")
+    std::env::var("FOSNIE_E2E").as_deref() == Ok("1")
 }
 
 async fn token(user: &str) -> Option<String> {
@@ -44,7 +44,7 @@ async fn token(user: &str) -> Option<String> {
 async fn setup() -> (sqlx::PgPool, u16) {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let redis_url =
-        std::env::var("PAI__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
+        std::env::var("FOSNIE__REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let pg = db::connect(&db_url, 5).await.unwrap();
     let redis = cache::create_pool(&redis_url).unwrap();
     let mut boot = BootConfig { database_url: db_url, redis_url, ..BootConfig::default() };

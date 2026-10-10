@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! PAI Platform backend — library surface.
+//! Fosnie backend — library surface.
 //!
 //! The binary (`main.rs`) wires these modules together; the integration tests
 //! in `tests/` drive them directly. Only the cross-cutting skeleton is present
@@ -32,6 +32,8 @@ pub mod crypto;
 pub mod db;
 pub mod documents;
 pub mod embedding_index;
+pub mod embedding_promotion;
+pub mod embedding_retention;
 pub mod error;
 pub mod events;
 pub mod ext;
@@ -43,6 +45,7 @@ pub mod kb;
 pub mod mcp;
 pub mod metrics;
 pub mod ml;
+pub mod model_routing;
 pub mod provider_cli;
 pub mod providers;
 pub mod providers_seed;

@@ -1,6 +1,6 @@
 # Fosnie release — build + push the two application images to GHCR and attach the
-# deploy assets to the GitHub Release. DORMANT until the repo is published (no tag
-# is pushed before then). Zero secrets in the repo: GHCR auth uses the built-in
+# deploy assets to the GitHub Release. Runs only on a version tag; a plain merge to
+# main ships nothing. Zero secrets in the repo: GHCR auth uses the built-in
 # GITHUB_TOKEN.
 #
 # Build context is the repo root; the Dockerfiles are backend/Dockerfile and
