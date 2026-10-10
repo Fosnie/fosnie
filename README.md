@@ -42,13 +42,15 @@ Built for teams that hold other people's confidential data under a duty of care
 
 ## Features
 
-- **Model routing**: choose among local/cloud models or use Auto with rules,
-  a configurable judge, capability profiles and usage limits. Available in both
-  editions behind explicit activation; see [setup and supported scope](docs/model-routing-release.md).
-
 - **🔒 Offline by default**: no data, prompt, or document leaves your infrastructure unless you enable a connector; every outbound connector ships dormant and opt-in.
 - **🧠 Agentic RAG**: decompose → hybrid (dense + sparse) search → rerank → grade → answer, with inline citations.
 - **🔌 Model-agnostic + BYOK**: point each capability (LLM, embeddings, rerank, OCR, STT/TTS) at a local engine or any external API, configured in the UI. Native Anthropic adapter (tools + extended thinking).
+- **🧭 Automatic prompt routing**: connect local, cloud or mixed model pools and let
+  Auto select a model using rules, a configurable local or cloud judge, or both.
+  Capability and reasoning-effort checks, locality controls, shared usage limits
+  and recovery from eligible failures before output are built in. Included in
+  **Core and Enterprise**, with explicit activation; see the
+  [routing guide and supported scope](https://docs.fosnie.dev/model-routing).
 - **🤖 Agents & workflows**: action-taking agent runs with human-in-the-loop approval, durable resume, and event-driven automations.
 - **🔎 Deep Research**: multi-step research over your documents, the web, or both, with a fully cited report.
 - **📄 Document work**: generate DOCX/PPTX/PDF/XLSX/HTML, tracked-change accept/reject, tabular review.
@@ -123,6 +125,7 @@ reproducible upgrades).
 | Desktop app with connected folders | ✅ | ✅ |
 | Groundedness / verification | ✅ | ✅ |
 | Model-agnostic providers + per-user BYOK | ✅ | ✅ |
+| [Automatic prompt routing](https://docs.fosnie.dev/model-routing) (rules, configurable judge, hybrid) | ✅ | ✅ |
 | MCP host + connectors | ✅ | ✅ |
 | Projects / knowledge bases / sharing, roles + groups | ✅ | ✅ |
 | Local auth + basic OIDC | ✅ | ✅ |
