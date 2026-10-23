@@ -1,42 +1,28 @@
-# Fosnie v0.7.0
+# Fosnie v0.7.1
 
-## Automatic prompt routing
+This patch update extends the model routing included in 0.7.0 with configurable
+personal profiles and model variants.
 
-Connect several local/cloud providers and choose Default, a model directly or Auto.
-Rules, Classifier and Hybrid policies select a compatible executor/effort from task
-requirements, current profiles, permissions and shared limits. A local judge is
-optional; cloud-only deployments can use a cloud judge. This is open-source Core
-functionality available with the Enterprise overlay.
+- Create Custom Auto profiles with a selected pool or Full Auto profiles that
+  include available variants. Start from the editable Everyday and Thorough presets.
+- Route by task type and complexity, assign an exact model and effort, set
+  preferences, restrict pools and choose a default for uncertain classification.
+- Use personal profiles and variants of shared models in **Settings → Model routing**,
+  including ordinary users with personal API keys disabled.
+- Retain access controls, capability and locality checks, shared usage limits,
+  chat/project bindings, credential-free import/export and bounded technical fallback.
+- Correct production/test container build inputs for the simplified routing implementation.
 
-The release includes profiles/policies, saved intent and actual-model metadata,
-independent caller opt-ins, previews/Shadow rollout and an OpenAI-compatible Auto
-alias. Judge/helpers/answer/retry share accounting. Typed provider failures,
-cooldowns and one eligible pre-output text alternate preserve the original actor,
-question and spent allowance; tool/action/durable work is not replayed.
+Routing follows configured model roles and user assignments. No benchmark or
+calibration certificate is required to use Auto, and this release makes no
+measured savings claim.
 
-Quick search can explicitly use bounded search-result excerpts without page
-fetching or OCR/reranking inference. Standard/Deep retain their existing behaviour.
-Fixed-role and ingestion/index recovery retain explicit assignments and fences.
+Use matching backend, ML and frontend versions. Database migrations run through
+the normal startup process; back up an existing installation before upgrading.
+The independently versioned desktop client is unchanged.
 
-## Deployment names and upgrades
+Validation used local providers: routine and complex tasks, both inverse user
+assignments, ordinary-user/BYOK-off settings, desktop/mobile layouts and installed
+Enterprise restrictions passed. No paid model calls were required.
 
-Templates and services now use Fosnie names. Legacy PAI environment/header/backup
-aliases remain compatible where documented; service units, accounts and paths
-need host-level changes or explicit overrides. PostgreSQL role/database are not
-automatically renamed. Routing gates stay off until explicitly enabled.
-
-Use matched backend/ML/frontend versions and the normal migration runner through
-0138. Back up first. Policy Off retains constraints/settings/history; backup
-restore is distinct from running an arbitrary older binary on the new schema.
-
-## Documentation and validation
-
-- [Detailed routing guide](https://docs.fosnie.dev/model-routing)
-- [v0.7.0 notes and naming migration](https://docs.fosnie.dev/changelog/v0.7.0)
-- Contract, failure, mixed/local/cloud/web and actual upgrade/restore checks passed
-  in isolated environments; the release workflow builds platform images/assets.
-
-No claim of universally best-model selection, factual accuracy or measured savings
-follows from these operational checks. Independent quality admission remains
-separate. Platform v0.7.0 does not bump or publish the independently versioned
-desktop client.
+[Routing profiles guide](https://github.com/Fosnie/fosnie/blob/v0.7.1/docs/model-routing-profiles.md)
