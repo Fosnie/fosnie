@@ -33,6 +33,8 @@ COPY backend/.sqlx ./.sqlx
 # Path dependencies live outside backend/ (backend/Cargo.toml references
 # ../crates/fosnie-protocol); copy the workspace crates so cargo can resolve them.
 COPY crates/ /app/crates/
+COPY ml/app/routing_assets/ /app/ml/app/routing_assets/
+COPY ml/app/routing_predictor.py ml/app/routing_pack.py ml/app/routing_routefm.py ml/app/routing_query.py ml/app/routing_corpus.py ml/app/routing_workload.py /app/ml/app/
 COPY backend/ ./
 RUN cargo build --release --bin fosnie-backend
 
@@ -47,6 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --system --uid 10001 --create-home --home-dir /var/lib/fosnie fosnie
 
 COPY --from=build    /app/backend/target/release/fosnie-backend /usr/local/bin/fosnie-backend
+COPY --from=build    /app/ml/app/routing_assets/NOTICE.source-qa.md /usr/share/doc/fosnie/NOTICE.source-qa.md
 COPY --from=frontend /app/frontend/dist                          /opt/fosnie/frontend/dist
 # Default-skill library (read-only source the boot seeder copies into skills_dir).
 COPY skills/ /opt/fosnie/skills/

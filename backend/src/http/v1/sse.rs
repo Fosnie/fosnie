@@ -116,7 +116,9 @@ pub fn stream_response<S: EmitSource>(state: StreamState<S>) -> Response {
 
 fn events<S: EmitSource>(state: StreamState<S>) -> impl Stream<Item = Result<Event, Infallible>> {
     futures_util::stream::unfold(state, move |mut st| {
-        async move {
+        // Producers can own large routing/access futures. Keep the per-event
+        // state off HTTP executor stacks, including while serving buffered SSE.
+        Box::pin(async move {
             if st.closed {
                 return None;
             }
@@ -125,7 +127,7 @@ fn events<S: EmitSource>(state: StreamState<S>) -> impl Stream<Item = Result<Eve
                 // The literal sentinel every client watches for.
                 return Some((Ok(Event::default().data("[DONE]")), st));
             }
-            match st.source.next().await {
+            match Box::pin(st.source.next()).await {
                 Some(Emit::Failed(e)) => {
                     st.done_sent = true;
                     Some((Ok(e.sse_event()), st))
@@ -156,7 +158,7 @@ fn events<S: EmitSource>(state: StreamState<S>) -> impl Stream<Item = Result<Eve
                     Some((Ok(ev), st))
                 }
             }
-        }
+        })
     })
 }
 

@@ -272,6 +272,10 @@ async def test_r22_one_attempt_and_no_adapter_fallback_or_secret_echo(monkeypatc
     ("gemini-2.5-flash", "low", {"thinkingBudget": 4096}),
     ("gemini-2.5-flash", "none", {"thinkingBudget": 0}),
     ("gemini-3.1-flash-lite", None, None),
+    ("gemma-4-26b-a4b-it", "minimal", {"thinkingLevel": "MINIMAL"}),
+    ("gemma-4-31b-it", "high", {"thinkingLevel": "HIGH"}),
+    ("models/gemma-4-31b-it", "minimal", {"thinkingLevel": "MINIMAL"}),
+    ("gemma-4-31b-it", None, None),
 ])
 async def test_model_specific_gemini_effort_wire_contract(monkeypatch,model,effort,expected):
     seen=[]
@@ -298,6 +302,18 @@ async def test_gemini_level_family_never_downgrades_an_unsupported_effort(monkey
     def forbidden(): raise AssertionError("unsupported mapping must fail before HTTP client lookup")
     monkeypatch.setattr(http_client,"get_client",forbidden)
     assignment=target("gemini",name="gemini-3.1-flash-lite");assignment["effort"]=effort
+    rag_ctx.set_overrides({"routing":envelope(assignment,"router_classify")})
+    with pytest.raises(ValueError,match="parameter mapping"):
+        await llm.chat_step([{"role":"user","content":"Classify"}])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("model",["gemma-4-26b-a4b-it","models/gemma-4-31b-it"])
+@pytest.mark.parametrize("effort",["none","low","medium","max"])
+async def test_gemma_level_family_rejects_unsupported_effort_before_HTTP(monkeypatch,model,effort):
+    def forbidden():raise AssertionError("unsupported Gemma effort must not dispatch")
+    monkeypatch.setattr(http_client,"get_client",forbidden)
+    assignment=target("gemini",name=model);assignment["effort"]=effort
     rag_ctx.set_overrides({"routing":envelope(assignment,"router_classify")})
     with pytest.raises(ValueError,match="parameter mapping"):
         await llm.chat_step([{"role":"user","content":"Classify"}])

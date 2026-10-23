@@ -1,24 +1,19 @@
 import { test,expect,type Page } from "@playwright/test";
 import type { ModelEntry,Profile,PolicyEntry,FixedEntry } from "../../src/api/routingSettings";
 const url="/tests/document-jobs/routing-settings.html";
-test("P12 evidence import and optional policy switches save drafts without inference",async({page})=>{
-  const s=await fixture(page);await page.goto(url);
+test("Model roles and legacy policies save without evaluation controls or inference",async({page})=>{
+  const s=await fixture(page);await page.goto(url);await page.getByText("Model capabilities, helper services and legacy policies",{exact:true}).click();
   await page.locator(".routing-card").filter({hasText:"Cloud reasoning"}).getByRole("button",{name:"Edit profile",exact:true}).click();
-  await page.getByText("Held-out model evaluations (0)",{exact:true}).click();
-  const row={id:"fixture-record",source:"synthetic",dataset_sha256:"a".repeat(64),families_sha256:"b".repeat(64),profile_sha256:"c".repeat(64),evaluator_version:"fixture",
-    purpose:"primary",families:40,passed:40,reviewed:false,workload:{task:"general",minimum_tier:"balanced",input_tokens:256,output_tokens:128,
-      tools:false,vision:false,structured_output:false,fresh_information:false,language:null,effort:null,uncertain:false}};
-  await page.getByLabel("Import evaluation JSON").setInputFiles({name:"evidence.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify([row]))});
-  await page.getByLabel("Reviewed evaluation fixture-record").check();
+  await page.getByLabel("Model tier",{exact:true}).selectOption("advanced");
+  await expect(page.getByLabel("Import evaluation JSON")).toHaveCount(0);
   await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
-  expect(s.models[0].profile!.quality_evidence![0]).toMatchObject({source:"synthetic",reviewed:true});
+  expect(s.models[0].profile!.tier).toBe("advanced");
   await page.getByRole("button",{name:"policies",exact:true}).click();await page.getByRole("button",{name:"New deployment policy"}).click();
-  await page.getByLabel("Policy name").fill("Reviewed routing");await page.getByLabel("Checked default model").selectOption(cloud);
-  await page.getByLabel("Rank with reviewed model evaluations").check();await page.getByLabel("Quality escalation for stateless API").check();
-  await page.getByLabel("Maximum calls",{exact:true}).fill("2");await page.getByLabel("Run output limit per call").fill("128");
-  await page.getByLabel("Run total token limit").fill("16000");await page.getByLabel("Run duration limit (ms)").fill("30000");
+  await page.getByLabel("Policy name").fill("My rules");await page.getByLabel("Checked default model").selectOption(cloud);
+  await expect(page.getByLabel("Rank with reviewed model evaluations")).toHaveCount(0);
+  await expect(page.getByLabel("Quality escalation for stateless API")).toHaveCount(0);
   await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
-  expect(s.policies.at(-1)!.policy).toMatchObject({learned_ranking:true,quality_escalation:true,rollout:"off"});
+  expect(s.policies.at(-1)!.policy).toMatchObject({learned_ranking:false,quality_escalation:false,rollout:"off"});
   expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
 });
 const cloud="11111111-1111-4111-8111-111111111111",local="22222222-2222-4222-8222-222222222222",own="33333333-3333-4333-8333-333333333333";
@@ -77,7 +72,7 @@ async function fixture(page:Page) {
   });return s;
 }
 test("Management loads without paid calls or gate changes; profiles retain drafts on conflict",async({page})=>{
-  const s=await fixture(page);await page.goto(url);await expect(page.getByText("Cloud reasoning",{exact:true})).toBeVisible();
+  const s=await fixture(page);await page.goto(url);await page.getByText("Model capabilities, helper services and legacy policies",{exact:true}).click();await expect(page.getByText("Cloud reasoning",{exact:true})).toBeVisible();
   expect(s.requests.filter(r=>r.method!=="GET")).toHaveLength(0);await expect(page.getByText("Personal model",{exact:true})).toHaveCount(0);
   await page.locator(".routing-card").filter({hasText:"Local small"}).getByRole("button",{name:"Edit profile",exact:true}).click();
   await page.getByLabel("Context tokens",{exact:true}).fill("32000");await page.getByLabel("Maximum output tokens",{exact:true}).fill("4096");
@@ -101,7 +96,7 @@ test("Management loads without paid calls or gate changes; profiles retain draft
   expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
 });
 test("Policy rules, separate embedding stages and explicit bounded previews use saved revisions",async({page})=>{
-  const s=await fixture(page);await page.goto(url);await page.getByRole("button",{name:"policies",exact:true}).click();await page.getByRole("button",{name:"New deployment policy"}).click();
+  const s=await fixture(page);await page.goto(url);await page.getByText("Model capabilities, helper services and legacy policies",{exact:true}).click();await page.getByRole("button",{name:"policies",exact:true}).click();await page.getByRole("button",{name:"New deployment policy"}).click();
   await page.getByLabel("Policy name").fill("Weather routing");await page.getByLabel("Strategy",{exact:true}).selectOption("hybrid");await page.getByLabel("Rollout",{exact:true}).selectOption("shadow");
   await page.getByLabel("Checked default model").selectOption(cloud);await page.getByLabel("Judge model",{exact:true}).selectOption(cloud);await page.getByLabel("Run cost limit (USD)").fill("0.01");
   await page.getByLabel("Restrict provider pool").check();await page.getByLabel("Cloud reasoning",{exact:true}).check();await page.getByLabel("Local small",{exact:true}).check();
@@ -131,7 +126,8 @@ test("Policy rules, separate embedding stages and explicit bounded previews use 
 test("Personal policies remain available with BYOK off; shared writes and failed discovery are blocked",async({page})=>{
   const s=await fixture(page);s.manager=false;s.byok=false;s.failed=true;await page.goto(`${url}?surface=personal`);
   await expect(page.getByRole("alert")).toContainText("unavailable");expect(s.requests.filter(r=>r.path.endsWith("/catalog"))).toHaveLength(0);
-  s.failed=false;await page.getByRole("button",{name:"Retry routing management"}).click();await expect(page.getByText("Cloud reasoning",{exact:true})).toBeVisible();
+  s.failed=false;await page.getByRole("button",{name:"Retry routing management"}).click();
+  await page.getByText("Model capabilities, helper services and legacy policies",{exact:true}).click();await expect(page.getByText("Cloud reasoning",{exact:true})).toBeVisible();
   await expect(page.getByRole("button",{name:"Edit profile",exact:true})).toHaveCount(0);await expect(page.getByText("Personal model",{exact:true})).toHaveCount(0);
   await page.getByRole("button",{name:"policies",exact:true}).click();await expect(page.getByRole("button",{name:"Edit policy",exact:true})).toHaveCount(0);
   await page.getByRole("button",{name:"New personal policy"}).click();await page.getByLabel("Policy name").fill("My cloud policy");await page.getByLabel("Checked default model").selectOption(cloud);
@@ -142,7 +138,7 @@ test("Personal policies remain available with BYOK off; shared writes and failed
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });
 test("API alias activation is explicit, collision conflicts preserve the draft and gate stays separate",async({page})=>{
-  const s=await fixture(page);await page.goto(url);await page.getByText("API Auto alias",{exact:true}).click();
+  const s=await fixture(page);await page.goto(url);await page.getByText("Model capabilities, helper services and legacy policies",{exact:true}).click();await page.getByText("API Auto alias",{exact:true}).click();
   expect(s.requests.filter(r=>r.method!=="GET")).toHaveLength(0);
   await page.getByLabel("API Auto alias name",{exact:true}).fill("fosnie-route/auto");await page.getByLabel("Enable API Auto alias",{exact:true}).check();
   s.aliasConflict=true;await page.getByRole("button",{name:"Save API alias",exact:true}).click();
@@ -156,7 +152,7 @@ test("API alias activation is explicit, collision conflicts preserve the draft a
 });
 
 test("Nested rules, main model pool and judge limits survive save and reload",async({page})=>{
-  const s=await fixture(page);await page.goto(url);await page.getByRole("button",{name:"policies",exact:true}).click();
+  const s=await fixture(page);await page.goto(url);await page.getByText("Model capabilities, helper services and legacy policies",{exact:true}).click();await page.getByRole("button",{name:"policies",exact:true}).click();
   await page.getByRole("button",{name:"New deployment policy"}).click();await page.getByLabel("Policy name").fill("Local executor with cloud judge");
   await page.getByLabel("Strategy",{exact:true}).selectOption("hybrid");await page.getByLabel("Checked default model").selectOption(local);
   await page.getByLabel("Judge model",{exact:true}).selectOption(cloud);await page.getByText("Judge limits",{exact:true}).click();

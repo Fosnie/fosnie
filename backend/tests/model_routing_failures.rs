@@ -59,6 +59,7 @@ async fn fixture(pool:sqlx::PgPool)->anyhow::Result<()> {
     let mut policy=store::save_policy(&state,&actor,policy.id,store::SavePolicy{label:"Faults".into(),scope:"deployment".into(),expected_revision:0,is_default:true,policy}).await?;
     browser::set_enabled(axum::extract::State(state.clone()),fosnie_backend::auth::keycloak::AuthUser(actor.clone()),Json(fosnie_backend::http::voice_routing::Enabled{enabled:true})).await?;
     for m in 0..=5 {
+        sqlx::query("DELETE FROM routing_health_scopes").execute(&pool).await?;
         sqlx::query("DELETE FROM routing_provider_health").execute(&pool).await?;sqlx::query("DELETE FROM routing_credential_health").execute(&pool).await?;
         policy.constraints.max_calls=Some(if m==3 {1}else{4});
         let previous=policy.revision;let id=policy.id;
@@ -89,15 +90,22 @@ async fn fixture(pool:sqlx::PgPool)->anyhow::Result<()> {
         }
     }
     // Cooldown scope, key grouping and a rotated revision do not leak key material.
+    sqlx::query("DELETE FROM routing_health_scopes").execute(&pool).await?;
     sqlx::query("DELETE FROM routing_provider_health").execute(&pool).await?;sqlx::query("DELETE FROM routing_credential_health").execute(&pool).await?;
-    let target=|id,model:&str|InferenceTarget{schema_version:1,provider_id:id,provider_revision:1,profile_revision:1,adapter:AdapterKind::OpenaiChat,
-        base_url:"https://quota.example/v1".into(),model:model.into(),api_key:"private-shared-key".into(),effort:None};
-    let first=target(a,"failure-primary");let alternate=target(b,"failure-alternate");
+    sqlx::query("UPDATE provider_configs SET model=model||'-health' WHERE id=ANY($1)").bind(vec![a,b]).execute(&pool).await?;
+    let target=|id,model:&str|InferenceTarget{schema_version:1,provider_id:id,provider_revision:2,profile_revision:1,adapter:AdapterKind::OpenaiChat,
+        base_url:"https://quota.example/v1".into(),model:model.into(),api_key:"private-shared-key".into(),effort:None,generation:None,variant:None};
+    let first=target(a,"failure-primary-health");let alternate=target(b,"failure-alternate-health");
     health::register(&state,&first,CallPurpose::Final).await?;health::register(&state,&alternate,CallPurpose::Final).await?;
     health::note(&state,&first,CallPurpose::Final,&failure::ProviderFailure{schema_version:1,kind:fallback::FailureKind::QuotaExhausted,before_output:true,retry_after_seconds:Some(15)}).await?;
     assert!(health::blocked(&state,&alternate.reference(),CallPurpose::Final).await?.is_some());
     sqlx::query("UPDATE provider_configs SET model=model||'-rotated' WHERE id=$1").bind(a).execute(&pool).await?;
-    assert!(health::blocked(&state,&alternate.reference(),CallPurpose::Final).await?.is_none());
+    assert!(health::blocked(&state,&alternate.reference(),CallPurpose::Final).await?.is_some(),"renaming one model cannot erase a shared credential quota");
+    let mut rotated=alternate.clone();rotated.api_key="private-rotated-key".into();
+    rotated.provider_revision=sqlx::query_scalar("UPDATE provider_configs SET model=model||'-rotated' WHERE id=$1 RETURNING routing_revision").bind(b).fetch_one(&pool).await?;
+    rotated.model.push_str("-rotated");
+    health::register(&state,&rotated,CallPurpose::Final).await?;
+    assert!(health::blocked(&state,&rotated.reference(),CallPurpose::Final).await?.is_none(),"a genuinely changed ungrouped credential has a new binding");
     let raw:Vec<String>=sqlx::query_scalar("SELECT binding_hash FROM routing_credential_bindings").fetch_all(&pool).await?;
     assert!(raw.iter().all(|v|v.len()==64 && !v.contains("private")));
     policy.technical_fallback=false;server.abort();Ok(())

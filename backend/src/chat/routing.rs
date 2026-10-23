@@ -218,6 +218,7 @@ impl Retrieval {
 
 pub(super) enum Generation {
     Legacy(ml::GenStream),
+    Validated {events:std::collections::VecDeque<ml::GenEvent>,effective:RoutedRun},
     Routed {stream:Option<crate::model_routing::run::RoutedStream>,effective:RoutedRun,state:AppState,
         request:GenerateRequest,message_id:Uuid,observed:bool},
 }
@@ -228,14 +229,14 @@ impl Generation {
             Some(run)=>{
                 authorize(state,run).await?;
                 let mut effective=run.clone();
-                let stream=match effective.generate(state,request.clone()).await {
+                let stream=match Box::pin(effective.generate(state,request.clone())).await {
                     Ok(stream)=>stream,
                     Err(error)=>{
                         let Some(failure)=routing::failure::ProviderFailure::from_error(&error).filter(|f|f.before_output) else {return Err(error);};
-                        let Some(next)=effective.retry_browser_before_output(state,failure.kind).await? else {return Err(error);};
+                        let Some(next)=Box::pin(effective.retry_browser_before_output(state,failure.kind)).await? else {return Err(error);};
                         sqlx::query("UPDATE messages SET routing_attempts=$2 WHERE id=$1 AND chat_id=$3 AND turn_id=$4")
                             .bind(message_id).bind(json!([next.fallback_attempt()])).bind(next.context(CallPurpose::Final).chat_id).bind(next.plan().id).execute(&state.pg).await?;
-                        let stream=next.generate(state,request.clone()).await?;effective=next;stream
+                        let stream=Box::pin(next.generate(state,request.clone())).await?;effective=next;stream
                     }
                 };
                 record_actual(state,&effective,message_id,CallPurpose::Final).await?;
@@ -246,6 +247,7 @@ impl Generation {
     pub(super) async fn recv(&mut self)->Result<Option<ml::GenEvent>> {
         match self {
             Self::Legacy(stream)=>Ok(stream.recv().await),
+            Self::Validated{events,effective}=>{effective.validate_access().await?;Ok(events.pop_front())},
             Self::Routed {stream,effective,state,request,message_id,observed}=>loop {
                 let result=stream.as_mut().ok_or(RoutingError::Cancelled)?.recv().await;
                 let value=match result {
@@ -254,11 +256,11 @@ impl Generation {
                         let failure=routing::failure::ProviderFailure::from_error(&error);
                         if !*observed && failure.as_ref().is_some_and(|f|f.before_output) {
                             stream.take();
-                            if let Some(next)=effective.retry_browser_before_output(state,failure.unwrap().kind).await? {
+                            if let Some(next)=Box::pin(effective.retry_browser_before_output(state,failure.unwrap().kind)).await? {
                                 let attempt=next.fallback_attempt().unwrap();
                                 sqlx::query("UPDATE messages SET routing_attempts=$2 WHERE id=$1 AND chat_id=$3 AND turn_id=$4")
                                     .bind(*message_id).bind(json!([attempt])).bind(next.context(CallPurpose::Final).chat_id).bind(next.plan().id).execute(&state.pg).await?;
-                                let replacement=next.generate(state,request.clone()).await?;
+                                let replacement=Box::pin(next.generate(state,request.clone())).await?;
                                 record_actual(state,&next,*message_id,CallPurpose::Final).await?;
                                 *effective=next;*stream=Some(replacement);continue;
                             }
@@ -296,9 +298,15 @@ pub async fn prepare_selected(
     selection:routing::ModelSelection,requirements:routing::WorkloadRequirements,
     fixed_roles:&[routing::fixed::FixedRole],cancel:&Notify,
 ) -> Result<RoutedRun> {
-    prepare_selected_in(state,actor,chat_id,turn_id,content,selection,requirements,fixed_roles,cancel,None).await
+    prepare_selected_in(state,actor,chat_id,turn_id,content,selection,requirements,fixed_roles,cancel,None,None).await
 }
 
+pub async fn prepare_vnext(state:&AppState,actor:&AuthContext,chat_id:Uuid,turn_id:Uuid,content:&str,
+    intent:fosnie_protocol::routing_vnext::RoutingIntentV2,requirements:routing::WorkloadRequirements,
+    fixed_roles:&[routing::fixed::FixedRole],cancel:&Notify)->Result<RoutedRun> {
+    intent.validate().map_err(RoutingError::Invalid)?;
+    prepare_selected_in(state,actor,chat_id,turn_id,content,intent.selection.clone(),requirements,fixed_roles,cancel,None,Some(intent)).await
+}
 /// Adopt a final transcript into the already-spent audio run. The caller must
 /// create this pending run with the authorized chat/project before STT. Its
 /// access witness and original selection survive; no new ledger is constructed.
@@ -307,13 +315,13 @@ pub async fn prepare_voice(state:&AppState,run:RoutedRun,content:&str,requiremen
     let context=run.context(CallPurpose::Primary);
     let chat=context.chat_id.ok_or(RoutingError::Invalid("voice selection requires an authorized conversation"))?;
     let selection=run.plan().selection.clone();
-    prepare_selected_in(state,&context.actor,chat,context.run_id,content,selection,requirements,fixed_roles,cancel,Some(run)).await
+    prepare_selected_in(state,&context.actor,chat,context.run_id,content,selection,requirements,fixed_roles,cancel,Some(run),None).await
 }
 
 fn prepare_selected_in<'a>(
     state:&'a AppState,actor:&'a AuthContext,chat_id:Uuid,turn_id:Uuid,content:&'a str,
     selection:routing::ModelSelection,mut requirements:routing::WorkloadRequirements,
-    fixed_roles:&'a [routing::fixed::FixedRole],cancel:&'a Notify,pending:Option<RoutedRun>,
+    fixed_roles:&'a [routing::fixed::FixedRole],cancel:&'a Notify,pending:Option<RoutedRun>,vnext:Option<fosnie_protocol::routing_vnext::RoutingIntentV2>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<RoutedRun>>+Send+'a>> {
     Box::pin(async move {
     let prepare=async {
@@ -356,7 +364,7 @@ fn prepare_selected_in<'a>(
         if rerank { fixed_roles.insert(routing::fixed::FixedRole::Rerank); }
     }
     let history=load_history(&state.pg,chat_id).await?;
-    let conversation=serde_json::to_string(&json!({"history":history.iter().map(HistMsg::to_value).collect::<Vec<_>>(),"prompt":content}))
+    let conversation=serde_json::to_string(&json!({"system":effective_prompt(&agent.system_prompt,&state.boot.default_system_prompt),"history":history.iter().map(HistMsg::to_value).collect::<Vec<_>>(),"prompt":content,"requirements":requirements}))
         .map_err(|_|RoutingError::Invalid("invalid routing conversation"))?;
     requirements.input_tokens=requirements.input_tokens.max(u32::try_from(conversation.len().saturating_add(1024))
         .map_err(|_|RoutingError::BudgetExhausted)?);
@@ -364,7 +372,8 @@ fn prepare_selected_in<'a>(
     let fixed_roles=fixed_roles.into_iter().collect::<Vec<_>>();
     let select=async {match pending {
         Some(run)=>run.select_voice(state,requirements,&conversation,&fixed_roles,cancel).await,
-        None=>RoutedRun::selected(state,context,selection,requirements,&conversation,&fixed_roles,cancel).await,
+        None=>match vnext {Some(intent)=>RoutedRun::selected_vnext(state,context,intent,requirements,&conversation,&fixed_roles,cancel).await,
+        None=>RoutedRun::selected(state,context,selection,requirements,&conversation,&fixed_roles,cancel).await},
     }};
     match artefact {
         Some(intent)=>{let run=intent.guard(select).await?;run.with_artefact(intent)},

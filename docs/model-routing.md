@@ -1,12 +1,16 @@
 # Model routing in Core
 
-The catalog, policy API, rules/classifier/hybrid strategies, shared settings,
-supported chat callers and opt-in API alias are implemented behind explicit
-default-off gates. See [onboarding and release scope](model-routing-release.md)
-for local/cloud/mixed setup, off switches, supported callers and accounting limits.
-The [evaluation harness](model-routing-evaluation.md) provides reproducible
-synthetic replay and separately budgeted text evaluation. Independent deployment-specific quality and financial savings remain unestablished.
-See [first-shipment acceptance](model-routing-acceptance.md) for the completed contract scope.
+Open **Settings → Model routing** to create personal routing profiles, choose
+Everyday or Thorough, or build Custom Auto and Full Auto rules. Personal profiles
+and personal effort variants can use permitted shared models without BYOK or
+administrator rights. See [Routing profiles](model-routing-profiles.md) for setup
+and [Catalogue](model-routing-catalogue.md) for connections and model variants.
+
+Task type and complexity guide routing; explicit user assignments take priority.
+The same resolver enforces permissions, capabilities, locality and budgets.
+Routing does not require benchmarking, calibration or an economic certificate.
+Deployment administrators retain the existing caller enable/disable controls;
+see [onboarding and release scope](model-routing-release.md) for supported callers.
 Paired [desktop remote routing](model-routing-desktop.md) now shares the text
 composer and regeneration path with original device-key checks.
 
@@ -31,7 +35,8 @@ profiles cannot grant themselves that attestation.
 ## Current API
 
 Endpoints require Fosnie authentication. Shared writes use `providers.manage`
-through the RBAC seam. Personal profile writes require ownership and enabled BYOK.
+through the RBAC seam. Personal model-capability writes require ownership and
+enabled BYOK. Personal routing profiles and variants of shared models do not.
 No endpoint returns stored credentials.
 
 | Endpoint | Operation |

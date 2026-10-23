@@ -28,6 +28,7 @@
 
 mod frames;
 mod model_selection;
+pub mod routing_vnext;
 mod reasoning;
 
 pub use frames::{

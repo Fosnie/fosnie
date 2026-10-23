@@ -1,0 +1,32 @@
+// Copyright 2026 Private AI Ltd (SC881079)
+// SPDX-License-Identifier: Apache-2.0
+import { cloneElement, useId, useState, type ReactElement, type ReactNode } from "react";
+import type { Connection, Deployment } from "@/api/routingCatalogue";
+type Draft={schema_version:number;scope:string;label:string;expected_revision:number;enabled?:boolean;adapter?:string;base_url?:string;api_key?:string;clear_api_key?:boolean;quota_group_id?:string|null;
+ metadata?:{locality:string;locality_trusted:boolean};model?:string;connection_id?:string;expected_connection_revision?:number;reasoning_mode?:string|null;
+ provider_id?:string;expected_model_config_revision?:number;effort?:{kind:string;value?:string};generation?:Record<string,number|null>};
+function Field({label,children}:{label:string;children:ReactNode}) {
+ const id=useId();return <div className="routing-field"><label htmlFor={id}>{label}</label>{cloneElement(children as ReactElement<{id:string}>,{id})}</div>;
+}
+export function CatalogueEditor({title,initial,connections,models,manager,save,close}:{title:string;initial:unknown;connections:Connection[];models:Deployment[];manager:boolean;save:(v:unknown)=>Promise<void>;close:()=>void}) {
+ const [d,set]=useState(()=>structuredClone(initial) as Draft);const [error,err]=useState("");const [busy,setBusy]=useState(false);
+ const patch=(v:Partial<Draft>)=>set(d=>({...d,...v}));const kind=d.provider_id!==undefined?"variant":d.connection_id!==undefined?"model":"connection";
+ const model=models.find(m=>m.id===d.provider_id);
+ return <form className="routing-editor" aria-label={`${kind} editor`} onSubmit={e=>{e.preventDefault();setBusy(true);err("");void (async()=>{try{await save(d);}catch(e){err(e instanceof Error?e.message:"Save failed");}finally{setBusy(false);}})();}}><h3>{title}</h3><fieldset disabled={busy}><div className="routing-grid">
+ <Field label="Name"><input required maxLength={120} value={d.label} onChange={e=>patch({label:e.target.value})}/></Field>
+ {kind==="connection" && <><Field label="Adapter"><select value={d.adapter} onChange={e=>patch({adapter:e.target.value})}>{["openai_chat","openai_responses","anthropic","gemini"].map(v=><option key={v}>{v}</option>)}</select></Field>
+ <Field label="Endpoint"><input type="url" required value={d.base_url} onChange={e=>patch({base_url:e.target.value})}/></Field>
+ <Field label="Replace API key (leave blank to keep)"><input type="password" autoComplete="new-password" value={d.api_key ?? ""} onChange={e=>patch({api_key:e.target.value || undefined,clear_api_key:false})}/></Field>
+ <label><input type="checkbox" checked={d.clear_api_key ?? false} onChange={e=>patch({clear_api_key:e.target.checked,api_key:undefined})}/>Clear stored key</label>
+ <Field label="Locality"><select value={d.metadata?.locality ?? "unknown"} onChange={e=>patch({metadata:{locality:e.target.value,locality_trusted:false}})}>{["unknown","local","cloud"].map(v=><option key={v}>{v}</option>)}</select></Field>
+ {manager && <label><input type="checkbox" checked={d.metadata?.locality_trusted ?? false} onChange={e=>patch({metadata:{locality:d.metadata?.locality ?? "unknown",locality_trusted:e.target.checked}})}/>Attest locality</label>}
+ <Field label="Confirmed quota group ID (optional)"><input value={d.quota_group_id ?? ""} onChange={e=>patch({quota_group_id:e.target.value || null})}/></Field></>}
+ {kind==="model" && <><Field label="Model ID"><input required maxLength={256} value={d.model} onChange={e=>patch({model:e.target.value})}/></Field>
+ <Field label="Connection"><select required value={d.connection_id} onChange={e=>{const c=connections.find(c=>c.id===e.target.value);patch({connection_id:e.target.value,expected_connection_revision:c?.revision ?? 0});}}><option value="">Choose a connection</option>{connections.filter(c=>c.scope===d.scope).map(c=><option key={c.id} value={c.id}>{c.label || c.adapter}</option>)}</select></Field>
+ <Field label="Reasoning mode"><select value={d.reasoning_mode ?? ""} onChange={e=>patch({reasoning_mode:e.target.value || null})}><option value="">Adapter default</option>{["none","toggle","levels","budget","always_on"].map(v=><option key={v}>{v}</option>)}</select></Field></>}
+ {kind==="variant" && <><Field label="Model deployment"><select required disabled={d.expected_revision>0} value={d.provider_id} onChange={e=>{const m=models.find(m=>m.id===e.target.value);patch({provider_id:e.target.value,expected_model_config_revision:m?.model_config_revision ?? 0,effort:{kind:"provider_default"},generation:{}});}}><option value="">Choose a model</option>{models.map(m=><option key={m.id} value={m.id}>{m.label || m.model}</option>)}</select></Field>
+ <Field label="Effort"><select value={d.effort?.kind==="explicit"?d.effort.value:""} onChange={e=>patch({effort:e.target.value?{kind:"explicit",value:e.target.value}:{kind:"provider_default"}})}><option value="">Provider default</option>{model?.capabilities?.efforts.map(v=><option key={v}>{v}</option>)}</select></Field>
+ {(["max_output_tokens","max_reasoning_tokens","temperature_milli","top_p_milli","seed"] as const).map(key=><Field key={key} label={{max_output_tokens:"Maximum output tokens",max_reasoning_tokens:"Reasoning token budget",temperature_milli:"Temperature (0–2)",top_p_milli:"Top P (0–1)",seed:"Seed"}[key]}><input type="number" min={key==="seed"?undefined:key==="temperature_milli"?0:key==="top_p_milli"?0.001:1} step={key.endsWith("milli")?0.001:1} value={d.generation?.[key] == null?"":key.endsWith("milli")?d.generation[key]!/1000:d.generation[key]!} onChange={e=>patch({generation:{...d.generation,[key]:e.target.value===""?null:Math.round(Number(e.target.value)*(key.endsWith("milli")?1000:1))}})} placeholder="Provider default"/></Field>)}</>}
+ {d.enabled!==undefined && <label><input type="checkbox" checked={d.enabled} onChange={e=>patch({enabled:e.target.checked})}/>Enabled</label>}
+ </div><p className="ed-hint">{kind==="variant"?"Unsupported settings fail before inference. Each effort and generation configuration has its own saved configuration.":kind==="connection"?"Keys are write only. Quota groups are explicit account identities; matching model names do not imply shared quota.":"Saving does not make capabilities or quality verified. Refresh the model capability profile before routing."}</p><button className="btn btn-gold sm">Save</button><button type="button" className="btn btn-line sm" onClick={close}>Close</button></fieldset>{error && <p role="alert">{error} Your draft is preserved.</p>}</form>;
+}

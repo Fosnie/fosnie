@@ -25,13 +25,15 @@ impl ProviderFailure {
         FailureKind::Connection=>"provider_connection",FailureKind::Timeout=>"provider_timeout",
         FailureKind::RateLimited=>"provider_rate_limited",FailureKind::QuotaExhausted=>"provider_quota_exhausted",
         FailureKind::PaymentRequired=>"provider_payment_required",FailureKind::Unauthorized=>"provider_credentials",
-        FailureKind::InvalidRequest=>"provider_request_rejected",_=>"provider_unavailable"}}
+        FailureKind::AccessDenied=>"provider_model_access",FailureKind::ModelUnavailable=>"provider_model_unavailable",FailureKind::InvalidRequest=>"provider_request_rejected",_=>"provider_unavailable"}}
     pub fn message(&self)->&'static str {match self.kind {
         FailureKind::QuotaExhausted=>"The provider reported an exhausted quota. Choose another permitted model or contact the provider manager.",
         FailureKind::PaymentRequired=>"The provider requires a billing update. Choose another permitted model or contact the provider manager.",
         FailureKind::Unauthorized=>"The provider rejected its credentials or access. Check your own key or contact the provider manager.",
         FailureKind::RateLimited=>"The provider is rate limited. Wait or choose another permitted model.",
         FailureKind::Timeout=>"The model did not respond within the allowed time.",
+        FailureKind::AccessDenied=>"The provider denied access to this model. Review its permissions.",
+        FailureKind::ModelUnavailable=>"This model is unavailable at the provider. Refresh the model configuration.",
         FailureKind::InvalidRequest=>"The provider rejected this request. Check the model configuration and context limits.",
         _=>"The model is unavailable. Choose another permitted model or try again later."}}
     pub fn public(&self)->Value {json!({"schema_version":1,"code":self.code(),"source":"provider",

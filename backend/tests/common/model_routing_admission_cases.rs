@@ -40,11 +40,17 @@ pub fn check<'a>(pool: &'a sqlx::PgPool, actor: &'a AuthContext, provider: Uuid)
         fosnie_backend::providers::resolve_llm(&state,actor.user_id,Some(legacy),None).await?;
         fosnie_backend::providers::resolve_llm(&state,actor.user_id,Some(legacy),Some(provider)).await?;
         assert_eq!(resolved.load(Ordering::SeqCst),2,"migrated legacy Manual remains compatible");
-        for evidence in ["auto","intent","decision","voice","api","branch","job"] {
+        for evidence in ["auto","v2_manual","v2_default","v2_auto","intent","decision","voice","api","branch","job"] {
             let chat=Uuid::now_v7(); let message=Uuid::now_v7(); let turn=Uuid::now_v7();
             sqlx::query("INSERT INTO chats(id,owner_user_id) VALUES($1,$2)").bind(chat).bind(actor.user_id).execute(pool).await?;
             match evidence {
                 "auto" => {sqlx::query("UPDATE chats SET model_selection='{\"mode\":\"auto\"}' WHERE id=$1").bind(chat).execute(pool).await?;},
+                "v2_manual"|"v2_default"|"v2_auto" => {
+                    let mode=evidence.strip_prefix("v2_").unwrap();
+                    let selection=if mode=="manual" {json!({"mode":mode,"provider_id":provider})}else{json!({"mode":mode})};
+                    sqlx::query("UPDATE chats SET model_selection=$2 WHERE id=$1").bind(chat)
+                        .bind(json!({"schema_version":2,"required_profile_version":1,"selection":selection})).execute(pool).await?;
+                },
                 "intent"|"decision" => {
                     sqlx::query("INSERT INTO messages(id,chat_id,role,sequence_number,content,routing_selection,routing_decision) VALUES($1,$2,'assistant',1,'Saved answer',$3,$4)")
                         .bind(message).bind(chat).bind((evidence=="intent").then(||json!({"mode":"default"})))

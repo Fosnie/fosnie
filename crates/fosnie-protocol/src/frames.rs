@@ -31,6 +31,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub enum ClientFrame {
     #[serde(rename = "chat.routed.send")]
     ChatRoutedSend { request: crate::RoutedChatRequest },
+    #[serde(rename = "chat.routed.v2.send")]
+    ChatRoutedSendV2 { request: crate::routing_vnext::RoutedChatRequestV2 },
     #[serde(rename = "chat.send")]
     ChatSend {
         #[serde(default)]

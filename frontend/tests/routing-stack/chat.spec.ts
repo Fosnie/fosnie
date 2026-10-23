@@ -2,13 +2,14 @@ import { test, expect } from "@playwright/test";
 
 test("Auto uses real Rust/ML/WS, persists actual metadata and survives policy Off/reenable", async ({ page, request }) => {
   const receive: unknown[] = [];
+  let historyUrl = "";
   page.on("websocket", socket => socket.on("framereceived", e => {
     try { receive.push(JSON.parse(String(e.payload))); } catch { /* Non-JSON is checked by product transport. */ }
   }));
   const send = async (content: string) => {
     const completed = page.waitForResponse(r => r.url().includes("/messages") && r.status() === 200);
     await page.locator("textarea.comp-in").fill(content); await page.locator("textarea.comp-in").press("Enter");
-    await completed;
+    try { historyUrl = (await completed).url(); } catch(error) {console.log("Routing stack errors:",JSON.stringify(receive.filter((f:any)=>f.type==="chat.error")));throw error;}
     await expect(page.getByTitle("Stop generating")).toHaveCount(0);
   };
   expect(process.env.FOSNIE_E2E_AGENT).toBeTruthy();
@@ -18,6 +19,7 @@ test("Auto uses real Rust/ML/WS, persists actual metadata and survives policy Of
   await expect(page.getByLabel("Chat model", { exact: true })).toBeEnabled();
   await expect.poll(() => receive.some((f: any) => f.type === "hello")).toBe(true);
   await page.getByLabel("Chat model", { exact: true }).selectOption("auto");
+  await page.getByLabel("Save as this chat's binding", { exact: true }).check();
   await page.getByLabel("Routing objective").selectOption("economy");
   await send("A simple synthetic routing task");
   await expect(page.getByLabel("Actual model")).toContainText("routing-e2e-local");
@@ -45,10 +47,18 @@ test("Auto uses real Rust/ML/WS, persists actual metadata and survives policy Of
   await expect.poll(() => receive.filter((f: any) => f.type === "chat.error").length).toBe(before + 1);
   await setPolicy("off", local);
   await send("Off uses the checked local default");
-  await expect(page.getByLabel("Actual model")).toHaveCount(2);
+  await expect(page.getByLabel("Actual model").filter({hasText:"No actual model recorded"})).toHaveCount(1);
+  await expect(page.getByLabel("Actual model").last()).toContainText("routing-e2e-local");
   await setPolicy("active", local);
   await send("Re-enabled Auto remains local");
-  await expect(page.getByLabel("Actual model")).toHaveCount(3);
+  await expect(page.getByLabel("Actual model").last()).toContainText("routing-e2e-local");
+  // The product virtualizes older bubbles. Check complete persisted history
+  // through its real owner-scoped API instead of counting mounted DOM nodes.
+  const history = await (await request.get(historyUrl)).json();
+  const assistants = history.filter((m: any) => m.role === "assistant");
+  expect(assistants.filter((m: any) => m.routing?.actual?.model === "routing-e2e-local")).toHaveLength(3);
+  expect(assistants.filter((m: any) => m.routing?.status === "interrupted" && !m.routing.actual)).toHaveLength(1);
+  expect(assistants.every((m: any) => m.routing?.selection_mode === "auto")).toBe(true);
   const gate = await request.put("/api/routing/browser-chat", { data: { enabled: false } });
   expect(gate.status()).toBe(200);
   await page.reload();

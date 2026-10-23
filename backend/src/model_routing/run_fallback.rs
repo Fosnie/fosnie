@@ -7,10 +7,11 @@ use crate::model_routing::fallback::{Attempt,AttemptState,FailureKind};
 
 impl RoutedRun {
     async fn retry_plan(&self,state:&crate::AppState,failure:FailureKind)->crate::Result<Option<(RoutingConstraints,Attempt)>> {
+        if self.plan().vnext_context.as_ref().is_some_and(|v|v.recovery.is_some()) {return self.vnext_retry_plan(state,failure).await;}
         let Some(witness)=self.0.retry.clone() else {return Ok(None);};
         let requirements=&witness.requirements;
         self.guard(async {
-            let policy=store::load_policy(state,&self.0.context.actor,Some(self.plan().decision.policy_id)).await?;
+            let policy=store::load_policy_supported(state,&self.0.context.actor,Some(self.plan().decision.policy_id),self.plan().schema_version).await?;
             if policy.revision!=self.plan().decision.policy_revision {return Err(RoutingError::NeedsReplan.into());}
             if !AttemptState::default().can_retry(&policy,&self.plan().selection,failure) {return Ok(None);}
             engine::validate_policy(&policy)?;
@@ -50,7 +51,7 @@ impl RoutedRun {
             || !self.0.access.as_ref().is_some_and(|a|a.plain_text_retry())
             || self.0.durable.is_some() || self.0.artefact.is_some() || !self.plan().fixed_assignments.is_empty()
             || self.0.children.load(std::sync::atomic::Ordering::SeqCst)!=0 || self.0.browser_retry_claimed.load(std::sync::atomic::Ordering::SeqCst)
-            || self.0.retry.as_ref().is_none_or(|w|w.requirements.tools) {
+            || (self.0.retry.as_ref().is_none_or(|w|w.requirements.tools) && !self.plan().vnext_context.as_ref().is_some_and(|v|v.recovery.as_ref().is_some_and(|r|r.technical) && !v.workload.tools)) {
             return Ok(None);
         }
         let _idle=self.0.serial.try_lock().map_err(|_|RoutingError::Incompatible("retry requires an idle text run"))?;
@@ -69,6 +70,7 @@ impl RoutedRun {
         }
         // Explicit helper assignments are not replaced. No helpers are started
         // on this bounded retry path; browser title generation is deferred/skipped.
+        if plan.profile_snapshot.is_some() {Self::apply_vnext_replacement(&mut plan,&attempt,None);}
         plan.constraints=constraints;plan.decision.reason_codes.push("technical_fallback".into());plan.decision.estimated_cost_microusd=None;
         Ok(Some(Self(std::sync::Arc::new(Inner {context:self.0.context.clone(),plan,budget:self.0.budget.clone(),
             client:super::transport::PipelineClient::from_state(state)?,cancelled:self.0.cancelled.clone(),durable:None,
@@ -84,6 +86,7 @@ impl RoutedRun {
     /// runtime ownership also proves there are no outstanding helpers/streams.
     pub(crate) async fn retry_stateless(&mut self,state:&crate::AppState,failure:FailureKind)->crate::Result<bool> {
         self.check()?;
+        if self.plan().vnext_context.as_ref().is_some_and(|v|v.recovery.is_some()) {return Box::pin(self.retry_vnext_stateless(state,failure,None)).await;}
         let Some(witness)=self.0.retry.clone() else {return Ok(false);};
         let requirements=&witness.requirements;
         if Arc::strong_count(&self.0)!=1 || self.0.durable.is_some() || self.0.access.is_some()

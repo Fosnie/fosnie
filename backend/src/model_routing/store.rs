@@ -25,7 +25,7 @@ pub async fn byok_enabled(state: &AppState) -> Result<bool> {
 
 pub async fn catalog(state: &AppState, ctx: &AuthContext) -> Result<Vec<CatalogEntry>> {
     let user = if byok_enabled(state).await? { ctx.user_id } else { None };
-    Ok(sqlx::query_as::<_, CatalogEntry>("SELECT p.id, p.label, p.scope, p.enabled, p.model, p.routing_revision AS provider_revision, m.revision AS profile_revision, m.profile FROM provider_configs p LEFT JOIN model_profiles m ON m.provider_id=p.id WHERE p.role='llm' AND (p.scope='deployment' OR (p.scope='user' AND p.scope_id=$1)) ORDER BY p.scope, p.label, p.id")
+    Ok(sqlx::query_as::<_, CatalogEntry>("SELECT p.id, p.label, p.scope, p.enabled AND CASE WHEN p.connection_id IS NULL THEN true ELSE COALESCE(c.enabled,false) END AS enabled, p.model, p.routing_revision AS provider_revision, m.revision AS profile_revision, m.profile FROM provider_configs p LEFT JOIN provider_configs c ON c.id=p.connection_id AND c.role='connection' LEFT JOIN model_profiles m ON m.provider_id=p.id WHERE p.role='llm' AND (p.scope='deployment' OR (p.scope='user' AND p.scope_id=$1)) ORDER BY p.scope, p.label, p.id")
         .bind(user).fetch_all(&state.pg).await?)
 }
 
@@ -49,6 +49,8 @@ pub async fn save_profile(state: &AppState, ctx: &AuthContext, id: Uuid, mut bod
     if body.expected_revision < 0 || body.profile.provider_id != id { return Err(RoutingError::Invalid("profile identity or revision").into()); }
     let admin = state.rbac.has_permission(&state.pg, ctx, permissions::PROVIDERS_MANAGE).await?;
     let mut tx = state.pg.begin().await?;
+    let owner:Option<Uuid>=sqlx::query_scalar("SELECT scope_id FROM provider_configs WHERE id=$1").bind(id).fetch_one(&mut *tx).await?;
+    vnext::connections::mutation_lock(&mut tx,owner).await?;
     let row: Option<(String, Option<Uuid>, i64, Option<String>)> = sqlx::query_as("SELECT scope, scope_id, routing_revision, model FROM provider_configs WHERE id=$1 AND role='llm' FOR UPDATE")
         .bind(id).fetch_optional(&mut *tx).await?;
     let (scope, owner, revision, model) = row.ok_or(RoutingError::ProviderUnavailable)?;
@@ -59,6 +61,10 @@ pub async fn save_profile(state: &AppState, ctx: &AuthContext, id: Uuid, mut bod
     }
     if body.profile.locality_trusted && !admin { return Err(RoutingError::Forbidden.into()); }
     if body.profile.provider_revision != revision || model.as_ref() != Some(&body.profile.model) { return Err(RoutingError::NeedsReplan.into()); }
+    let adapter:Option<String>=sqlx::query_scalar("SELECT connection_adapter FROM provider_configs WHERE id=$1").bind(id).fetch_one(&mut *tx).await?;
+    if adapter.is_some_and(|a|serde_json::to_value(body.profile.adapter).ok().and_then(|v|v.as_str().map(str::to_owned)).as_deref()!=Some(&a)) {
+        return Err(RoutingError::Incompatible("profile adapter must match the connection").into());
+    }
     let profile = &mut body.profile;
     if !profile.quality_evidence.is_empty() && !admin {return Err(RoutingError::Forbidden.into());}
     engine::validate_auto_effort(profile)?;
@@ -95,15 +101,18 @@ pub struct PolicyEntry {
     pub revision: i64,
     pub is_default: bool,
     pub policy: Value,
+    pub required_profile_version: i32,
 }
 
 pub async fn policies(state: &AppState, ctx: &AuthContext) -> Result<Vec<PolicyEntry>> {
-    Ok(sqlx::query_as::<_, PolicyEntry>("SELECT id,label,scope,revision,is_default,policy FROM routing_policies WHERE scope='deployment' OR (scope='user' AND scope_id=$1) ORDER BY scope,label,id")
+    Ok(sqlx::query_as::<_, PolicyEntry>("SELECT id,label,scope,revision,is_default,policy,CASE WHEN profile_config IS NULL THEN 1 ELSE 2 END AS required_profile_version FROM routing_policies WHERE scope='deployment' OR (scope='user' AND scope_id=$1) ORDER BY scope,label,id")
         .bind(ctx.user_id).fetch_all(&state.pg).await?)
 }
 
 pub async fn delete_profile(state: &AppState, ctx: &AuthContext, id: Uuid, expected_revision: i64) -> Result<()> {
     let mut tx = state.pg.begin().await?;
+    let owner:Option<Uuid>=sqlx::query_scalar("SELECT scope_id FROM provider_configs WHERE id=$1").bind(id).fetch_one(&mut *tx).await?;
+    vnext::connections::mutation_lock(&mut tx,owner).await?;
     let row: Option<(String, Option<Uuid>)> = sqlx::query_as("SELECT scope,scope_id FROM provider_configs WHERE id=$1 AND role='llm' FOR UPDATE")
         .bind(id).fetch_optional(&mut *tx).await?;
     let (scope, owner) = row.ok_or(RoutingError::ProviderUnavailable)?;
@@ -118,10 +127,14 @@ pub async fn delete_profile(state: &AppState, ctx: &AuthContext, id: Uuid, expec
 }
 
 pub async fn load_policy(state: &AppState, ctx: &AuthContext, id: Option<Uuid>) -> Result<RoutingPolicy> {
+    load_policy_supported(state,ctx,id,1).await
+}
+pub async fn load_policy_supported(state: &AppState, ctx: &AuthContext, id: Option<Uuid>, version:u32) -> Result<RoutingPolicy> {
     let entries = policies(state, ctx).await?;
     let entry = if let Some(id) = id { entries.into_iter().find(|p| p.id == id) }
         else { entries.into_iter().filter(|p| p.is_default).max_by_key(|p| p.scope == "user") }
         .ok_or_else(|| AppError::NotFound("routing policy is unavailable".into()))?;
+    if entry.required_profile_version as u32 > version {return Err(RoutingError::Invalid("profile requires negotiated routing v2").into());}
     let policy: RoutingPolicy = serde_json::from_value(entry.policy).map_err(|_| RoutingError::Invalid("stored policy"))?;
     if policy.revision != entry.revision || policy.id != entry.id { return Err(RoutingError::NeedsReplan.into()); }
     Ok(policy)
@@ -145,6 +158,10 @@ pub struct SavePolicy {
 }
 
 pub async fn save_policy(state: &AppState, ctx: &AuthContext, id: Uuid, mut body: SavePolicy) -> Result<RoutingPolicy> {
+    save_policy_extended(state,ctx,id,&mut body,None).await
+}
+pub(super) async fn save_policy_extended(state: &AppState, ctx: &AuthContext, id: Uuid, body: &mut SavePolicy,
+    extension:Option<&vnext::profile::RoutingProfileConfig>) -> Result<RoutingPolicy> {
     if body.policy.id != id || body.expected_revision < 0 || body.label.trim().is_empty() || body.label.chars().count() > 120 {
         return Err(RoutingError::Invalid("policy identity, label or revision").into());
     }
@@ -155,6 +172,7 @@ pub async fn save_policy(state: &AppState, ctx: &AuthContext, id: Uuid, mut body
     };
     body.policy.revision = body.expected_revision.checked_add(1).ok_or(RoutingError::Invalid("revision overflow"))?;
     engine::validate_policy(&body.policy)?;
+    if let Some(config)=extension {config.validate_policy_extension(&body.policy)?;}
     let candidates = catalog(state, ctx).await?;
     let visible: std::collections::BTreeSet<_> = candidates.into_iter().filter(|p| p.enabled && (owner.is_some() || p.scope == "deployment")).map(|p| p.id).collect();
     let mut refs = Vec::new();
@@ -173,6 +191,11 @@ pub async fn save_policy(state: &AppState, ctx: &AuthContext, id: Uuid, mut body
         if ids.iter().any(|id|!permitted.contains(id)) { return Err(RoutingError::Forbidden.into()); }
     }
     let mut tx = state.pg.begin().await?;
+    vnext::connections::mutation_lock(&mut tx,owner).await?;
+    let existing_extension:Option<Value>=sqlx::query_scalar("SELECT profile_config FROM routing_policies WHERE id=$1 FOR UPDATE")
+        .bind(id).fetch_optional(&mut *tx).await?.flatten();
+    if existing_extension.is_some() && extension.is_none() {return Err(RoutingError::Invalid("v1 cannot replace a v2 profile").into());}
+    if let Some(config)=extension {vnext::profiles::validate_references(state,ctx,owner,config).await?;}
     let existing: Option<(String, Option<Uuid>, i64)> = sqlx::query_as("SELECT scope,scope_id,revision FROM routing_policies WHERE id=$1 FOR UPDATE")
         .bind(id).fetch_optional(&mut *tx).await?;
     if let Some((scope, scope_id, revision)) = &existing {
@@ -180,24 +203,36 @@ pub async fn save_policy(state: &AppState, ctx: &AuthContext, id: Uuid, mut body
         if *revision != body.expected_revision { return Err(RoutingError::NeedsReplan.into()); }
     } else if body.expected_revision != 0 { return Err(RoutingError::NeedsReplan.into()); }
     body.policy.revision = sqlx::query_scalar("SELECT nextval('routing_revision_generation')").fetch_one(&mut *tx).await?;
+    if extension.is_some() && body.is_default {
+        sqlx::query("UPDATE routing_policies SET is_default=false WHERE id<>$1 AND scope=$2 AND scope_id IS NOT DISTINCT FROM $3 AND is_default")
+            .bind(id).bind(&body.scope).bind(owner).execute(&mut *tx).await?;
+    }
     let value = serde_json::to_value(&body.policy).map_err(|_| RoutingError::Invalid("policy"))?;
     let result = if existing.is_some() {
         sqlx::query("UPDATE routing_policies SET label=$2,revision=$3,is_default=$4,policy=$5,updated_by=$6,updated_at=now() WHERE id=$1")
             .bind(id).bind(body.label.trim()).bind(body.policy.revision).bind(body.is_default).bind(value).bind(ctx.user_id).execute(&mut *tx).await
     } else {
         sqlx::query("INSERT INTO routing_policies (id,label,scope,scope_id,revision,is_default,policy,updated_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(id).bind(body.label.trim()).bind(body.scope).bind(owner).bind(body.policy.revision).bind(body.is_default).bind(value).bind(ctx.user_id).execute(&mut *tx).await
+            .bind(id).bind(body.label.trim()).bind(&body.scope).bind(owner).bind(body.policy.revision).bind(body.is_default).bind(value).bind(ctx.user_id).execute(&mut *tx).await
     };
     match result {
         Err(sqlx::Error::Database(error)) if error.is_unique_violation() => return Err(AppError::Conflict("a default policy or policy identity already exists".into())),
         other => { other?; }
     }
+    if let Some(config)=extension {
+        sqlx::query("UPDATE routing_policies SET profile_config=$2 WHERE id=$1").bind(id)
+            .bind(serde_json::to_value(config).map_err(|_|RoutingError::Invalid("profile extension"))?).execute(&mut *tx).await?;
+    }
+    if extension.is_some() {vnext::connections::audit(&mut tx,ctx,"routing.profile_saved",id,body.policy.revision).await?;}
     tx.commit().await?;
-    audit(state, ctx, "routing.policy_updated", id, body.policy.revision).await;
-    Ok(body.policy)
+    if extension.is_none() {audit(state, ctx, "routing.policy_updated", id, body.policy.revision).await;}
+    Ok(body.policy.clone())
 }
 
 pub async fn delete_policy(state: &AppState, ctx: &AuthContext, id: Uuid, expected_revision: i64) -> Result<()> {
+    delete_policy_supported(state,ctx,id,expected_revision,1).await
+}
+pub async fn delete_policy_supported(state: &AppState, ctx: &AuthContext, id: Uuid, expected_revision: i64, version:u32) -> Result<()> {
     let mut tx = state.pg.begin().await?;
     let row: Option<(String, Option<Uuid>, i64)> = sqlx::query_as("SELECT scope,scope_id,revision FROM routing_policies WHERE id=$1 FOR UPDATE")
         .bind(id).fetch_optional(&mut *tx).await?;
@@ -205,6 +240,9 @@ pub async fn delete_policy(state: &AppState, ctx: &AuthContext, id: Uuid, expect
     if scope == "deployment" { state.rbac.require_permission(&state.pg, ctx, permissions::PROVIDERS_MANAGE).await?; }
     else if owner.is_none() || owner != ctx.user_id { return Err(RoutingError::Forbidden.into()); }
     if revision != expected_revision { return Err(RoutingError::NeedsReplan.into()); }
+    let required:bool=sqlx::query_scalar("SELECT profile_config IS NOT NULL FROM routing_policies WHERE id=$1").bind(id).fetch_one(&mut *tx).await?;
+    if required && version<2 {return Err(RoutingError::Invalid("v1 cannot delete a v2 profile").into());}
+    if required {vnext::connections::audit(&mut tx,ctx,"routing.profile_deleted",id,revision).await?;}
     sqlx::query("DELETE FROM routing_policies WHERE id=$1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     audit(state, ctx, "routing.policy_deleted", id, revision).await;

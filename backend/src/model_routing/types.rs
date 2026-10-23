@@ -37,7 +37,7 @@ pub enum TaskKind { #[default] Unknown, CurrentFact, General, Editing, Extractio
 pub enum CallPurpose {
     Primary, ToolLoop, Final, RouterClassify, UtilityTitle, UtilitySummary,
     RetrievalDecompose, RetrievalGrade, WebPlan, WebGrade, WebSynthesis,
-    ResearchPlan, ResearchWrite, Document, Voice, Moderation, Verify, Embed, Rerank, Ocr, Stt, Tts,
+    ResearchPlan, ResearchWrite, Document, Voice, Moderation, QualityJudge, Verify, Embed, Rerank, Ocr, Stt, Tts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,10 +162,12 @@ pub struct WorkloadRequirements {
     pub language: Option<String>,
     pub effort: Option<String>,
     pub uncertain: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_scope: Option<String>,
 }
 impl Default for WorkloadRequirements {
     fn default()->Self {Self {task:TaskKind::Unknown,minimum_tier:ModelTier::Economy,fresh_information:false,
-        tools:false,vision:false,structured_output:false,input_tokens:0,output_tokens:0,language:None,effort:None,uncertain:false}}
+        tools:false,vision:false,structured_output:false,input_tokens:0,output_tokens:0,language:None,effort:None,uncertain:false,workload_scope:None}}
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -254,6 +256,8 @@ pub struct TargetReference {
     pub profile_revision: i64,
     pub model: String,
     pub effort: Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub variant: Option<super::vnext::execution::VariantBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +287,10 @@ pub struct ExecutionPlan {
     pub assignments: BTreeMap<CallPurpose, TargetReference>,
     /// Durable references only; credentials are resolved again at dispatch.
     #[serde(default)] pub fixed_assignments: BTreeMap<super::fixed::FixedRole,super::fixed::FixedReference>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub profile_snapshot: Option<super::vnext::pool::PoolSnapshot>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub vnext_context: Option<super::vnext::execution::ExecutionContext>,
 }
 
 #[derive(Debug, thiserror::Error)]

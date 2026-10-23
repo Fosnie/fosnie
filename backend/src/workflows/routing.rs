@@ -6,10 +6,18 @@ use uuid::Uuid;
 use crate::{AppState,Result,model_routing::{*,durable::{Context,Lease}}};
 
 pub fn selection(cfg:&Value)->Result<Option<ModelSelection>> {
+    if let Some(v)=intent(cfg)? {return Ok(Some(v.selection));}
     cfg.get("model_selection").map(|v|serde_json::from_value(v.clone())
         .map_err(|_|RoutingError::Invalid("invalid workflow model_selection").into())).transpose()
 }
+pub fn intent(cfg:&Value)->Result<Option<fosnie_protocol::routing_vnext::RoutingIntentV2>> {
+    cfg.get("model_selection").filter(|v|v.get("schema_version").is_some()).map(|v| {
+        let intent:fosnie_protocol::routing_vnext::RoutingIntentV2=serde_json::from_value(v.clone()).map_err(|_|RoutingError::Invalid("workflow v2 intent"))?;
+        intent.require_support(&[1,2],&[1,2]).map_err(RoutingError::Invalid)?;Ok(intent)
+    }).transpose()
+}
 pub fn validate(cfg:&Value)->Result<()> {
+    intent(cfg)?;
     if selection(cfg)?.is_none() {return Ok(());}
     super::sources::libraries(cfg)?;
     super::delivery::target(cfg)?;
@@ -99,14 +107,17 @@ async fn execute(state:&AppState,id:Uuid,input:Value,principal:Value)->Result<()
     let chat=Uuid::now_v7();
     let mut chat_tx=state.pg.begin().await?;
     sqlx::query("INSERT INTO chats(id,owner_user_id,title,model_selection,project_id,agent_id) VALUES($1,$2,'Workflow output',$3,$4,$5)")
-        .bind(chat).bind(uid).bind(serde_json::to_value(&selection).unwrap()).bind(scope.project()).bind(scope.agent()).execute(&mut *chat_tx).await?;
+        .bind(chat).bind(uid).bind(input["config"]["model_selection"].clone()).bind(scope.project()).bind(scope.agent()).execute(&mut *chat_tx).await?;
     scope.attach(&mut chat_tx,&actor,chat).await?;
     super::delivery::protect(&mut chat_tx,&input,&scope,id,chat).await?;chat_tx.commit().await?;
     scope.check(state,&actor,&input,chat).await?;
     crate::chat::routing::workflow_scope(state,&actor,chat,&prompt).await?;
     let cancel=std::sync::Arc::new(tokio::sync::Notify::new());
-    let mut planned=tokio::time::timeout(std::time::Duration::from_secs(120),Box::pin(crate::chat::routing::prepare_selected(
-        state,&actor,chat,id,&prompt,selection,WorkloadRequirements {output_tokens:1024,..Default::default()},&[],&cancel)))
+    let vnext=intent(&input["config"])?;
+    let constrained=crate::chat::browser::constrain(state.clone(),&vnext.as_ref().and_then(|v|v.options.clone()).unwrap_or_default());
+    let mut planned=tokio::time::timeout(std::time::Duration::from_secs(120),async {match vnext {
+        Some(intent)=>crate::chat::routing::prepare_vnext(&constrained,&actor,chat,id,&prompt,intent,WorkloadRequirements {output_tokens:1024,..Default::default()},&[],&cancel).await,
+        None=>crate::chat::routing::prepare_selected(state,&actor,chat,id,&prompt,selection,WorkloadRequirements {output_tokens:1024,..Default::default()},&[],&cancel).await}})
         .await.map_err(|_|RoutingError::BudgetExhausted)??;
     planned.add_handoff_reason("workflow_agent")?;
     let frozen=planned.freeze()?;allowed(state,id).await?;scope.check(state,&actor,&input,chat).await?;

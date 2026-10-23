@@ -42,7 +42,9 @@ def failure_detail(error, *, emitted):
     kind = None
     if status == 429 and code in QUOTA_CODES: kind = 'quota_exhausted'
     elif status == 402 or status in (400, 403, 429) and code in PAYMENT_CODES: kind = 'payment_required'
-    elif status in (401, 403): kind = 'unauthorized'
+    elif status == 401: kind = 'unauthorized'
+    elif status == 403: kind = 'access_denied'
+    elif status == 404 and code == 'model_not_found': kind = 'model_unavailable'
     elif status == 429: kind = 'rate_limited'
     elif status in (500, 502, 503, 504, 529): kind = 'unavailable'
     elif status in (400, 404, 422): kind = 'invalid_request'

@@ -7,10 +7,10 @@ use super::RoutingError;
 
 pub(crate) async fn chat_requires_routing(state: &AppState, chat: Uuid) -> Result<bool> {
     // Manual intent alone is also written by the compatibility trigger for old
-    // llm_provider_id clients. Only Auto or evidence of routed execution opts a
+    // llm_provider_id clients. Auto, versioned intent or routed execution opts a
     // conversation out of that legacy contract, including empty new chats.
     Ok(sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM chats WHERE id=$1 AND model_selection->>'mode'='auto') \
+        "SELECT EXISTS(SELECT 1 FROM chats WHERE id=$1 AND (model_selection->>'mode'='auto' OR model_selection->>'schema_version'='2')) \
          OR EXISTS(SELECT 1 FROM voice_routed_chats WHERE chat_id=$1) \
          OR EXISTS(SELECT 1 FROM browser_routed_chats WHERE chat_id=$1) \
          OR EXISTS(SELECT 1 FROM api_routed_chats WHERE chat_id=$1) \

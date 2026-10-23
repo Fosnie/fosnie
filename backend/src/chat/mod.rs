@@ -217,7 +217,7 @@ pub async fn run_turn(
     let signal = cancel.clone();
     // This orchestration future is large. Keep the guarded/legacy alternatives
     // behind one allocation rather than embedding copies in nested select state.
-    let work = Box::pin(run_turn_inner(state, turn, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel));
+    let work = run_turn_inner(state, turn, turn_id, chat_id, project_id, agent_id, content, attachments, kb_ids, unattended, reuse_user_msg, reasoning, llm_provider_id, prefetched_rag, tx, cancel);
     let result = match routed {
         Some(run) => run.drive(&signal, Box::pin(async {
             tokio::select! { biased;
@@ -247,9 +247,9 @@ pub async fn run_turn(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_turn_inner(
-    state: &AppState,
-    turn: origin::TurnContext<'_>,
+fn run_turn_inner<'a>(
+    state: &'a AppState,
+    turn: origin::TurnContext<'a>,
     turn_id: Uuid,
     chat_id: Option<Uuid>,
     project_id: Option<Uuid>,
@@ -262,9 +262,10 @@ async fn run_turn_inner(
     reasoning: Option<crate::reasoning::ReasoningSpec>,
     llm_provider_id: Option<Uuid>,
     prefetched_rag: Option<prefetch::PrefetchedRag>,
-    tx: &mpsc::Sender<ServerFrame>,
+    tx: &'a mpsc::Sender<ServerFrame>,
     cancel: Arc<Notify>,
-) -> Result<()> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<()>>+Send+'a>> {
+    Box::pin(async move {
     let ctx = turn.auth;
     // New chats start with a generic placeholder; the real title is named by the
     // LLM in a background task below (keeps TTFT untouched — no naming call before
@@ -965,7 +966,7 @@ async fn run_turn_inner(
     .await?;
     if let Some(run)=turn.routing {
         sqlx::query("UPDATE messages SET routing_selection=$2,routing_options=$3 WHERE id=$1")
-            .bind(asst_id).bind(json!(run.selection_intent())).bind(run.routing_options().map(|o|json!(o))).execute(&state.pg).await?;
+            .bind(asst_id).bind(run.selection_value()).bind(run.routing_options().map(|o|json!(o))).execute(&state.pg).await?;
     }
     let _ = tx.send(ServerFrame::ChatStarted { turn_id, chat_id, message_id: asst_id }).await;
 
@@ -1177,10 +1178,10 @@ async fn run_turn_inner(
             let out = if let Some(run)=turn.routing {
                 Box::pin(routed_parts::synthesize(state,run,&prompt,&memory_facts,gk_fallback,&sampling,&messages,&rag_parts,
                     &turn_kb_ids,&turn_deny_doc_ids,turn_id,asst_id,tx)).await?
-            } else {synthesize_per_part(
+            } else {Box::pin(synthesize_per_part(
                 state, ctx, &prompt, &memory_facts, unattended, gk_fallback,
                 answer_reasoning.as_ref(), llm_sel.as_ref(), &sampling, &rag_parts, turn_id, asst_id, tx, &cancel,
-            )
+            ))
             .await?};
             acc = out.acc;
             reasoning_acc = out.reasoning;
@@ -1246,7 +1247,7 @@ async fn run_turn_inner(
                 },
             };
             let seg_start_len = acc.len();
-            let term = stream_generate_with_run(state, &req, turn_id, asst_id, tx, &cancel, &mut acc, &mut reasoning_acc, &mut detached, first_pass, Some(answer_deadline), turn.routing).await?;
+            let term = Box::pin(stream_generate_with_run(state, &req, turn_id, asst_id, tx, &cancel, &mut acc, &mut reasoning_acc, &mut detached, first_pass, Some(answer_deadline), turn.routing)).await?;
             finish_reason = term.finish.clone();
             model_used = term.model.clone().or(model_used);
             if first_pass {
@@ -1781,6 +1782,7 @@ async fn run_turn_inner(
     }
 
     Ok(())
+    })
 }
 
 /// Run tool-decision rounds until the model stops calling tools (or the cap).
@@ -2235,7 +2237,7 @@ async fn stream_generate_with_run(
     let mut last_flush = std::time::Instant::now();
     let gen_start = std::time::Instant::now();
     let mut ttft_recorded = false;
-    let mut stream = routing::Generation::start(state, req, run, asst_id).await?;
+    let mut stream = Box::pin(routing::Generation::start(state, req, run, asst_id)).await?;
     let idle = synthesis_idle_timeout(&state.pg).await;
     let deadline = match deadline_arg {
         Some(d) => d,

@@ -37,7 +37,7 @@ async fn save(state:&AppState,manager:&AuthContext,mut policy:RoutingPolicy)->an
 async fn plan(state:&AppState,actor:&AuthContext,policy:&RoutingPolicy,text:&str,req:WorkloadRequirements)->fosnie_backend::Result<(ExecutionPlan,budget::RunBudget)> {
     sqlx::query("DELETE FROM routing_provider_health WHERE purpose='router_classify'").execute(&state.pg).await?;
     let ctx=RoutingContext{actor:actor.clone(),chat_id:None,project_id:None,run_id:Uuid::now_v7(),purpose:CallPurpose::Primary};
-    auto_plan(state,&ctx,Some(policy.id),RoutingObjective::Economy,req,text,&Notify::new()).await
+    Box::pin(auto_plan(state,&ctx,Some(policy.id),RoutingObjective::Economy,req,text,&Notify::new())).await
 }
 async fn add_model(state:&AppState,manager:&AuthContext,id:Uuid,tier:&str,locality:&str,adapter:&str)->anyhow::Result<()> {
     let model=format!("synthetic-{id}");
@@ -53,7 +53,8 @@ fn pool_rule(ids:&[Uuid])->RoutingRule {RoutingRule{id:Uuid::now_v7(),priority:2
     action:RuleAction::RestrictPool{allowed_providers:ids.iter().copied().collect()}}}
 fn select_rule(id:Uuid)->RoutingRule {RoutingRule{id:Uuid::now_v7(),priority:10,conditions:Default::default(),action:RuleAction::Select{provider_id:id,effort:None}}}
 
-async fn acceptance(pg:sqlx::PgPool)->anyhow::Result<()> {
+fn acceptance(pg:sqlx::PgPool)->std::pin::Pin<Box<dyn std::future::Future<Output=anyhow::Result<()>>+Send>> {
+    Box::pin(async move {
     let mode=Arc::new(AtomicUsize::new(0));let requests=Arc::new(Mutex::new(Vec::<Value>::new()));let resolved=Arc::new(Mutex::new(Vec::new()));
     let entered=Arc::new(Notify::new());
     let app=axum::Router::new().route("/chat-step",axum::routing::post({let mode=mode.clone();let requests=requests.clone();let entered=entered.clone();let pg=pg.clone();
@@ -74,7 +75,7 @@ async fn acceptance(pg:sqlx::PgPool)->anyhow::Result<()> {
                 return Json(response);
             }
             assert_eq!(body["overrides"]["routing"]["purpose"],"router_classify");
-            let mut classified=json!({"task":"general","minimum_tier":"economy","fresh_information":false,"tools":false,"vision":false,"structured_output":false,"confidence":0.99,"uncertain":false});
+            let mut classified=json!({"task":"general","minimum_tier":"economy","fresh_information":false,"tools":false,"vision":false,"structured_output":false,"confidence":0.99,"uncertain":false,"difficulty":"routine"});
             if fault==1 {classified["task"]=json!("reasoning");classified["minimum_tier"]=json!("advanced");}
             if fault==3 {classified["provider_url"]=json!("https://bad.test");}
             if fault==10 {classified["task"]=json!("unknown");}
@@ -249,7 +250,7 @@ async fn acceptance(pg:sqlx::PgPool)->anyhow::Result<()> {
     let mut invalid=evaluate_body(&policy,false);invalid.max_cost_microusd=0;
     assert!(evaluate(State(state.clone()),AuthUser(manager.clone()),Json(invalid)).await.is_err());
     assert_eq!(requests.lock().unwrap().len(),before);
-    let result=evaluate(State(state.clone()),AuthUser(manager.clone()),Json(evaluate_body(&policy,false))).await?.0;
+    let result=Box::pin(evaluate(State(state.clone()),AuthUser(manager.clone()),Json(evaluate_body(&policy,false)))).await?.0;
     assert_eq!(result["ok"],true);assert_eq!(result["decision"]["actual"]["provider_id"],json!(cheap));assert_eq!(result["usage"]["calls"],1);
     assert!(result["actual_cost_microusd"].is_null());assert_eq!(result["stage_usage"][0]["purpose"],"primary");
     assert_eq!(result["contract_version"],"completed_text_v1");assert_eq!(result["finish_reason"],"stop");
@@ -266,24 +267,24 @@ async fn acceptance(pg:sqlx::PgPool)->anyhow::Result<()> {
     let sampled=evaluate(State(state.clone()),AuthUser(manager.clone()),Json(sampled)).await?.0;
     assert_eq!(sampled["ok"],true);assert_eq!(requests.lock().unwrap().last().unwrap()["sampling"]["temperature"],1.0);
     let before=requests.lock().unwrap().len();let mut local=evaluate_body(&policy,false);local.local_only=true;
-    let result=evaluate(State(state.clone()),AuthUser(manager.clone()),Json(local)).await?.0;
+    let result=Box::pin(evaluate(State(state.clone()),AuthUser(manager.clone()),Json(local))).await?.0;
     assert_eq!(result["ok"],false);assert_eq!(requests.lock().unwrap().len(),before,"per-case local-only never dispatches the cloud model");
     for fault in [4,5,17,18,19,20,16] {
         mode.store(fault,Ordering::SeqCst);let before=requests.lock().unwrap().len();
-        let result=evaluate(State(state.clone()),AuthUser(manager.clone()),Json(evaluate_body(&policy,false))).await?.0;
+        let result=Box::pin(evaluate(State(state.clone()),AuthUser(manager.clone()),Json(evaluate_body(&policy,false)))).await?.0;
         assert_eq!(result["ok"],false);assert_eq!(result["max_reserved_cost_microusd"],10000);assert_eq!(requests.lock().unwrap().len(),before+1);
         if fault==16 {sqlx::query("UPDATE users SET role='client_admin' WHERE id=$1").bind(manager_id).execute(&pg).await?;}
     }
     mode.store(0,Ordering::SeqCst);policy.strategy=RoutingStrategy::Classifier;policy.classifier_provider_id=Some(cheap);policy.rules.clear();
     policy=save(&state,&manager,policy).await?;let before=requests.lock().unwrap().len();
     let mut tiny=evaluate_body(&policy,true);tiny.max_cost_microusd=1;
-    let result=evaluate(State(state.clone()),AuthUser(manager.clone()),Json(tiny)).await?.0;
+    let result=Box::pin(evaluate(State(state.clone()),AuthUser(manager.clone()),Json(tiny))).await?.0;
     assert_eq!(result["ok"],false);assert_eq!(requests.lock().unwrap().len(),before,"judge never crosses the caller's cap");
-    let result=evaluate(State(state.clone()),AuthUser(manager.clone()),Json(evaluate_body(&policy,true))).await?.0;
+    let result=Box::pin(evaluate(State(state.clone()),AuthUser(manager.clone()),Json(evaluate_body(&policy,true)))).await?.0;
     assert_eq!(result["ok"],true);assert_eq!(result["usage"]["calls"],2);assert_eq!(result["classifier_ledger"]["calls"],1);
     {let captured=requests.lock().unwrap();assert_eq!(captured.last().unwrap()["overrides"]["routing"]["budget"]["allowances"]["primary"]["max_calls"],1);}
     policy.constraints.max_calls=Some(1);policy=save(&state,&manager,policy).await?;let before=requests.lock().unwrap().len();
-    let result=evaluate(State(state.clone()),AuthUser(manager.clone()),Json(evaluate_body(&policy,true))).await?.0;
+    let result=Box::pin(evaluate(State(state.clone()),AuthUser(manager.clone()),Json(evaluate_body(&policy,true)))).await?.0;
     assert_eq!(result["ok"],true);assert_eq!(result["usage"]["calls"],1);assert_eq!(result["classifier_ledger"]["calls"],0);
     assert_eq!(result["decision"]["actual"]["provider_id"],json!(policy.default_provider_id.unwrap()));
     assert!(result["decision"]["reason_codes"].as_array().unwrap().iter().any(|v|v=="classifier_skipped_answer_call_budget"));
@@ -293,6 +294,7 @@ async fn acceptance(pg:sqlx::PgPool)->anyhow::Result<()> {
     assert_eq!(trace["decision"]["actual"]["provider_id"],json!(policy.default_provider_id.unwrap()));assert!(!trace.to_string().contains("Synthetic public evaluation"));
     println!("P10 bounded evaluation: manager/revision/schema guards, primary reports, caller cap before judge, shared spend and no replay passed");
     Ok(())
+    })
 }
 
 #[tokio::test]

@@ -16,7 +16,7 @@ pub struct RuleMatch {
 }
 
 impl RuleConditions {
-    fn matches(&self, task: &WorkloadRequirements, purpose: CallPurpose) -> bool {
+    pub(super) fn matches(&self, task: &WorkloadRequirements, purpose: CallPurpose) -> bool {
         (self.tasks.is_empty() || self.tasks.contains(&task.task))
             && (self.purposes.is_empty() || self.purposes.contains(&purpose))
             && (self.languages.is_empty() || task.language.as_ref().is_some_and(|l| self.languages.iter().any(|code|code.eq_ignore_ascii_case(l))))
@@ -69,7 +69,7 @@ pub fn validate_policy(policy: &RoutingPolicy) -> Result<(), RoutingError> {
     Ok(())
 }
 
-fn validate_conditions(c:&RuleConditions,depth:usize,nodes:&mut usize)->Result<(),RoutingError> {
+pub(super) fn validate_conditions(c:&RuleConditions,depth:usize,nodes:&mut usize)->Result<(),RoutingError> {
     *nodes+=1;
     if depth>4 || *nodes>512 || c.all.len()+c.any.len()>16 || c.languages.len()>32
         || c.languages.iter().any(|v|v.is_empty() || v.len()>32 || !v.split('-').all(|part|!part.is_empty()&&part.bytes().all(|b|b.is_ascii_alphanumeric())))
@@ -193,7 +193,7 @@ pub fn checked_default(profiles:&[ModelProfile],requirements:&WorkloadRequiremen
         return Err(RoutingError::Incompatible(reason));
     }
     Ok(TargetReference {provider_id:id,provider_revision:profile.provider_revision,profile_revision:profile.revision,
-        model:profile.model.clone(),effort:requirements.effort.clone()})
+        model:profile.model.clone(),effort:requirements.effort.clone(), variant:None })
 }
 
 pub fn select(
@@ -266,7 +266,7 @@ pub fn select_for(purpose:CallPurpose,profiles:&[ModelProfile],requirements:&Wor
     Ok(RoutingDecision { id: Uuid::now_v7(), schema_version: SCHEMA_VERSION,
         policy_id: policy.id, policy_revision: policy.revision, strategy: policy.strategy,
         proposed: Some(TargetReference { provider_id: chosen.provider_id, provider_revision: chosen.provider_revision,
-            profile_revision: chosen.revision, model: chosen.model.clone(), effort: chosen_req.effort.clone() }),
+            profile_revision: chosen.revision, model: chosen.model.clone(), effort: chosen_req.effort.clone() , variant:None }),
         actual: None, reason_codes: reasons, excluded_counts: excluded,
         estimated_cost_microusd: estimate_cost(chosen, &chosen_req) })
 }

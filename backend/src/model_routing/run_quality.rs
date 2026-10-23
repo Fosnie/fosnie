@@ -8,8 +8,9 @@ impl RoutedRun {
     pub(crate) fn quality_attempt(&self)->Option<&QualityAttempt> {self.0.quality.as_ref()}
 
     pub(crate) async fn require_quality_escalation(&self,state:&crate::AppState)->crate::Result<()> {
+        if self.plan().profile_snapshot.is_some() {return Err(RoutingError::Incompatible("v2 escalation requires calibrated optimizer").into());}
         self.guard(async {
-            let policy=store::load_policy(state,&self.0.context.actor,Some(self.plan().decision.policy_id)).await?;
+            let policy=store::load_policy_supported(state,&self.0.context.actor,Some(self.plan().decision.policy_id),self.plan().schema_version).await?;
             if policy.revision!=self.plan().decision.policy_revision {return Err(RoutingError::NeedsReplan.into());}
             if !policy.quality_escalation || policy.rollout!=RolloutMode::Active
                 || !matches!(self.plan().selection,ModelSelection::Auto{..}) {
@@ -21,6 +22,7 @@ impl RoutedRun {
 
     pub(crate) async fn escalate_stateless(&mut self,state:&crate::AppState,failure:QualityFailure)->crate::Result<bool> {
         self.check()?;
+        if self.plan().vnext_context.as_ref().is_some_and(|v|v.recovery.is_some()) {return self.retry_vnext_stateless(state,super::fallback::FailureKind::InvalidRequest,Some(failure)).await;}
         let Some(witness)=self.0.retry.clone() else {return Ok(false);};
         let requirements=&witness.requirements;
         if Arc::strong_count(&self.0)!=1 || self.0.durable.is_some() || self.0.access.is_some()
@@ -31,7 +33,7 @@ impl RoutedRun {
         }
         self.require_quality_escalation(state).await?;
         let (constraints,attempt)=self.guard(async {
-            let policy=store::load_policy(state,&self.0.context.actor,Some(self.plan().decision.policy_id)).await?;
+            let policy=store::load_policy_supported(state,&self.0.context.actor,Some(self.plan().decision.policy_id),self.plan().schema_version).await?;
             if policy.revision!=self.plan().decision.policy_revision {return Err(RoutingError::NeedsReplan.into());}
             let context=self.context(CallPurpose::Final);
             let constraints=self.plan().constraints.intersect(&policy.constraints)

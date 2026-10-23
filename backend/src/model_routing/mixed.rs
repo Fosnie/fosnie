@@ -22,7 +22,8 @@ pub struct MixedGrant {
 impl MixedGrant {
     pub(super) fn envelope(&self,decision_id:uuid::Uuid,purpose:CallPurpose,
         assignments:BTreeMap<CallPurpose,InferenceTarget>,fixed_assignments:BTreeMap<FixedRole,FixedTarget>)->InferenceEnvelope {
-        InferenceEnvelope {schema_version:SCHEMA_VERSION,decision_id,purpose,assignments,fixed_assignments,
+        let version=assignments.values().map(|t|t.schema_version).max().unwrap_or(1);
+        InferenceEnvelope {schema_version:version,decision_id,purpose,assignments,fixed_assignments,
             budget:self.llm.as_ref().map(|g|g.wire.clone()),fixed_budget:self.fixed.as_ref().map(|g|g.wire.clone())}
     }
     pub fn reserve(budget:&RunBudget,decision_id:uuid::Uuid,llm_targets:&BTreeMap<CallPurpose,InferenceTarget>,profiles:&[ModelProfile],
@@ -69,7 +70,7 @@ impl MixedGrant {
     }
 }
 
-pub struct PreparedMixedRequest { pub envelope:InferenceEnvelope,pub(super) grant:MixedGrant }
+pub struct PreparedMixedRequest { pub envelope:InferenceEnvelope,pub(super) grant:MixedGrant,pub(super) probes:Vec<super::health_scopes::Probe> }
 impl PreparedMixedRequest {
     pub fn finish(self,reports:&Reports) -> crate::Result<bool> { self.grant.finish(reports).map_err(Into::into) }
 }
@@ -79,16 +80,17 @@ impl PreparedMixedRequest {
 pub async fn prepare(state:&crate::AppState,context:&RoutingContext,plan:&ExecutionPlan,budget:&RunBudget,
     stages:&BTreeMap<CallPurpose,StageRequest>,fixed_allowances:BTreeMap<FixedRole,FixedAllowance>,
     fixed_references:&BTreeSet<FixedRole>,timeout:Duration) -> crate::Result<PreparedMixedRequest> {
-    if plan.schema_version!=SCHEMA_VERSION || plan.id!=context.run_id || plan.actor_user_id!=context.actor.user_id {
+    if !matches!(plan.schema_version,1|2) || plan.id!=context.run_id || plan.actor_user_id!=context.actor.user_id {
         return Err(RoutingError::Forbidden.into());
     }
     if !stages.contains_key(&context.purpose) && !fixed_allowances.keys().any(|r|r.purpose()==context.purpose) {
         return Err(RoutingError::Invalid("missing mixed request purpose").into());
     }
-    let policy=store::load_policy(state,&context.actor,Some(plan.decision.policy_id)).await?;
+    vnext::execution::validate_plan(state,context,plan).await?;
+    let policy=store::load_policy_supported(state,&context.actor,Some(plan.decision.policy_id),plan.schema_version).await?;
     if policy.revision!=plan.decision.policy_revision { return Err(RoutingError::NeedsReplan.into()); }
     let mut constraints=plan.constraints.intersect(&policy.constraints).intersect(&store::deployment_constraints(state).await?);
-    let profiles=store::current_profiles(store::catalog(state,&context.actor).await?);
+    let mut profiles=store::current_profiles(store::catalog(state,&context.actor).await?);
     let roles:BTreeSet<_>=fixed_allowances.keys().copied().chain(fixed_references.iter().copied()).collect();
     for &purpose in stages.keys() {
         if matches!(purpose,CallPurpose::Embed|CallPurpose::Rerank|CallPurpose::Verify|CallPurpose::Ocr|CallPurpose::Stt|CallPurpose::Tts) {
@@ -99,12 +101,17 @@ pub async fn prepare(state:&crate::AppState,context:&RoutingContext,plan:&Execut
         let mut ctx=context.clone(); ctx.purpose=purpose;
         constraints=constraints.intersect(&state.inference_policy.constraints(&state.pg,&ctx).await?);
     }
+    vnext::execution::validate_constraints(context,plan,&constraints)?;
     for (&purpose,stage) in stages {
         let reference=plan.assignments.get(&purpose).ok_or(RoutingError::Invalid("unplanned LLM purpose"))?;
         let profile=profiles.iter().find(|p|p.provider_id==reference.provider_id && p.provider_revision==reference.provider_revision
             && p.revision==reference.profile_revision && p.model==reference.model).ok_or(RoutingError::NeedsReplan)?;
+        let mut stage_context=context.clone();stage_context.purpose=purpose;
+        vnext::execution::validate_stage(state,&stage_context,plan,&stage.requirements,reference).await?;
         if stage.requirements.effort!=reference.effort { return Err(RoutingError::Incompatible("request effort differs from plan").into()); }
-        if let Some(reason)=engine::target_incompatibility(profile,&stage.requirements,&constraints) { return Err(RoutingError::Incompatible(reason).into()); }
+        let mut effective=stage.requirements.clone();
+        if let Some(v)=vnext::execution::current_variant(state,&context.actor,reference).await? {effective.output_tokens=effective.output_tokens.min(v.behaviour.generation.max_output_tokens.unwrap_or(effective.output_tokens));}
+        if let Some(reason)=engine::target_incompatibility(profile,&effective,&constraints) { return Err(RoutingError::Incompatible(reason).into()); }
     }
     budget.restrict(&constraints);
     let mut assignments=BTreeMap::new(); let mut fixed_assignments=BTreeMap::new();
@@ -134,9 +141,13 @@ pub async fn prepare(state:&crate::AppState,context:&RoutingContext,plan:&Execut
             }
         }
     }
-    if store::load_policy(state,&context.actor,Some(policy.id)).await?.revision!=policy.revision { return Err(RoutingError::NeedsReplan.into()); }
-    let allowances=stages.iter().map(|(&p,s)|(p,Allowance { max_calls:s.max_calls,input_tokens:s.requirements.input_tokens,output_tokens:s.requirements.output_tokens })).collect();
+    vnext::execution::validate_plan(state,context,plan).await?;
+    for target in assignments.values() {vnext::execution::current_variant(state,&context.actor,&target.reference()).await?;}
+    if store::load_policy_supported(state,&context.actor,Some(policy.id),plan.schema_version).await?.revision!=policy.revision { return Err(RoutingError::NeedsReplan.into()); }
+    let allowances=stages.iter().map(|(&p,s)|(p,Allowance { max_calls:s.max_calls,input_tokens:s.requirements.input_tokens,output_tokens:assignments.get(&p).and_then(|t|t.generation.as_ref()).and_then(|g|g.max_output_tokens).map_or(s.requirements.output_tokens,|cap|cap.min(s.requirements.output_tokens)) })).collect();
+    vnext::execution::reservation_profiles(state,context,&assignments,&mut profiles).await?;
+    let probes=super::health_scopes::claim(state,&assignments.values().cloned().collect::<Vec<_>>(),stages.values().map(|s|s.max_calls).sum(),budget.remaining(timeout)).await?;
     let grant=MixedGrant::reserve(budget,plan.decision.id,&assignments,&profiles,allowances,&fixed_assignments,fixed_allowances,timeout)?;
     let envelope=grant.envelope(plan.decision.id,context.purpose,assignments,fixed_assignments);
-    Ok(PreparedMixedRequest { envelope,grant })
+    Ok(PreparedMixedRequest { envelope,grant,probes })
 }

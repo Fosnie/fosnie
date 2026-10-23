@@ -52,7 +52,7 @@ def queue(lane, enterprise=False):
         "live-not-run": Check("live-not-run", CORE, [PYTHON, "tools/routing/eval/runner.py", "live", "--output", "tools/routing/eval/reports/live-not-run"]),
         "frontend-unit": Check("frontend-unit", CORE / "frontend", [NPM, "test"]),
         "frontend-core": Check("frontend-core", CORE / "frontend", [NPM, "run", "build"], env={"EDITION_ENTRY": None}),
-        "browser": Check("browser", CORE / "frontend", ["node", "node_modules/@playwright/test/cli.js", "test", "-c", "playwright.document-jobs.config.ts", "chat.spec.ts", "routing-settings.spec.ts"]),
+        "browser": Check("browser", CORE / "frontend", ["node", "node_modules/@playwright/test/cli.js", "test", "-c", "playwright.document-jobs.config.ts", "chat.spec.ts", "routing-settings.spec.ts", "routing-builder.spec.ts"]),
         "stack": Check("stack", CORE / "backend", ["cargo", "test", "--offline", "--test", "model_routing_stack", "--", "--nocapture"], db=True),
         "native": Check("native", CORE / "desktop/src-tauri", ["cargo", "check", "--offline", "--all-targets"]),
         "native-unsigned": Check("native-unsigned", CORE / "desktop", [NPM, "run", "build:unsigned"],
@@ -67,6 +67,13 @@ def queue(lane, enterprise=False):
     }
     # First-shipment acceptance uses loopback fixtures; quality research is separate.
     checks.update({
+        "vnext-harness": Check("vnext-harness", CORE / "tools/routing", [PYTHON, "-m", "unittest", "-v", "test_checks"]),
+        "vnext-catalogue": Check("vnext-catalogue", CORE / "backend",
+            ["cargo", "test", "--offline", "--test", "model_routing_vnext_catalogue", "--", "--nocapture"], db=True),
+        "vnext-ml": Check("vnext-ml", CORE / "ml", [PYTHON, "-m", "pytest", "-q", *[
+            "tests/test_" + name + ".py" for name in ("variant_generation", "native_replay", "provider_failure_details", "inference_failure")]]),
+        "vnext-frontend": Check("vnext-frontend", CORE / "frontend", [NPM, "test", "--", *[
+            "src/api/" + name + ".test.ts" for name in ("routingCatalogue", "routingVNext", "chatRouting", "routingSettings", "routingFailure")]]),
         "acceptance-inference": Check("acceptance-inference", CORE / "backend",
             ["cargo", "test", "--offline", "--test", "model_routing_classifier", "--test", "model_routing_fallback", "--", "--nocapture", "--test-threads=1"], db=True),
         "acceptance-ml": Check("acceptance-ml", CORE / "ml", [PYTHON, "-m", "pytest", "-q", *[
@@ -81,6 +88,12 @@ def queue(lane, enterprise=False):
     evaluation = ["eval-build", "eval-test", "eval-replay", "live-not-run"]
     ee = ["ee-build", "ee-unit", "ee-integration", "ee-audit", "ee-ml", "frontend-ee"]
     lanes = {
+        # D1–D5 consolidated verification. Real Enterprise is mandatory here;
+        # Profiles and native dispatch are checked with local fixtures; no paid qualification is required.
+        "vnext": ["vnext-harness", "protocol", "build", "core-isolation", "unit", "vnext-catalogue",
+            "integration", "classifier", "fallback", "provider-failures", "durable", "stack",
+            "ml", "vnext-ml", "vnext-frontend", "acceptance-types", "frontend-core", "browser",
+            "ee-build", "acceptance-ee", "ee-ml", "frontend-ee"],
         "acceptance": ["protocol", "unit", "acceptance-inference", "provider-failures", "management-probe", "acceptance-ml",
             "acceptance-frontend", "acceptance-types", "browser", "stack", *(["acceptance-ee"] if enterprise else [])],
         "fast": ["protocol", "unit", "research-unit"],
@@ -149,7 +162,7 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lane", default="fast", choices=("fast", "integration", "ml", "classifier", "fallback", "quality", "eval-offline", "e2e", "all", "native", "native-release", "enterprise", "enterprise-routing", "enterprise-acceptance", "acceptance"))
+    parser.add_argument("--lane", default="fast", choices=("vnext", "fast", "integration", "ml", "classifier", "fallback", "quality", "eval-offline", "e2e", "all", "native", "native-release", "enterprise", "enterprise-routing", "enterprise-acceptance", "acceptance"))
     parser.add_argument("--with-enterprise", action="store_true")
     parser.add_argument("--only", help="Execute one named failed/affected check without repeating its whole lane")
     parser.add_argument("--start-at", help="Continue the untouched remainder of a queue after repairing its failed check")

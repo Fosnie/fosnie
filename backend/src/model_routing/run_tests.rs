@@ -7,13 +7,13 @@ fn parts() -> (RoutingContext,ExecutionPlan) {
     let context=RoutingContext { actor:AuthContext { user_id:Some(Uuid::now_v7()),email:Some("private@example.test".into()),
         display_name:None,role:PlatformRole::User,break_glass:false,mfa_enroll_only:false },chat_id:Some(Uuid::now_v7()),
         project_id:Some(Uuid::now_v7()),run_id:Uuid::now_v7(),purpose:CallPurpose::Primary };
-    let reference=TargetReference { provider_id:Uuid::now_v7(),provider_revision:2,profile_revision:3,model:"pinned-model".into(),effort:None };
+    let reference=TargetReference { provider_id:Uuid::now_v7(),provider_revision:2,profile_revision:3,model:"pinned-model".into(),effort:None , variant:None };
     let assignments=[CallPurpose::Primary,CallPurpose::ToolLoop,CallPurpose::Final,CallPurpose::UtilityTitle,CallPurpose::UtilitySummary]
         .into_iter().map(|p|(p,reference.clone())).collect();
     let plan=ExecutionPlan { id:context.run_id,schema_version:1,actor_user_id:context.actor.user_id,selection:ModelSelection::Default,
         decision:RoutingDecision { id:Uuid::now_v7(),schema_version:1,policy_id:Uuid::now_v7(),policy_revision:1,strategy:RoutingStrategy::Rules,
             proposed:Some(reference),actual:None,reason_codes:vec![],excluded_counts:Default::default(),estimated_cost_microusd:None },
-        constraints:Default::default(),assignments,fixed_assignments:Default::default() };
+        constraints:Default::default(),assignments,fixed_assignments:Default::default() , profile_snapshot:None,vnext_context:None };
     (context,plan)
 }
 fn client() -> PipelineClient { PipelineClient::new("http://127.0.0.1:9","never-log-secret").unwrap() }
@@ -149,7 +149,7 @@ async fn durable_stream_checkpoints_before_http_and_before_terminal_delivery() -
             let grant=mixed::MixedGrant::reserve(&run.0.budget,run.plan().decision.id,&Default::default(),&[],Default::default(),
                 &targets,[(FixedRole::Ocr,FixedAllowance {max_calls:2,input_bytes:100,output_bytes:100})].into(),Duration::from_secs(30))?;
             let envelope=grant.envelope(run.plan().decision.id,CallPurpose::Ocr,Default::default(),targets);
-            let prepared=mixed::PreparedMixedRequest {envelope,grant};
+            let prepared=mixed::PreparedMixedRequest {envelope,grant,probes:vec![]};
             if case==6 {sqlx::query("UPDATE routed_jobs SET status='cancelled',owner=NULL,lease_until=NULL WHERE id=$1").bind(id).execute(&pool).await?;}
             let serial=Some(run.0.serial.clone().lock_owned().await);
             let before=sent.load(Ordering::SeqCst);

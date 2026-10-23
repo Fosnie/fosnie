@@ -121,7 +121,7 @@ pub async fn check_fixed(pool:sqlx::PgPool) -> anyhow::Result<()> {
     let mut plan=ExecutionPlan { id:context.run_id,schema_version:SCHEMA_VERSION,actor_user_id:admin.user_id,selection:ModelSelection::Default,
         decision:RoutingDecision { id:Uuid::now_v7(),schema_version:SCHEMA_VERSION,policy_id,policy_revision:policy.revision,
             strategy:RoutingStrategy::Rules,proposed:None,actual:None,reason_codes:vec![],excluded_counts:Default::default(),estimated_cost_microusd:None },
-        constraints:local.clone(),assignments:Default::default(),fixed_assignments:Default::default() };
+        constraints:local.clone(),assignments:Default::default(),fixed_assignments:Default::default() , profile_snapshot:None,vnext_context:None };
     let mut fixed_context=context.clone(); fixed_context.purpose=CallPurpose::Embed;
     fixed_lease::pin(&state,&context,&mut plan,&[FixedRole::Embed]).await?;
     let encoded=serde_json::to_string(&plan)?;
@@ -191,7 +191,7 @@ pub async fn check_fixed(pool:sqlx::PgPool) -> anyhow::Result<()> {
     let llm_profile=store::save_profile(&state,&admin,llm_id,store::SaveProfile { expected_revision:0,profile:llm_profile }).await?;
     let mut mixed_plan=pinned.clone();
     mixed_plan.assignments.insert(CallPurpose::Primary,TargetReference { provider_id:llm_id,provider_revision:llm_revision,
-        profile_revision:llm_profile.revision,model:llm_profile.model.clone(),effort:None });
+        profile_revision:llm_profile.revision,model:llm_profile.model.clone(),effort:None , variant:None });
     let stages=[(CallPurpose::Primary,dispatch::StageRequest { max_calls:2,
         requirements:WorkloadRequirements { input_tokens:100,output_tokens:20,..Default::default() } })].into();
     let desired_allowances=||[(FixedRole::EmbedDesired,fixed_lease::FixedAllowance { max_calls:2,input_bytes:1024,output_bytes:8192 })].into();

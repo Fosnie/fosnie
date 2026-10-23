@@ -78,16 +78,18 @@ pub async fn list_providers(
     )
     .fetch_all(&state.pg)
     .await?;
+    let flags=crate::providers::public_connection_flags(&state.pg,rows.iter().map(|r|r.id).collect()).await?;
     Ok(Json(
         rows.into_iter()
+            .filter(|r|r.role!="connection")
             .map(|r| ProviderOut {
                 id: r.id,
                 role: r.role,
                 label: r.label,
                 base_url: r.base_url,
                 model: r.model,
-                enabled: r.enabled,
-                api_key_set: r.api_key_set,
+                enabled: flags.get(&r.id).map_or(r.enabled,|s|s.0),
+                api_key_set: flags.get(&r.id).map_or(r.api_key_set,|s|s.1),
                 reasoning_mode: r.reasoning_mode,
                 is_default: r.is_default,
             })
@@ -162,11 +164,11 @@ pub async fn set_provider(
     let model = body.model.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
 
     let mut tx = state.pg.begin().await?;
-    sqlx::query!(
+    sqlx::query(
         r#"INSERT INTO provider_configs
                (id, role, scope, scope_id, base_url, model, api_key_encrypted, enabled, reasoning_mode, updated_by, updated_at)
            VALUES ($1, $2, 'deployment', NULL, $3, $4, $5, $6, $7, $8, now())
-           ON CONFLICT (role) WHERE scope = 'deployment' AND role <> 'llm'
+           ON CONFLICT (role) WHERE scope = 'deployment' AND role NOT IN ('llm','connection')
            DO UPDATE SET
                base_url = EXCLUDED.base_url,
                model = EXCLUDED.model,
@@ -174,16 +176,9 @@ pub async fn set_provider(
                enabled = EXCLUDED.enabled,
                reasoning_mode = EXCLUDED.reasoning_mode,
                updated_by = EXCLUDED.updated_by,
-               updated_at = now()"#,
-        Uuid::now_v7(),
-        role,
-        base_url,
-        model,
-        api_key_encrypted,
-        body.enabled,
-        reasoning_mode,
-        ctx.user_id,
+               updated_at = now()"#
     )
+    .bind(Uuid::now_v7()).bind(&role).bind(&base_url).bind(&model).bind(&api_key_encrypted).bind(body.enabled).bind(&reasoning_mode).bind(ctx.user_id)
     .execute(&mut *tx)
     .await?;
 
@@ -257,6 +252,9 @@ pub struct MyProviderOut {
     pub source: String,
 }
 
+#[derive(sqlx::FromRow)]
+struct MyRoleRow {role:String,base_url:Option<String>,model:Option<String>,enabled:bool,api_key_set:bool}
+
 /// `GET /api/me/providers` — the caller's provider rows (keys masked) + the
 /// effective source per role. Readable by any authed user; whether the UI shows
 /// the editor is driven by `user_byok_enabled`.
@@ -266,22 +264,13 @@ pub async fn list_my_providers(
 ) -> Result<Json<serde_json::Value>> {
     let uid = ctx.user_id.ok_or_else(|| AppError::Forbidden("no user".into()))?;
 
-    let user_rows = sqlx::query!(
-        r#"SELECT role, base_url, model, enabled,
-                  (api_key_encrypted IS NOT NULL) AS "api_key_set!"
-           FROM provider_configs WHERE scope = 'user' AND scope_id = $1"#,
-        uid,
-    )
-    .fetch_all(&state.pg)
-    .await?;
-    let dep_rows = sqlx::query!(
-        r#"SELECT role, enabled FROM provider_configs WHERE scope = 'deployment'"#
-    )
-    .fetch_all(&state.pg)
-    .await?;
+    let user_rows=sqlx::query_as::<_,MyRoleRow>("SELECT p.role,p.base_url,p.model,p.enabled AND CASE WHEN p.connection_id IS NULL THEN true ELSE COALESCE(c.enabled,false) END AS enabled,CASE WHEN p.connection_id IS NULL THEN p.api_key_encrypted IS NOT NULL ELSE c.api_key_encrypted IS NOT NULL END AS api_key_set FROM provider_configs p LEFT JOIN provider_configs c ON c.id=p.connection_id AND c.role='connection' WHERE p.scope='user' AND p.scope_id=$1 AND p.role<>'connection' AND (p.role<>'llm' OR p.is_default)")
+        .bind(uid).fetch_all(&state.pg).await?;
+    let dep_rows:Vec<(String,bool)>=sqlx::query_as("SELECT p.role,p.enabled AND CASE WHEN p.connection_id IS NULL THEN true ELSE COALESCE(c.enabled,false) END FROM provider_configs p LEFT JOIN provider_configs c ON c.id=p.connection_id AND c.role='connection' WHERE p.scope='deployment' AND p.role<>'connection' AND (p.role<>'llm' OR p.is_default)")
+        .fetch_all(&state.pg).await?;
 
     let users: HashMap<&str, &_> = user_rows.iter().map(|r| (r.role.as_str(), r)).collect();
-    let deps: HashMap<&str, bool> = dep_rows.iter().map(|r| (r.role.as_str(), r.enabled)).collect();
+    let deps: HashMap<&str, bool> = dep_rows.iter().map(|r| (r.0.as_str(), r.1)).collect();
 
     let providers: Vec<MyProviderOut> = ROLES
         .iter()
@@ -367,28 +356,22 @@ pub async fn set_my_provider(
     let model = body.model.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from);
 
     let mut tx = state.pg.begin().await?;
-    sqlx::query!(
+    sqlx::query(
         r#"INSERT INTO provider_configs
                (id, role, scope, scope_id, base_url, model, api_key_encrypted, enabled, updated_by, updated_at)
            VALUES ($1, $2, 'user', $3, $4, $5, $6, $7, $3, now())
-           ON CONFLICT (role, scope_id) WHERE scope = 'user' AND role <> 'llm'
+           ON CONFLICT (role, scope_id) WHERE scope = 'user' AND role NOT IN ('llm','connection')
            DO UPDATE SET
                base_url = EXCLUDED.base_url,
                model = EXCLUDED.model,
                api_key_encrypted = COALESCE(EXCLUDED.api_key_encrypted, provider_configs.api_key_encrypted),
                enabled = EXCLUDED.enabled,
                updated_by = EXCLUDED.updated_by,
-               updated_at = now()"#,
-        Uuid::now_v7(),
-        role,
-        uid,
-        base_url,
-        model,
-        api_key_encrypted,
-        body.enabled,
+               updated_at = now()"#
     )
+    .bind(Uuid::now_v7()).bind(&role).bind(uid).bind(&base_url).bind(&model).bind(&api_key_encrypted).bind(body.enabled)
     .execute(&mut *tx)
-    .await?;
+    .await.map_err(crate::providers::connection_error)?;
 
     let mut event = crate::audit::AuditEvent::action("provider.changed", ctx.role.as_str());
     event.actor_user_id = ctx.user_id;
@@ -509,6 +492,7 @@ async fn create_llm_row(
 
     let mut tx = state.pg.begin().await?;
     // Duplicate-name guard within the scope (NULL-safe compare on scope_id).
+    crate::model_routing::vnext::connections::mutation_lock(&mut tx,scope_id).await?;
     let dup = sqlx::query_scalar!(
         r#"SELECT EXISTS(
              SELECT 1 FROM provider_configs
@@ -540,7 +524,7 @@ async fn create_llm_row(
         id, scope, scope_id, label, base_url, model, api_key_encrypted, body.enabled, reasoning_mode, is_default, ctx.user_id,
     )
     .execute(&mut *tx)
-    .await?;
+    .await.map_err(crate::providers::connection_error)?;
 
     let mut event = crate::audit::AuditEvent::action("provider.changed", ctx.role.as_str());
     event.actor_user_id = ctx.user_id;
@@ -575,6 +559,7 @@ async fn update_llm_row(
     let model = nz(&body.model);
 
     let mut tx = state.pg.begin().await?;
+    crate::model_routing::vnext::connections::mutation_lock(&mut tx,scope_id).await?;
     let dup = sqlx::query_scalar!(
         r#"SELECT EXISTS(
              SELECT 1 FROM provider_configs
@@ -601,7 +586,7 @@ async fn update_llm_row(
         id, scope, scope_id, label, base_url, model, api_key_encrypted, body.enabled, reasoning_mode, ctx.user_id,
     )
     .execute(&mut *tx)
-    .await?;
+    .await.map_err(crate::providers::connection_error)?;
     if n.rows_affected() == 0 {
         return Err(AppError::NotFound("provider not found".into()));
     }
@@ -628,6 +613,7 @@ async fn delete_llm_row(
     id: Uuid,
 ) -> Result<Json<serde_json::Value>> {
     let mut tx = state.pg.begin().await?;
+    crate::model_routing::vnext::connections::mutation_lock(&mut tx,scope_id).await?;
     let was_default = sqlx::query_scalar!(
         r#"DELETE FROM provider_configs
            WHERE id = $1 AND role = 'llm' AND scope = $2 AND scope_id IS NOT DISTINCT FROM $3
@@ -672,6 +658,7 @@ async fn set_llm_default_row(
     id: Uuid,
 ) -> Result<Json<serde_json::Value>> {
     let mut tx = state.pg.begin().await?;
+    crate::model_routing::vnext::connections::mutation_lock(&mut tx,scope_id).await?;
     sqlx::query!(
         r#"UPDATE provider_configs SET is_default = false
            WHERE role = 'llm' AND scope = $1 AND scope_id IS NOT DISTINCT FROM $2 AND is_default"#,
@@ -822,6 +809,8 @@ pub async fn list_llm_providers(
     .await?;
 
     // The chat's stored pick (when still visible), else the default (user default
+    let flags=crate::providers::public_connection_flags(&state.pg,rows.iter().map(|r|r.id).collect()).await?;
+    let rows:Vec<_>=rows.into_iter().filter(|r|flags.get(&r.id).is_some_and(|s|s.0)).collect();
     // wins over deployment default — matching resolve_llm).
     let stored: Option<Uuid> = match q.chat_id {
         Some(cid) => sqlx::query_scalar!("SELECT llm_provider_id FROM chats WHERE id = $1", cid)
@@ -848,7 +837,7 @@ pub async fn list_llm_providers(
                 "label": r.label,
                 "model": r.model,
                 "base_url": r.base_url,
-                "api_key_set": r.api_key_set,
+                "api_key_set": flags.get(&r.id).map_or(r.api_key_set,|s|s.1),
                 "source": if r.scope == "user" { "user" } else { "deployment" },
                 "enabled": true,
                 "is_default": r.is_default,

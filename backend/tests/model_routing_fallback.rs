@@ -47,6 +47,7 @@ fn report(body:&Value,failed:bool)->Value {
     }]})
 }
 async fn raw_request(state:AppState,token:&str,body:Value)->anyhow::Result<(StatusCode,String)> {
+    sqlx::query("DELETE FROM routing_health_scopes").execute(&state.pg).await?;
     sqlx::query("DELETE FROM routing_provider_health").execute(&state.pg).await?;
     sqlx::query("DELETE FROM routing_credential_health").execute(&state.pg).await?;
     let token=token.to_owned();

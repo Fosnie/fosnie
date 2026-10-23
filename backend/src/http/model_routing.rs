@@ -207,7 +207,7 @@ pub async fn probe(State(state): State<AppState>, AuthUser(ctx): AuthUser, Path(
         max_calls:Some(1),max_output_tokens:Some(128),max_duration_ms:Some(10_000),max_cost_microusd:body.max_cost_microusd,..Default::default()
     }).intersect(&state.inference_policy.constraints(&state.pg,&context).await?);
     let target = resolve_target(&state,&context,&TargetReference { provider_id:id,provider_revision:profile.provider_revision,
-        profile_revision:profile.revision,model:profile.model.clone(),effort:None },&constraints).await?;
+        profile_revision:profile.revision,model:profile.model.clone(),effort:None , variant:None },&constraints).await?;
     let (prompt, tools) = match body.kind {
         ProbeKind::Connectivity => ("Reply with exactly READY", None),
         ProbeKind::JsonResponse => ("Return only the JSON object {\"ready\":true}", None),

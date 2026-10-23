@@ -22,7 +22,7 @@ pub(super) async fn enabled(state: &AppState) -> crate::Result<bool> {
 }
 async fn description(state: &AppState) -> crate::Result<Value> {
     Ok(json!({"schema_version":1,"enabled":enabled(state).await?,"scope":"stateless_text_v1",
-        "selection_modes":["default","manual","auto"],"request_field":"model_selection",
+        "selection_modes":["default","manual","auto"],"request_field":"model_selection","routing_intent_versions":[2],"profile_versions":[1,2],
         "model_field":"omit_or_empty","default_max_output_tokens":1024,
         "agent_selection":true,"agent_scope":"general_text_read_tools_v1","agent_sampling":"configured_agent",
         "agent_messages":"one_user_text","agent_continuation":"explicit_selection_original_agent_and_sources",
@@ -115,14 +115,18 @@ impl Access {
 }
 
 pub async fn run(state: &AppState, actor: &AuthContext, key: Uuid, req: ChatCompletionRequest) -> Result<Response, ApiError> {
-    run_in(state,actor,key,req,None).await
+    Box::pin(run_in(state,actor,key,req,None)).await
 }
 pub async fn run_alias(state:&AppState,actor:&AuthContext,key:Uuid,req:ChatCompletionRequest,alias:super::alias::Reference)->Result<Response,ApiError> {
-    run_in(state,actor,key,req,Some(alias)).await
+    Box::pin(run_in(state,actor,key,req,Some(alias))).await
 }
 async fn run_in(state:&AppState,actor:&AuthContext,key:Uuid,mut req:ChatCompletionRequest,alias:Option<super::alias::Reference>)->Result<Response,ApiError> {
+    let intent:Option<fosnie_protocol::routing_vnext::RoutingIntentV2>=req.extra.remove("routing_intent").map(serde_json::from_value).transpose().map_err(|_|ApiError::bad_request("invalid routing_intent"))?;
+    if intent.is_some() && req.model_selection.is_some(){return Err(ApiError::bad_request("choose one routing selection field"));}
+    if intent.is_some() && alias.is_some(){return Err(ApiError::bad_request("explicit routing_intent cannot change a virtual alias"));}
     let contract:Option<QualityContract>=req.extra.remove("quality_contract").map(serde_json::from_value).transpose()
         .map_err(|_|ApiError::bad_request("invalid quality_contract"))?;
+    if intent.is_some() && contract.is_some(){return Err(ApiError::bad_request("quality_contract is not supported by routing profiles"));}
     if let Some(contract)=&contract {
         if req.stream {return Err(ApiError::bad_request("quality_contract requires stream=false"));}
         contract.validate().map_err(crate::AppError::from)?;
@@ -136,7 +140,7 @@ async fn run_in(state:&AppState,actor:&AuthContext,key:Uuid,mut req:ChatCompleti
         .map_err(|_| ApiError::bad_request("messages too large"))?;
     let context = RoutingContext { actor:actor.clone(), chat_id:None, project_id:None, run_id:Uuid::now_v7(), purpose:CallPurpose::Primary };
     let cancel = Arc::new(Notify::new());
-    let selected = req.model_selection.clone().ok_or_else(|| ApiError::bad_request("model_selection is required"))?;
+    let selected = intent.as_ref().map(|i|i.selection.clone()).or(req.model_selection.clone()).ok_or_else(|| ApiError::bad_request("routing selection is required"))?;
     if contract.is_some() {
         let crate::model_routing::ModelSelection::Auto{policy_id,..}=&selected else {
             return Err(ApiError::bad_request("quality_contract requires Auto selection"));
@@ -149,14 +153,16 @@ async fn run_in(state:&AppState,actor:&AuthContext,key:Uuid,mut req:ChatCompleti
             crate::model_routing::engine::validate_policy(&policy).map_err(crate::AppError::from)?;Ok(())
         }).await?;
     }
-    let run = access.guard(async {
+    let run = if let Some(intent)=intent {
+        access.guard(async {Box::pin(RoutedRun::selected_vnext(state,context,intent,WorkloadRequirements{input_tokens:input,output_tokens:output as u32,..Default::default()},&conversation,&[],&cancel)).await.map_err(ApiError::from)}).await?
+    } else {access.guard(async {
         RoutedRun::selected(state, context, selected, WorkloadRequirements {input_tokens:input, output_tokens:output as u32,
             structured_output:matches!(contract,Some(QualityContract::JsonObject{..})),
             ..Default::default()}, &conversation, &[], &cancel).await.map_err(ApiError::from)
-    }).await?;
+    }).await?};
     let mut source = Source {access, run, stream:None, first:None, buffered:VecDeque::new(), quality_failure:None, ended:false, recorded:false};
     let mut sampling = req.sampling(); sampling.max_tokens = Some(output);
-    if let Err(error)=source.open_checked(state,&messages,&sampling,contract.as_ref()).await {
+    if let Err(error)=Box::pin(source.open_checked(state,&messages,&sampling,contract.as_ref())).await {
         source.finish("failed",None).await?;return Err(error);
     }
     let model=response_model.unwrap_or_else(||source.run.plan().assignments[&CallPurpose::Final].model.clone());
@@ -213,8 +219,8 @@ impl Source {
             // Preserve typed inference failures inside the access guard. An
             // expired key/alias/gate is an outer error and can never be retried.
             let result=access.guard(async {Ok(async {
-                let mut stream=self.run.generate(state,ml::GenerateRequest {messages:messages.to_vec(),sampling:sampling.clone(),
-                    model:None,tools:None,overrides:Default::default()}).await?;
+                let mut stream=Box::pin(self.run.generate(state,ml::GenerateRequest {messages:messages.to_vec(),sampling:sampling.clone(),
+                    model:None,tools:None,overrides:Default::default()})).await?;
                 let first=stream.recv().await?.ok_or_else(||crate::AppError::Unavailable("routed stream ended before completion".into()))?;
                 Ok::<_,crate::AppError>((stream,first))
             }.await)}).await?;
@@ -222,13 +228,20 @@ impl Source {
                 Ok((stream,first))=>{self.stream=Some(stream);self.first=Some(first);return Ok(());}
                 Err(error)=>{
                     if let Some(kind)=crate::model_routing::fallback::OpenFailure::kind(&error) {
-                        let retry=access.guard(async {self.run.retry_stateless(state,kind).await.map_err(ApiError::from)}).await?;
+                        let retry=access.guard(async {Box::pin(self.run.retry_stateless(state,kind)).await.map_err(ApiError::from)}).await?;
                         if retry {continue;}
                     }
                     return Err(error.into());
                 }
             }
         }
+    }
+    fn translate(&self,event:&Value,routing:Value)->Result<Emit,ApiError> {
+        if event["type"]=="done" && event["model"].as_str().is_some_and(|model|
+            model!=self.run.plan().assignments[&CallPurpose::Final].model) {
+            return Err(ApiError::unavailable("response model differs from the pinned target"));
+        }
+        translate(event,routing)
     }
     fn metadata(&self, completed: bool) -> Value {
         let mut decision = self.run.plan().decision.clone();
@@ -284,26 +297,28 @@ impl Drop for Source {
     }
 }
 impl sse::EmitSource for Source {
-    async fn next(&mut self) -> Option<Emit> {
+    fn next(&mut self) -> impl Future<Output=Option<Emit>> + Send {
+        Box::pin(async move {
         if self.ended { return None; }
         let result = self.access.guard(async {
             if let Some(event)=self.buffered.pop_front() {Ok(Some(event))}
             else if let Some(first)=self.first.take() {Ok(Some(first))}
-            else {self.stream.as_mut().expect("opened routed stream").recv().await.map_err(ApiError::from)}
+            else {Box::pin(self.stream.as_mut().expect("opened routed stream").recv()).await.map_err(ApiError::from)}
         }).await;
         let result = result.and_then(|event| event.ok_or_else(|| ApiError::unavailable("routed stream ended before completion")))
-            .and_then(|event| translate(&event, self.metadata(true)));
+            .and_then(|event| self.translate(&event, self.metadata(true)));
         match result {
             Ok(emit @ Emit::Delta {..}) => Some(emit),
             Ok(emit @ Emit::Final {..}) => {
                 let usage = match &emit {Emit::Final {usage,..}=>usage, _=>unreachable!()};
-                match self.finish("completed", Some(usage)).await {Ok(())=>Some(emit),Err(error)=>Some(Emit::Failed(error))}
+                match Box::pin(self.finish("completed", Some(usage))).await {Ok(())=>Some(emit),Err(error)=>Some(Emit::Failed(error))}
             }
             Ok(Emit::Failed(error)) | Err(error) => {
-                let error = self.finish("failed", None).await.err().unwrap_or(error);
+                let error = Box::pin(self.finish("failed", None)).await.err().unwrap_or(error);
                 Some(Emit::Failed(error))
             }
         }
+        })
     }
 }
 

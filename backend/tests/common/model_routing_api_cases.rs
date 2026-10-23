@@ -135,8 +135,11 @@ pub fn check<'a>(pool:&'a sqlx::PgPool,provider:Uuid,admin:&'a AuthContext)->Pin
         let exhausted=store::save_policy(&state,admin,policy.id,store::SavePolicy {label:"API exhausted".into(),scope:"deployment".into(),
             expected_revision:judge_policy.revision,is_default:true,policy:exhausted}).await?;
         let before=calls.load(Ordering::SeqCst);let mut b=body();b["model_selection"]=json!({"mode":"auto"});
-        assert_eq!(request(state.clone(),token.clone(),b).await?.status(),StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(calls.load(Ordering::SeqCst),before+1,"no main call after judge exhausts shared budget");
+        let response=request(state.clone(),token.clone(),b).await?;assert_eq!(response.status(),StatusCode::OK);
+        let response=value(response).await?;
+        assert_eq!(response["fosnie_routing"]["usage"]["calls"],1);
+        assert!(response["fosnie_routing"]["decision"]["reason_codes"].as_array().unwrap().iter().any(|code|code.as_str().is_some_and(|code|code.starts_with("classifier_skipped"))));
+        assert_eq!(calls.load(Ordering::SeqCst),before+1,"one-call allowance retains the answer and cannot dispatch a judge");
         store::save_policy(&state,admin,policy.id,store::SavePolicy {label:"API default".into(),scope:"deployment".into(),
             expected_revision:exhausted.revision,is_default:true,policy:policy.clone()}).await?;
         let before=calls.load(Ordering::SeqCst);

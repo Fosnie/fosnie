@@ -29,7 +29,7 @@ use uuid::Uuid;
 pub async fn routing_capabilities(State(state):State<AppState>,AuthUser(_):AuthUser)->Result<Json<Value>> {
     let enabled=crate::config::runtime::get(&state.pg,"routing.workflow_jobs_enabled").await?
         .is_some_and(|v|matches!(v.value_type,crate::config::runtime::ConfigValueType::Bool) && v.value=="true");
-    Ok(Json(serde_json::json!({"schema_version":1,"enabled":enabled,"selection_modes":["default","manual","auto"],
+    Ok(Json(serde_json::json!({"schema_version":1,"enabled":enabled,"selection_modes":["default","manual","auto"],"selection_versions":[1,2],"profile_versions":[1,2],
         "scope":"agent_delivery_v1","custom_agents":true,"read_tools":["web_search","read_document"],
         "group_delivery":true,"max_recipients":128,"max_libraries":32,"max_events":32,
         "event_placeholders":["filename","mime","kb_id","doc_id"],"automatic_replay":false})))

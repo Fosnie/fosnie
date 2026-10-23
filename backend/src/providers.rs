@@ -33,6 +33,21 @@ pub const ROLES: [&str; 7] = ["llm", "embed", "rerank", "ocr", "stt", "tts", "ve
 /// Per-user writes are rejected and `resolve` ignores any legacy user-scope row.
 pub const DEPLOYMENT_WIDE: [&str; 3] = ["embed", "rerank", "verify"];
 
+pub(crate) fn connection_error(error:sqlx::Error)->crate::AppError {
+    if let sqlx::Error::Database(e)=&error {
+        if e.code().as_deref()==Some("40001") {return crate::AppError::Conflict("connection changed or requires the connection editor".into());}
+        if e.code().as_deref()==Some("23514") {return crate::AppError::Validation("invalid provider connection or scope".into());}
+    }
+    error.into()
+}
+
+/// Public status only; neither ciphertext nor secret fingerprints leave the registry.
+pub(crate) async fn public_connection_flags(pool:&sqlx::PgPool,ids:Vec<Uuid>)->Result<std::collections::HashMap<Uuid,(bool,bool)>> {
+    let rows:Vec<(Uuid,bool,bool)>=sqlx::query_as("SELECT p.id,p.enabled AND CASE WHEN p.connection_id IS NULL THEN true ELSE COALESCE(c.enabled,false) END,CASE WHEN p.connection_id IS NULL THEN p.api_key_encrypted IS NOT NULL ELSE c.api_key_encrypted IS NOT NULL END FROM provider_configs p LEFT JOIN provider_configs c ON c.id=p.connection_id AND c.role='connection' WHERE p.id=ANY($1)")
+        .bind(ids).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|(id,enabled,key_set)|(id,(enabled,key_set))).collect())
+}
+
 /// Core default registry: `provider_configs` with precedence user → deployment →
 /// `None`. Holds the at-rest key (the deployment `message_encryption_key`) to
 /// decrypt stored API keys; without a key, ciphertext keys resolve to `None`.
@@ -57,6 +72,7 @@ impl ext::ProviderRegistry for DbProviderRegistry {
         if role == "llm" {
             return resolve_db_llm(pool, self.key, user_id, None, None).await;
         }
+        if !ROLES.contains(&role) { return Err(crate::AppError::Validation("invalid inference role".into())); }
         // Pick the user row over the deployment row when both exist. A NULL
         // `user_id` never matches the user branch, so deployment wins.
         // Deployment-wide roles ignore any (legacy) user-scope row entirely.
@@ -90,6 +106,17 @@ impl ext::ProviderRegistry for DbProviderRegistry {
 
     async fn resolve_llm_id(&self, pool: &sqlx::PgPool, user_id: Option<Uuid>, provider_id: Uuid) -> Result<Option<ResolvedProvider>> {
         fetch_visible_llm(pool, self.key, user_id, provider_id).await
+    }
+
+    async fn resolve_connection_id(&self,pool:&sqlx::PgPool,user_id:Option<Uuid>,id:Uuid)->Result<Option<ResolvedProvider>> {
+        let row:Option<(Option<String>,Option<String>,i64)>=sqlx::query_as("SELECT base_url,api_key_encrypted,auth_revision FROM provider_configs WHERE id=$1 AND role='connection' AND enabled AND ((scope='deployment' AND scope_id IS NULL) OR (scope='user' AND scope_id=$2))")
+            .bind(id).bind(user_id).fetch_optional(pool).await?;
+        let Some((base_url,encrypted,revision))=row else { return Ok(None); };
+        let api_key=decrypt_api_key(encrypted,self.key)?;
+        let current:Option<i64>=sqlx::query_scalar("SELECT auth_revision FROM provider_configs WHERE id=$1 AND role='connection' AND enabled")
+            .bind(id).fetch_optional(pool).await?;
+        if current!=Some(revision) { return Err(crate::AppError::Conflict("connection changed during resolution".into())); }
+        Ok(Some(ResolvedProvider {base_url,model:None,api_key,enabled:true,reasoning_mode:None}))
     }
 
     async fn resolve_active_embed(&self,pool:&sqlx::PgPool,provider_id:Uuid,index_revision:i64) -> Result<Option<ResolvedProvider>> {
@@ -146,41 +173,22 @@ async fn fetch_visible_llm(
     user_id: Option<Uuid>,
     id: Uuid,
 ) -> Result<Option<ResolvedProvider>> {
-    let row = sqlx::query!(
-        r#"SELECT base_url, model, api_key_encrypted, enabled, reasoning_mode
-           FROM provider_configs
-           WHERE id = $1 AND role = 'llm' AND enabled
-             AND ( scope = 'deployment'
-                OR (scope = 'user' AND scope_id = $2) )"#,
-        id,
-        user_id,
-    )
-    .fetch_optional(pool)
-    .await?;
-    row.map(|r| Ok(ResolvedProvider {
-        base_url: r.base_url,
-        model: r.model,
-        api_key: decrypt_api_key(r.api_key_encrypted, key)?,
-        enabled: r.enabled,
-        reasoning_mode: r.reasoning_mode,
-    })).transpose()
+    let row:Option<(Option<String>,Option<String>,Option<String>,Option<String>,i64,Option<Uuid>,Option<i64>)>=sqlx::query_as(
+        "SELECT p.base_url,p.model,CASE WHEN p.connection_id IS NULL THEN p.api_key_encrypted ELSE c.api_key_encrypted END,p.reasoning_mode,p.routing_revision,p.connection_id,c.auth_revision FROM provider_configs p LEFT JOIN provider_configs c ON c.id=p.connection_id AND c.role='connection' AND c.scope=p.scope AND c.scope_id IS NOT DISTINCT FROM p.scope_id WHERE p.id=$1 AND p.role='llm' AND p.enabled AND (p.connection_id IS NULL OR c.enabled) AND ((p.scope='deployment' AND p.scope_id IS NULL) OR (p.scope='user' AND p.scope_id=$2))")
+        .bind(id).bind(user_id).fetch_optional(pool).await?;
+    let Some((base_url,model,encrypted,reasoning_mode,revision,connection_id,auth_revision))=row else {return Ok(None);};
+    let api_key=decrypt_api_key(encrypted,key)?;
+    let current:Option<(i64,Option<Uuid>,Option<i64>)>=sqlx::query_as("SELECT p.routing_revision,p.connection_id,c.auth_revision FROM provider_configs p LEFT JOIN provider_configs c ON c.id=p.connection_id AND c.role='connection' WHERE p.id=$1 AND p.role='llm' AND p.enabled AND (p.connection_id IS NULL OR c.enabled)")
+        .bind(id).fetch_optional(pool).await?;
+    if current!=Some((revision,connection_id,auth_revision)) {return Err(crate::AppError::Conflict("model connection changed during resolution".into()));}
+    Ok(Some(ResolvedProvider {base_url,model,api_key,enabled:true,reasoning_mode}))
 }
 
 /// Is `id` a visible `llm` provider for `user_id`? (Cheap existence check for
 /// persist/validation paths that don't need the decrypted row.)
 pub async fn visible_llm(pool: &sqlx::PgPool, user_id: Option<Uuid>, id: Uuid) -> Result<bool> {
-    let exists = sqlx::query_scalar!(
-        r#"SELECT EXISTS(
-             SELECT 1 FROM provider_configs
-             WHERE id = $1 AND role = 'llm' AND enabled
-               AND ( scope = 'deployment'
-                  OR (scope = 'user' AND scope_id = $2) )
-           ) AS "e!""#,
-        id,
-        user_id,
-    )
-    .fetch_one(pool)
-    .await?;
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM provider_configs p LEFT JOIN provider_configs c ON c.id=p.connection_id AND c.role='connection' WHERE p.id=$1 AND p.role='llm' AND p.enabled AND (p.connection_id IS NULL OR c.enabled) AND (p.scope='deployment' OR (p.scope='user' AND p.scope_id=$2)))")
+        .bind(id).bind(user_id).fetch_one(pool).await?;
     Ok(exists)
 }
 
@@ -219,26 +227,11 @@ async fn resolve_db_llm(
     }
     // 3. The default llm row: the caller's own default wins over the deployment
     //    default (preserves per-user BYOK precedence when the user hasn't picked).
-    let row = sqlx::query!(
-        r#"SELECT base_url, model, api_key_encrypted, enabled, reasoning_mode
-           FROM provider_configs
-           WHERE role = 'llm' AND enabled AND is_default
-             AND ( scope = 'deployment'
-                OR (scope = 'user' AND scope_id = $1) )
-           ORDER BY (scope = 'user') DESC
-           LIMIT 1"#,
-        user_id,
-    )
-    .fetch_optional(pool)
-    .await?;
-    if let Some(r) = row {
-        return Ok(Some(ResolvedProvider {
-            base_url: r.base_url,
-            model: r.model,
-            api_key: decrypt_api_key(r.api_key_encrypted, key)?,
-            enabled: r.enabled,
-            reasoning_mode: r.reasoning_mode,
-        }));
+    let id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM provider_configs WHERE role='llm' AND enabled AND is_default AND (scope='deployment' OR (scope='user' AND scope_id=$1)) ORDER BY (scope='user') DESC LIMIT 1")
+        .bind(user_id).fetch_optional(pool).await?;
+    if let Some(id) = id {
+        return fetch_visible_llm(pool,key,user_id,id).await?.map(Some)
+            .ok_or_else(||crate::AppError::Unavailable("configured model connection is unavailable".into()));
     }
     // 4. Nothing configured ⇒ the ML service uses its own `.env` default.
     Ok(None)

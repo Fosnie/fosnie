@@ -16,7 +16,7 @@
 
 import app.gemini_adapter as ga
 from app import rag_ctx
-
+import pytest
 
 def test_is_gemini_native_excludes_openai_compat_path():
     assert ga.is_gemini_native("https://generativelanguage.googleapis.com/v1beta")
@@ -93,3 +93,28 @@ def test_map_finish():
     assert ga._map_finish("STOP") == "stop"
     assert ga._map_finish("MAX_TOKENS") == "length"
     assert ga._map_finish(None) is None
+
+@pytest.mark.parametrize('model',['gemma-4-26b-a4b-it','models/gemma-4-31b-it'])
+def test_gemma_wire_preserves_system_and_history_without_mutating_the_source(model):
+    import copy
+    from app.gemini_wire_compat import system_layout
+    body={'systemInstruction':{'parts':[{'text':'system one'},{'text':'system two'}]},
+        'contents':[{'role':'user','parts':[{'text':'first question'}]},{'role':'model','parts':[{'text':'old answer'}]},{'role':'user','parts':[{'text':'latest question'}]}]}
+    before=copy.deepcopy(body);wire=system_layout(body,model)
+    assert body==before and 'systemInstruction' not in wire
+    assert wire['contents'][0]['parts'][0]['text'].startswith('system one\nsystem two\n')
+    assert wire['contents'][0]['parts'][1:]==before['contents'][0]['parts']
+    assert wire['contents'][1:]==before['contents'][1:]
+    assert system_layout(body,'gemini-3.5-flash-lite') is body
+
+
+@pytest.mark.parametrize("model",["gemma-4-26b-a4b-it","gemma-4-31b-it"])
+def test_hosted_gemma_legacy_toggle_uses_documented_levels_and_keeps_default(model):
+    with rag_ctx.scoped_overrides({"llm_reasoning_enabled":"false"}):
+        assert ga._thinking_config(model)=={"thinkingLevel":"MINIMAL"}
+    with rag_ctx.scoped_overrides({"llm_reasoning_enabled":"true","llm_reasoning_level":"high"}):
+        assert ga._thinking_config(model)=={"thinkingLevel":"HIGH"}
+    with rag_ctx.scoped_overrides({"llm_reasoning_enabled":"true","llm_reasoning_level":"low"}):
+        with pytest.raises(ValueError,match="parameter mapping"):ga._thinking_config(model)
+    with rag_ctx.scoped_overrides({"llm_reasoning_enabled":None,"llm_thinking":"off"}):
+        assert ga._thinking_config(model) is None

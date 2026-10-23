@@ -106,6 +106,9 @@ pub fn check(pool:&sqlx::PgPool)->Pin<Box<dyn Future<Output=anyhow::Result<()>>+
         cloud_profile=store::save_profile(&state,&manager,cloud,store::SaveProfile{expected_revision:old,profile:cloud_profile}).await?;
         mode.store(1,Ordering::SeqCst);let report=probe(&state,&manager,&policy).await?.0;
         assert_eq!(report["ok"],false);assert_eq!(report["usage"]["calls"],1);assert!(report["requirements"].is_null());assert_eq!(calls.load(Ordering::SeqCst),before+1);
+        // The malformed-output cooldown is a separate contract from the next
+        // in-flight access-revocation scenarios. Reset only this owned fixture.
+        sqlx::query("DELETE FROM routing_provider_health WHERE provider_id=$1").bind(cloud).execute(pool).await?;
         // Suppress a late result after provider/profile or original actor changes.
         for fault in 0..2 {
             mode.store(2,Ordering::SeqCst);let task=tokio::spawn({let state=state.clone();let manager=manager.clone();let policy=policy.clone();async move{probe(&state,&manager,&policy).await}});

@@ -100,6 +100,13 @@ pub trait ProviderRegistry: Send + Sync {
         Err(AppError::Unavailable("this provider registry does not support named model selection".into()))
     }
 
+    /// Metadata discovery uses the same secret authority. Registries must opt
+    /// in explicitly; a wrapper never falls through to Core credentials.
+    async fn resolve_connection_id(&self, _pool: &PgPool, _user_id: Option<Uuid>, _connection_id: Uuid)
+        -> Result<Option<ResolvedProvider>> {
+        Err(AppError::Unavailable("this provider registry does not support connection discovery".into()))
+    }
+
     /// Strict embedding calls use active-index provenance, never the desired
     /// migration target. Wrappers must explicitly forward/implement this seam.
     async fn resolve_active_embed(&self, _pool:&PgPool, _provider_id:Uuid, _index_revision:i64) -> Result<Option<ResolvedProvider>> {

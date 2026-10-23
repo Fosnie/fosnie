@@ -21,7 +21,7 @@ async def test_billing_codes_distinct_from_plain_429_and_no_raw_body(code):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize('status,code,kind',[(429,'slow_down','rate_limited'),(429,None,'rate_limited'),
-    (402,None,'payment_required'),(401,None,'unauthorized'),(403,None,'unauthorized'),
+    (402,None,'payment_required'),(401,None,'unauthorized'),(403,None,'access_denied'),(404,'model_not_found','model_unavailable'),(404,None,'invalid_request'),
     (503,'server_is_overloaded','unavailable'),(529,None,'unavailable'),(400,'context_length_exceeded','invalid_request')])
 async def test_native_status_and_allowlisted_code_propagate_with_phase(status,code,kind):
     response=httpx.Response(status,json={'error':{'code':code,'message':'credits gone maybe'}},request=httpx.Request('POST','https://vendor.test'))

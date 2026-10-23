@@ -18,17 +18,31 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from . import rag_ctx
 from .inference_budget import BudgetLease
 from .inference_fixed import FixedTarget, FixedLease, Role
+from .variant_generation import GenerationConfig
 
 Purpose = Literal[
     "primary", "tool_loop", "final", "router_classify", "utility_title", "utility_summary",
     "retrieval_decompose", "retrieval_grade", "web_plan", "web_grade", "web_synthesis",
-    "research_plan", "research_write", "document", "voice", "moderation", "verify", "embed", "rerank", "ocr", "stt", "tts",
+    "research_plan", "research_write", "document", "voice", "moderation", "quality_judge", "verify", "embed", "rerank", "ocr", "stt", "tts",
 ]
+
+
+class VariantRef(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: UUID
+    revision: int = Field(gt=0)
+
+
+class VariantBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    variant: VariantRef
+    model_config_revision: int = Field(gt=0)
+    behaviour_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class InferenceTarget(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     provider_id: UUID
     provider_revision: int = Field(gt=0)
     profile_revision: int = Field(gt=0)
@@ -37,6 +51,24 @@ class InferenceTarget(BaseModel):
     model: str = Field(min_length=1, max_length=256)
     api_key: str = Field(repr=False)
     effort: str | None = Field(default=None, max_length=24)
+
+    generation: "GenerationConfig | None" = None
+    variant: VariantBinding | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def strict_v1_fields(cls, value):
+        if isinstance(value, dict) and value.get("schema_version") == 1 and ("generation" in value or "variant" in value):
+            raise ValueError("v1 target cannot carry v2 fields, including null")
+        return value
+
+    @model_validator(mode="after")
+    def versioned_variant(self):
+        if self.schema_version == 1 and (self.generation is not None or self.variant is not None):
+            raise ValueError("v1 cannot carry a variant")
+        if self.schema_version == 2 and (self.generation is None or self.variant is None):
+            raise ValueError("v2 target requires effective generation and binding")
+        return self
 
     @field_validator("base_url")
     @classmethod
@@ -50,7 +82,7 @@ class InferenceTarget(BaseModel):
 
 class InferenceEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     decision_id: UUID
     purpose: Purpose
     assignments: dict[Purpose, InferenceTarget] = Field(default_factory=dict, max_length=24, repr=False)
@@ -62,6 +94,8 @@ class InferenceEnvelope(BaseModel):
     def assignments_match(self):
         if not self.assignments and not self.fixed_assignments:
             raise ValueError("inference envelope has no assignments")
+        if self.schema_version == 1 and any(t.schema_version != 1 for t in self.assignments.values()):
+            raise ValueError("v2 target requires v2 envelope")
         fixed_roles = {"embed", "rerank", "ocr", "stt", "tts", "verify"}
         if set(self.assignments) & fixed_roles:
             raise ValueError("fixed roles cannot use LLM assignments")
@@ -264,6 +298,7 @@ def for_call(stage: str | None = None, *, utility: bool = False, bound=None):
               "llm_api_key": target.api_key, "utility_base_url": target.base_url,
               "utility_model": target.model, "utility_api_key": target.api_key,
               "llm_adapter": target.adapter, "routing_purpose": purpose,
+              "routing_generation": target.generation.model_dump() if target.generation else None,
               "routing_provider_id": str(target.provider_id), "routing_effort": target.effort,
               "llm_reasoning_enabled": ("false" if target.effort == "none" else "true") if target.effort else None,
               "llm_reasoning_level": target.effort,

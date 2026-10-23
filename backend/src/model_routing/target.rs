@@ -19,6 +19,10 @@ pub struct InferenceTarget {
     pub model: String,
     pub api_key: String,
     pub effort: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub generation: Option<vnext::catalogue::GenerationConfig>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub variant: Option<vnext::execution::VariantBinding>,
 }
 
 impl std::fmt::Debug for InferenceTarget {
@@ -31,7 +35,7 @@ impl std::fmt::Debug for InferenceTarget {
 impl InferenceTarget {
     pub fn reference(&self) -> TargetReference {
         TargetReference { provider_id: self.provider_id, provider_revision: self.provider_revision,
-            profile_revision: self.profile_revision, model: self.model.clone(), effort: self.effort.clone() }
+            profile_revision: self.profile_revision, model: self.model.clone(), effort: self.effort.clone(), variant:self.variant.clone() }
     }
 }
 
@@ -80,7 +84,7 @@ pub async fn resolve_target(
     constraints: &RoutingConstraints,
 ) -> crate::Result<InferenceTarget> {
     let row = sqlx::query_as::<_, TargetMetadata>(
-        "SELECT p.scope, p.scope_id, p.enabled, p.base_url, p.routing_revision, m.revision AS profile_revision, m.profile FROM provider_configs p LEFT JOIN model_profiles m ON m.provider_id=p.id WHERE p.id=$1 AND p.role='llm'")
+        "SELECT p.scope, p.scope_id, p.enabled AND CASE WHEN p.connection_id IS NULL THEN true ELSE COALESCE(c.enabled,false) END AS enabled, p.base_url, p.routing_revision, m.revision AS profile_revision, m.profile FROM provider_configs p LEFT JOIN provider_configs c ON c.id=p.connection_id AND c.role='connection' LEFT JOIN model_profiles m ON m.provider_id=p.id WHERE p.id=$1 AND p.role='llm'")
         .bind(reference.provider_id).fetch_optional(&state.pg).await?
         .ok_or(RoutingError::ProviderUnavailable)?;
     if row.scope != "deployment" {
@@ -107,6 +111,7 @@ pub async fn resolve_target(
         return Err(RoutingError::Incompatible("unsupported reasoning effort").into());
     }
     if let Some(failure)=super::health::blocked(state,reference,context.purpose).await? {return Err(failure.app());}
+    let variant=vnext::execution::current_variant(state,&context.actor,reference).await?;
     let provider = state.providers.resolve_llm_id(&state.pg, context.actor.user_id, reference.provider_id).await?
         .ok_or(RoutingError::ProviderUnavailable)?;
     let base_url = provider.base_url.filter(|v| !v.trim().is_empty())
@@ -121,9 +126,11 @@ pub async fn resolve_target(
     let current: Option<(i64,i64)> = sqlx::query_as("SELECT p.routing_revision, m.revision FROM provider_configs p JOIN model_profiles m ON m.provider_id=p.id WHERE p.id=$1")
         .bind(reference.provider_id).fetch_optional(&state.pg).await?;
     if current != Some((reference.provider_revision,reference.profile_revision)) { return Err(RoutingError::NeedsReplan.into()); }
-    let target=InferenceTarget { schema_version: SCHEMA_VERSION, provider_id: reference.provider_id,
+    let target=InferenceTarget { schema_version: if reference.variant.is_some(){2}else{1},
+        generation:variant.as_ref().map(|v|v.behaviour.generation.clone()),variant:reference.variant.clone(), provider_id: reference.provider_id,
         provider_revision: reference.provider_revision, profile_revision: reference.profile_revision, adapter: profile.adapter,
         base_url, model, api_key: provider.api_key.unwrap_or_default(), effort: reference.effort.clone() };
+    vnext::execution::current_variant(state,&context.actor,reference).await?;
     super::health::register(state,&target,context.purpose).await?;
     Ok(target)
 }

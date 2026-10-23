@@ -344,6 +344,22 @@ async fn handle_socket(state: AppState, socket: WebSocket, auth: WsAuth) {
                         st.hub.remove_turn(socket_id,turn_id);
                     });
                 }
+                Ok(ClientFrame::ChatRoutedSendV2 {request}) => {
+                    let surface=match crate::chat::browser::Surface::authenticated(origin,device_id,device_key_id) {Ok(surface)=>surface,Err(e)=>{let _=tx.send(ServerFrame::ChatError {turn_id:None,chat_id:request.chat_id,message:e.to_string()}).await;continue;}};
+                    if !crate::cache::rate_limit_ok(&state.redis,&format!("chat:{user_id}"),30,60).await {
+                        let _=tx.send(ServerFrame::ChatError {turn_id:None,chat_id:request.chat_id,message:"You're sending messages too quickly — please slow down.".into()}).await;continue;
+                    }
+                    let turn_id=Uuid::now_v7();let cancel=Arc::new(Notify::new());let chat=request.chat_id;
+                    state.hub.add_turn(socket_id,turn_id,cancel.clone());
+                    let st=state.clone();let actor=ctx.clone();let out=tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e)=crate::chat::browser::execute_vnext(st.clone(),actor,request,turn_id,out.clone(),cancel,surface).await {
+                            crate::model_routing::failure::notify_chat(&st,turn_id,chat,&e,&out,false).await;
+                            let _=tokio::time::timeout(std::time::Duration::from_secs(5),out.send(ServerFrame::ChatError {turn_id:Some(turn_id),chat_id:chat,message:e.to_string()})).await;
+                        }
+                        st.hub.remove_turn(socket_id,turn_id);
+                    });
+                }
                 Ok(ClientFrame::ChatSend { chat_id, content, project_id, agent_id, attachment_ids, thinking, reasoning, llm_provider_id, workspace_id }) => {
                     // Coarse per-user abuse guard on the expensive turn path.
                     if !crate::cache::rate_limit_ok(&state.redis, &format!("chat:{user_id}"), 30, 60).await {

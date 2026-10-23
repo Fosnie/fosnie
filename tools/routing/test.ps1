@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('fast','integration','ml','classifier','eval-offline','fallback','quality','e2e','all','native','native-release','enterprise','enterprise-routing','enterprise-acceptance','acceptance')][string]$Lane='fast',
+    [ValidateSet('vnext','fast','integration','ml','classifier','eval-offline','fallback','quality','e2e','all','native','native-release','enterprise','enterprise-routing','enterprise-acceptance','acceptance')][string]$Lane='fast',
     [switch]$WithEnterprise,
     [string]$Only,
     [string]$StartAt,
