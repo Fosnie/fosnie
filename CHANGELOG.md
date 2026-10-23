@@ -11,6 +11,17 @@ next tag; a plain merge ships nothing to users.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-23
+
+### Added
+
+- Added Custom Auto and Full Auto profiles with editable Everyday and Thorough presets, task and complexity rules, exact model and effort assignments, preferences and pool restrictions.
+- Made personal profiles and variants of shared models available to ordinary users with personal API keys disabled.
+
+### Fixed
+
+- Fixed production and test container build inputs after removing unused routing assets, and included the shared protocol in the test image build.
+
 ## [0.7.0] - 2026-10-10
 
 ### Added
@@ -160,7 +171,9 @@ next tag; a plain merge ships nothing to users.
 - Hash-chained, append-only audit log (tamper-detection).
 - One-line installer and Docker Compose deployment; health and Prometheus metrics endpoints.
 
-[Unreleased]: https://github.com/Fosnie/fosnie/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Fosnie/fosnie/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/Fosnie/fosnie/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/Fosnie/fosnie/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Fosnie/fosnie/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Fosnie/fosnie/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Fosnie/fosnie/compare/v0.3.0...v0.4.0
