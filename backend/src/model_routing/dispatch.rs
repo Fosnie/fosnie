@@ -10,6 +10,7 @@ pub struct StageRequest { pub requirements: WorkloadRequirements, pub max_calls:
 pub struct PreparedRequest {
     pub envelope: InferenceEnvelope,
     grant: GrantedLease,
+    probes: Vec<super::health_scopes::Probe>,
 }
 impl PreparedRequest {
     pub fn finish(self, report: Option<&LeaseReport>) -> crate::Result<()> {
@@ -21,14 +22,15 @@ pub async fn prepare(
     state: &crate::AppState, context: &RoutingContext, plan: &ExecutionPlan, budget: &RunBudget,
     stages: &BTreeMap<CallPurpose,StageRequest>, timeout: Duration,
 ) -> crate::Result<PreparedRequest> {
-    if plan.schema_version != SCHEMA_VERSION || plan.id != context.run_id || plan.actor_user_id != context.actor.user_id {
+    if !matches!(plan.schema_version,1|2) || plan.id != context.run_id || plan.actor_user_id != context.actor.user_id {
         return Err(RoutingError::Forbidden.into());
     }
     if !stages.contains_key(&context.purpose) { return Err(RoutingError::Invalid("missing request purpose").into()); }
-    let policy = store::load_policy(state,&context.actor,Some(plan.decision.policy_id)).await?;
+    vnext::execution::validate_plan(state,context,plan).await?;
+    let policy = store::load_policy_supported(state,&context.actor,Some(plan.decision.policy_id),plan.schema_version).await?;
     if policy.revision != plan.decision.policy_revision { return Err(RoutingError::NeedsReplan.into()); }
     let mut constraints = plan.constraints.intersect(&policy.constraints).intersect(&store::deployment_constraints(state).await?);
-    let profiles = store::current_profiles(store::catalog(state,&context.actor).await?);
+    let mut profiles = store::current_profiles(store::catalog(state,&context.actor).await?);
     // Collect restrictions for the whole fan-out before decrypting any target.
     for &purpose in stages.keys() {
         if matches!(purpose,CallPurpose::Embed|CallPurpose::Rerank|CallPurpose::Ocr|CallPurpose::Stt|CallPurpose::Tts|CallPurpose::Verify) {
@@ -37,13 +39,18 @@ pub async fn prepare(
         let mut purpose_context = context.clone(); purpose_context.purpose=purpose;
         constraints = constraints.intersect(&state.inference_policy.constraints(&state.pg,&purpose_context).await?);
     }
+    vnext::execution::validate_constraints(context,plan,&constraints)?;
     for (&purpose,stage) in stages {
         let reference = plan.assignments.get(&purpose).ok_or(RoutingError::Invalid("unplanned purpose"))?;
         let profile = profiles.iter().find(|p| p.provider_id==reference.provider_id
             && p.revision==reference.profile_revision && p.provider_revision==reference.provider_revision
             && p.model==reference.model).ok_or(RoutingError::NeedsReplan)?;
+        let mut stage_context=context.clone();stage_context.purpose=purpose;
+        vnext::execution::validate_stage(state,&stage_context,plan,&stage.requirements,reference).await?;
         if stage.requirements.effort != reference.effort { return Err(RoutingError::Incompatible("request effort differs from plan").into()); }
-        if let Some(reason) = engine::target_incompatibility(profile,&stage.requirements,&constraints) {
+        let mut effective=stage.requirements.clone();
+        if let Some(v)=vnext::execution::current_variant(state,&context.actor,reference).await? {effective.output_tokens=effective.output_tokens.min(v.behaviour.generation.max_output_tokens.unwrap_or(effective.output_tokens));}
+        if let Some(reason) = engine::target_incompatibility(profile,&effective,&constraints) {
             return Err(RoutingError::Incompatible(reason).into());
         }
     }
@@ -54,15 +61,19 @@ pub async fn prepare(
         let target=resolve_target(state,&purpose_context,&plan.assignments[&purpose],&constraints).await?;
         assignments.insert(purpose,target);
     }
-    if store::load_policy(state,&context.actor,Some(policy.id)).await?.revision != policy.revision {
+    if store::load_policy_supported(state,&context.actor,Some(policy.id),plan.schema_version).await?.revision != policy.revision {
         return Err(RoutingError::NeedsReplan.into());
     }
+    vnext::execution::validate_plan(state,context,plan).await?;
+    for target in assignments.values() {vnext::execution::current_variant(state,&context.actor,&target.reference()).await?;}
     let allowances=stages.iter().map(|(&purpose,s)| (purpose,Allowance { max_calls:s.max_calls,
-        input_tokens:s.requirements.input_tokens,output_tokens:s.requirements.output_tokens })).collect();
+        input_tokens:s.requirements.input_tokens,output_tokens:assignments.get(&purpose).and_then(|t|t.generation.as_ref()).and_then(|g|g.max_output_tokens).map_or(s.requirements.output_tokens,|cap|cap.min(s.requirements.output_tokens)) })).collect();
+    vnext::execution::reservation_profiles(state,context,&assignments,&mut profiles).await?;
+    let probes=super::health_scopes::claim(state,&assignments.values().cloned().collect::<Vec<_>>(),stages.values().map(|s|s.max_calls).sum(),budget.remaining(timeout)).await?;
     let grant=GrantedLease::reserve(budget,plan.decision.id,&assignments,&profiles,allowances,timeout)?;
-    let envelope=InferenceEnvelope { schema_version:SCHEMA_VERSION,decision_id:plan.decision.id,
+    let envelope=InferenceEnvelope { schema_version:plan.schema_version,decision_id:plan.decision.id,
         purpose:context.purpose,assignments,budget:Some(grant.wire.clone()),fixed_assignments:Default::default(),fixed_budget:None };
-    Ok(PreparedRequest { envelope,grant })
+    Ok(PreparedRequest { envelope,grant,probes })
 }
 
 /// One planned non-streaming call. Tool execution and persistence belong to the
@@ -75,12 +86,15 @@ pub async fn chat_step(
     let future = async {
         let reference=plan.assignments.get(&context.purpose).ok_or(RoutingError::Invalid("unplanned purpose"))?;
         let requirements=call_requirements(reference,messages,tools,sampling)?;
-        let prepared=prepare(state,context,plan,budget,&[(context.purpose,StageRequest { requirements,max_calls:1 })].into(),Duration::from_secs(120)).await?;
+        let mut prepared=Box::pin(prepare(state,context,plan,budget,&[(context.purpose,StageRequest { requirements,max_calls:1 })].into(),Duration::from_secs(120))).await?;
         let overrides=prepared.envelope.apply(Default::default())?;
+        for p in &mut prepared.probes {p.arm();}
         let result=tokio::time::timeout(budget.remaining(Duration::from_secs(120)),
             crate::ml::chat_step(&state.http,&state.boot.ml.base_url,messages,tools,sampling,overrides))
             .await.map_err(|_|crate::AppError::Unavailable("routed inference timed out".into()))??;
+        let probes=std::mem::take(&mut prepared.probes);
         prepared.finish(result.routing_report.as_ref())?;
+        if result.routing_report.as_ref().is_some_and(|r|r.complete && r.calls.iter().all(|c|matches!(c.status,super::lease::CallStatus::Completed))) {for p in probes {p.success().await?;}}
         Ok(result)
     };
     tokio::select! {
@@ -137,7 +151,8 @@ impl PlannedStream {
             Ok(Some(event @ crate::ml::GenEvent::Done { .. })) => {
                 self.source.take();
                 if let crate::ml::GenEvent::Done { ref routing_report,.. }=event {
-                    self.prepared.take().unwrap().finish(routing_report.as_ref())?;
+                    let mut prepared=self.prepared.take().unwrap();let probes=std::mem::take(&mut prepared.probes);prepared.finish(routing_report.as_ref())?;
+                    if routing_report.as_ref().is_some_and(|r|r.complete && !r.calls.is_empty() && r.calls.iter().all(|c|matches!(c.status,super::lease::CallStatus::Completed))) {for p in probes {p.success().await?;}}
                 }
                 Ok(Some(event))
             }
@@ -164,8 +179,9 @@ pub async fn generate(
             return Err(RoutingError::Incompatible("generation model conflicts with execution plan").into());
         }
         let requirements=call_requirements(reference,&request.messages,request.tools.as_deref(),&request.sampling)?;
-        let prepared=prepare(state,context,plan,budget,&[(context.purpose,StageRequest { requirements,max_calls:1 })].into(),timeout).await?;
+        let mut prepared=Box::pin(prepare(state,context,plan,budget,&[(context.purpose,StageRequest { requirements,max_calls:1 })].into(),timeout)).await?;
         request.overrides=prepared.envelope.apply(request.overrides)?;
+        for p in &mut prepared.probes {p.arm();}
         let deadline=tokio::time::Instant::now()+budget.remaining(timeout);
         let source=tokio::time::timeout_at(deadline,crate::ml::generate(&state.http,&state.boot.ml.base_url,&request)).await
             .map_err(|_|crate::AppError::Unavailable("routed stream connection timed out".into()))??;

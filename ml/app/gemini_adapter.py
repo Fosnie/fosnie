@@ -78,8 +78,13 @@ def _url(model: str, method: str, sse: bool = False) -> str:
 # are valid across models; a wrong choice degrades (we never hard-require thinking).
 _BUDGET = {"low": 4096, "medium": 8192, "high": 16384, "max": 24576}
 
+# Exact hosted IDs documented by Google. A different Gemma/alias is not assumed
+# to expose the same API, and no quality rank is inferred from its name.
+_GEMMA_LEVEL_MODELS = frozenset({"gemma-4-26b-a4b-it", "gemma-4-31b-it"})
+
 
 def _uses_thinking_level(model: str) -> bool:
+    if model.removeprefix("models/") in _GEMMA_LEVEL_MODELS:return True
     family = model.removeprefix("models/").split("-", 2)
     major = family[1].split(".", 1)[0] if len(family) > 1 and family[0] == "gemini" else ""
     return major.isdigit() and int(major) >= 3
@@ -92,8 +97,12 @@ def _level_config(model: str, level: str, trace: bool) -> dict[str, Any]:
     model = model.removeprefix("models/")
     if model == "gemini-3-pro-preview":supported = {"low", "high"}
     elif model == "gemini-3.1-pro-preview":supported = {"low", "medium", "high"}
+    elif model in _GEMMA_LEVEL_MODELS:supported = {"minimal", "high"}
     if level not in supported:
         raise ValueError("selected Gemini effort has no supported parameter mapping")
+    # Hosted Gemma accepts the level, but requesting Gemini thought summaries
+    # caused live INTERNAL500/timeouts. Do not add that unrelated trace field.
+    if model in _GEMMA_LEVEL_MODELS:return {"thinkingLevel": level.upper()}
     return {"thinkingLevel": level.upper(), "includeThoughts": trace}
 
 
@@ -116,9 +125,10 @@ def _thinking_config(model: str | None = None) -> dict[str, Any] | None:
             if not spec.startswith("adaptive"):return None
             level = spec.partition(":")[2] or "auto"
         elif str(enabled).lower() != "true":
+            if model.removeprefix("models/") in _GEMMA_LEVEL_MODELS:return _level_config(model, "minimal", trace)
             raise ValueError("Gemini 3 cannot guarantee thinking off; select minimal where supported")
         else:level = (cfg("llm_reasoning_level", None) or "auto").strip().lower()
-        if level in ("", "auto"):return {"includeThoughts": trace}
+        if level in ("", "auto"):return None if model.removeprefix("models/") in _GEMMA_LEVEL_MODELS else {"includeThoughts": trace}
         return _level_config(model, level, trace)
     # Earlier/unknown families retain the existing budget translation.
     if enabled is None:
@@ -283,6 +293,8 @@ def _build_body(
     body: dict[str, Any] = {"contents": contents, "generationConfig": gen}
     if system:
         body["systemInstruction"] = system
+    from .gemini_wire_compat import system_layout
+    body=system_layout(body,model or cfg("llm_model",settings.llm_model))
     gtools = _translate_tools(tools)
     if gtools:
         body["tools"] = gtools
@@ -302,21 +314,31 @@ def _map_finish(fr: str | None) -> str | None:
 
 def _map_usage(u: dict[str, Any] | None) -> dict[str, Any]:
     u = u or {}
+    if strict():
+        if not isinstance(u, dict):u = {}
+        def count(name: str, default: Any = None) -> int | None:
+            value = u.get(name, default)
+            return value if type(value) is int and value >= 0 else None
+        pt = count("promptTokenCount")
+        ct = count("candidatesTokenCount")
+        tt = count("thoughtsTokenCount", 0)
+        total = count("totalTokenCount")
+        cache = count("cachedContentTokenCount", 0)
+        # Implicit-presence proto3 zero defaults apply only to a complete,
+        # conserved native report. Keep raw absence, malformed and missing usage.
+        complete = (all(v is not None for v in (pt, ct, tt, total, cache))
+                    and total == pt + ct + tt and cache <= pt
+                    and not u.get("toolUsePromptTokenCount", 0))
+        return {"prompt_tokens": pt, "completion_tokens": ct + tt if ct is not None and tt is not None else None,
+                "total_tokens": total, "reasoning_tokens": tt if complete else count("thoughtsTokenCount"),
+                "prompt_tokens_details": {"cached_tokens": cache if complete else count("cachedContentTokenCount")},
+                "raw_provider_usage": dict(u)}
     pt = u.get("promptTokenCount") or 0
     ct = u.get("candidatesTokenCount") or 0
     out = {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": u.get("totalTokenCount") or (pt + ct)}
     tt = u.get("thoughtsTokenCount")
     if tt:
         out["reasoning_tokens"] = tt
-    if strict():
-        # Gemini's total includes prompt + thoughts + response candidates;
-        # thoughts are separate from candidatesTokenCount in its native usage.
-        # https://ai.google.dev/api/generate-content#UsageMetadata
-        out["completion_tokens"] = ct + (tt or 0)
-        out["prompt_tokens_details"] = {"cached_tokens":u.get("cachedContentTokenCount")}
-        out["raw_provider_usage"] = dict(u)
-        if not u:
-            out["prompt_tokens"] = out["completion_tokens"] = out["total_tokens"] = None
     return out
 
 

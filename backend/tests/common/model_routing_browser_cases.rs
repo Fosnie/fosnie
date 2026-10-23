@@ -58,7 +58,7 @@ pub fn check<'a>(pool:&'a sqlx::PgPool,admin:&'a AuthContext)->Pin<Box<dyn Futur
         let uid=Uuid::now_v7();sqlx::query("INSERT INTO users(id,email,display_name,role) VALUES($1,$2,'Browser routing','user')")
             .bind(uid).bind(format!("{uid}@routing.test")).execute(pool).await?;
         let actor=AuthContext {user_id:Some(uid),role:PlatformRole::User,email:None,display_name:None,break_glass:false,mfa_enroll_only:false};
-        let local=Uuid::now_v7();let cloud=Uuid::now_v7();
+        let local=Uuid::now_v7();let mut cloud=Uuid::now_v7();
         for (id,model,locality,cost) in [(local,"browser-local","local",0),(cloud,"browser-cloud","cloud",1000)] {
             sqlx::query("INSERT INTO provider_configs(id,role,scope,model,label,base_url) VALUES($1,'llm','deployment',$2,$2,'http://browser.test/v1')")
                 .bind(id).bind(model).execute(pool).await?;
@@ -122,11 +122,17 @@ pub fn check<'a>(pool:&'a sqlx::PgPool,admin:&'a AuthContext)->Pin<Box<dyn Futur
         let shadow=empty(&state,&actor).await?;attempt(&state,&actor,request(Some(shadow),Some(auto.clone()),None)).await?.0?;
         let answer:Uuid=sqlx::query_scalar("SELECT id FROM messages WHERE chat_id=$1 AND role='assistant'").bind(shadow).fetch_one(pool).await?;
         assert_eq!(browser::message_metadata(&state,&actor,&[answer]).await?[&answer]["actual"]["model"],"browser-cloud");
-        // Hide retired/private targets without rewriting the historical decision.
-        sqlx::query("UPDATE provider_configs SET scope='user',scope_id=$2 WHERE id=$1").bind(cloud).bind(admin.user_id).execute(pool).await?;
+        // Retire the old provider without rewriting its historical decision.
+        // Scope is immutable; a replacement deployment has a fresh identity.
+        let mut replacement:ModelProfile=serde_json::from_value(sqlx::query_scalar::<_,Value>("SELECT profile FROM model_profiles WHERE provider_id=$1").bind(cloud).fetch_one(pool).await?)?;
+        sqlx::query("DELETE FROM provider_configs WHERE id=$1").bind(cloud).execute(pool).await?;
         let hidden=browser::message_metadata(&state,&actor,&[answer]).await?;assert!(hidden[&answer]["actual"].is_null());assert_eq!(hidden[&answer]["actual_unavailable"],true);
         assert!(browser::message_metadata(&state,admin,&[answer]).await?.is_empty(),"another owner receives no browser metadata");
-        sqlx::query("UPDATE provider_configs SET scope='deployment',scope_id=NULL WHERE id=$1").bind(cloud).execute(pool).await?;
+        cloud=Uuid::now_v7();
+        sqlx::query("INSERT INTO provider_configs(id,role,scope,model,label,base_url) VALUES($1,'llm','deployment','browser-cloud','browser-cloud','http://browser.test/v1')").bind(cloud).execute(pool).await?;
+        replacement.provider_id=cloud;replacement.provider_revision=1;
+        store::save_profile(&state,admin,cloud,store::SaveProfile{expected_revision:0,profile:replacement}).await?;
+        policy.default_provider_id=Some(cloud);policy.constraints.allowed_providers=Some([local,cloud].into());
         policy.rollout=RolloutMode::Active;policy.strategy=RoutingStrategy::Classifier;policy.rules.clear();
         let _=store::save_policy(&state,admin,policy.id,store::SavePolicy {label:"Browser current".into(),scope:"deployment".into(),expected_revision:policy.revision,is_default:true,policy}).await?;
         // Wrong owner/role/effort fail before inference. Gate, role and cancellation

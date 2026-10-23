@@ -3,10 +3,12 @@
 import { cloneElement, useId, useState, type FormEvent, type ReactElement, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
-import { routingSettingsApi as api, current, profileDraft, importEvidence, newPolicy, newRule, emptyRequirements, emptyConditions, defaultClassifier, usdToMicro, microToUsd,
+import { routingSettingsApi as api, current, profileDraft, newPolicy, newRule, emptyRequirements, defaultClassifier, usdToMicro, microToUsd,
   tasks, tiers, purposes, utilityPurposes, type ModelEntry, type Profile, type PolicyEntry, type Policy, type Rule, type FixedEntry,
-  type FixedProfile, type Management, type Requirements, type Conditions, type Purpose, type Evidence, type DryReport, type JudgeReport, type ProbeReport, type ApiAlias } from "@/api/routingSettings";
+  type FixedProfile, type Management, type Requirements, type Purpose, type Evidence, type DryReport, type JudgeReport, type ProbeReport, type ApiAlias } from "@/api/routingSettings";
 import "./RoutingSettings.css";
+import {ConditionsEditor} from "./RoutingConditionsEditor";
+import { RoutingCatalogueSettings } from "./RoutingCatalogueSettings";
 
 const human = (s:string) => s.replaceAll("_"," ");
 const list = (s:string) => [...new Set(s.split(",").map(v=>v.trim()).filter(Boolean))];
@@ -50,9 +52,6 @@ function EffortChoice({label,value,efforts,onChange,hint}:{label:string;value:st
     {value && !efforts.includes(value) && <option value={value}>Unsupported saved value: {value}</option>}
     {efforts.map(e=><option key={e} value={e}>{e}</option>)}
   </select></Field>;
-}
-function Multiple<T extends string>({label,values,options,onChange}:{label:string;values:T[];options:readonly T[];onChange:(v:T[])=>void}) {
-  return <div className="routing-field"><span>{label} <small>(none = any)</small></span><div className="routing-checks">{options.map(v=><Toggle key={v} label={human(v)} value={values.includes(v)} onChange={on=>onChange(on ? [...values,v] : values.filter(x=>x!==v))}/>)}</div></div>;
 }
 function DeleteButton({label,onDelete}:{label:string;onDelete:()=>void}) {
   const [armed,setArmed]=useState(false);return armed ? <span className="routing-actions"><span>Remove {label}?</span><button type="button" className="btn btn-line sm" onClick={onDelete}>Confirm removal</button><button type="button" className="btn btn-line sm" onClick={()=>setArmed(false)}>Keep</button></span>
@@ -108,41 +107,10 @@ function ProfileEditor({entry,manager,onDone,onClose,onReload}:{entry:ModelEntry
       <NumberField label="Evaluation samples" value={draft.evaluation_samples} max={4294967295} onChange={v=>patch({evaluation_samples:v ?? 0,quality_status:draft.quality_status==="verified" ? "declared" : draft.quality_status})}/>
       <Field label="Evaluation version / source" hint="Existing verified evidence is retained only while unchanged; evaluation date is not stored by this schema."><input maxLength={128} value={draft.evaluation_version ?? ""} onChange={e=>patch({evaluation_version:e.target.value || null,quality_status:draft.quality_status==="verified" ? "declared" : draft.quality_status})}/></Field>
     </div></details>
-    {manager && <details><summary>Held-out model evaluations ({draft.quality_evidence?.length ?? 0})</summary>
-      {entry.profile && current(entry) && <button type="button" className="btn btn-line sm" onClick={()=>{
-        const url=URL.createObjectURL(new Blob([JSON.stringify(entry.profile,null,2)],{type:"application/json"}));
-        const link=document.createElement("a");link.href=url;link.download=`routing-profile-${entry.id}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-      }}>Download saved model profile</button>}
-      <p className="ed-hint">Import reviewed evaluation records for this saved model configuration. Only live, reviewed results from comparable held-out families can affect learned ranking. Synthetic records remain diagnostic. Changing capabilities, tiers, task exclusions or Auto effort clears these records.</p>
-      <Field label="Import evaluation JSON"><input type="file" accept="application/json,.json" onChange={e=>{const file=e.target.files?.[0];e.target.value="";if(file)void op.run(async()=>{if(file.size>131072)throw new Error("Evidence file exceeds 128 KiB.");patch({quality_evidence:importEvidence(await file.text())});});}}/></Field>
-      <ul>{(draft.quality_evidence ?? []).map(row=><li key={row.id}>{human(row.purpose)} · {human(row.workload.task)} · {row.passed}/{row.families} · {row.source}
-        <Toggle label={`Reviewed evaluation ${row.id}`} value={row.reviewed} onChange={reviewed=>patch({quality_evidence:draft.quality_evidence!.map(e=>e.id===row.id ? {...e,reviewed} : e)})}/></li>)}</ul>
-      <button type="button" className="btn btn-line sm" onClick={()=>patch({quality_evidence:[]})}>Clear evaluation records</button>
-      <p className="ed-hint">Review confirms provenance and independent test families; it does not certify future answers. Save applies the draft with the current profile revision.</p>
-    </details>}
     <EditorFooter {...op} onClose={onClose} onReload={onReload}>{entry.profile_revision!=null && <DeleteButton label="profile" onDelete={()=>{void op.run(async()=>{await api.deleteProfile(entry);await onDone();});}}/>}</EditorFooter></fieldset>
   </form>;
 }
 
-function ConditionsEditor({value:c,onChange,depth=0}:{value:Conditions;onChange:(c:Conditions)=>void;depth?:number}) {
-  const patch=(p:Partial<Conditions>)=>onChange({...c,...p});
-  return <div className="routing-rule"><div className="routing-grid">
-    <NumberField label="Minimum input tokens" value={c.min_input_tokens} max={4294967295} onChange={v=>patch({min_input_tokens:v})}/>
-    <NumberField label="Maximum input tokens" value={c.max_input_tokens} max={4294967295} onChange={v=>patch({max_input_tokens:v})}/>
-    <ListField label="Languages" hint="Codes such as en, ru or en-GB; blank = any." values={c.languages} onChange={v=>patch({languages:v})}/>
-    {(["tools","vision","structured_output","fresh_information","uncertain"] as const).map(k=><Choice key={k} label={`${human(k)} condition`} value={c[k]==null ? "any" : c[k] ? "yes" : "no"} options={["any","yes","no"]} onChange={v=>patch({[k]:v==="any" ? null : v==="yes"})}/>)}
-  </div><Multiple label="Tasks" values={c.tasks} options={tasks} onChange={v=>patch({tasks:v})}/>
-    <Multiple label="Call purposes" values={c.purposes} options={purposes} onChange={v=>patch({purposes:v})}/>
-    <details open={((c.all?.length ?? 0)+(c.any?.length ?? 0))>0}><summary>Condition groups</summary>
-      <p className="ed-hint">All local fields must match. ALL requires every child; ANY requires one child when present. Up to four levels and sixteen children per group.</p>
-      {(["all","any"] as const).map(group=><div key={group}><strong>{group.toUpperCase()}</strong>{(c[group] ?? []).map((child,i)=><fieldset key={i}><legend>{group.toUpperCase()} condition {i+1}</legend>
-        <button type="button" className="btn btn-line sm" onClick={()=>patch({[group]:(c[group] ?? []).filter((_,j)=>j!==i)})}>Remove condition</button>
-        <ConditionsEditor value={child} depth={depth+1} onChange={next=>patch({[group]:(c[group] ?? []).map((old,j)=>i===j ? next : old)})}/>
-      </fieldset>)}<button type="button" className="btn btn-line sm" disabled={depth>=3 || (c.all?.length ?? 0)+(c.any?.length ?? 0)>=16}
-        onClick={()=>patch({[group]:[...(c[group] ?? []),emptyConditions()]})}>Add {group} condition</button></div>)}
-    </details>
-  </div>;
-}
 function RuleEditor({rule,models,strategy,onChange,onRemove}:{rule:Rule;models:ModelEntry[];strategy:Policy["strategy"];onChange:(r:Rule)=>void;onRemove:()=>void}) {
   const poolModels=new Map(models.filter(m=>m.enabled).map(m=>[m.id,m.label || m.model || m.id]));
   if(rule.action.kind==="restrict_pool")rule.action.allowed_providers.forEach(id=>{if(!poolModels.has(id))poolModels.set(id,"Unavailable saved provider");});
@@ -201,10 +169,6 @@ function PolicyEditor({entry,models,fixed,onDone,onClose,onReload}:{entry:Policy
       <NumberField label="Reserve answer time (ms)" value={judge.answer_reserve_ms ?? null} min={50} max={30000} placeholder="Not reserved" onChange={v=>patch({classifier:{...judge,answer_reserve_ms:v}})}/>
     </div><Toggle label="Require native JSON schema from judge" value={judge.native_schema} onChange={v=>patch({classifier:{...judge,native_schema:v}})}/><p className="ed-hint">Enable after checking the judge supports native structured output. A rejected schema does not trigger another judge call. If the judge cannot leave an answer call or the configured answer time, Auto uses the allowed checked default without a judge. Clearing the answer reserve preserves existing timeout behaviour. One judge call per selection. Input includes instructions and a conservative text allowance. Shortened context always becomes uncertain and uses the checked default. Run limits may tighten these values.</p></details>
     <Toggle label="Technical fallback before output" value={p.technical_fallback} onChange={v=>patch({technical_fallback:v})}/>
-    <Toggle label="Rank with reviewed model evaluations" value={p.learned_ranking ?? false} onChange={v=>patch({learned_ranking:v})}/>
-    <p className="ed-hint">Auto can compare similar workloads evaluated on the same held-out families. Explicit choices and rules retain priority. Missing comparable evidence keeps the configured ranking; known results below the quality floor are excluded.</p>
-    <Toggle label="Quality escalation for stateless API" value={p.quality_escalation ?? false} onChange={v=>patch({quality_escalation:v})}/>
-    <p className="ed-hint">Non-streaming API requests can opt into an answer contract and one higher-tier retry. Shares the retry allowance with technical fallback. Set positive limits: at most 8 calls, 8,192 output tokens, 262,144 total tokens and 120,000 ms. Both attempts count towards the same limits.</p>
     <p className="ed-hint">Active Auto may switch once before output in stateless text API and eligible general browser/desktop text turns. The original limits and permissions stay in force. Tools, documents, voice, durable jobs and partially emitted answers do not replay automatically.</p>
     <details open><summary>Pool and run limits</summary>
       <Toggle label="Restrict provider pool" value={p.constraints.allowed_providers!==null} onChange={v=>constraints({allowed_providers:v ? [] : null})}/>
@@ -356,14 +320,15 @@ export function RoutingSettings({surface}:{surface:"deployment"|"personal"}) {
   const manager=!!management.data?.deployment_manage;const canEdit=(scope:string)=>scope==="deployment" ? manager && surface==="deployment" : !!management.data?.user_byok_enabled && surface==="personal";
   const chooseTab=(value:string)=>{setTab(value);setSelected(null);setPolicy(null);setFixed(null);setProbe(null);setNotice("");setReloadError("");};
   const entries=(models.data ?? []).filter(m=>surface==="personal" || m.scope==="deployment");
-  const policyEntries=(policies.data ?? []).filter(p=>surface==="personal" || p.scope==="deployment");
+  const policyEntries=(policies.data ?? []).filter(p=>(p.required_profile_version ?? 1)===1).filter(p=>surface==="personal" || p.scope==="deployment");
   const fixedEntries=(fixed.data ?? []).filter(f=>surface==="personal" || f.scope==="deployment");
   return <section className="routing-settings" aria-label="Model routing settings"><h2>Model routing</h2><p className="ed-hint">Connect models in Providers, then describe their capabilities and configure how Auto chooses among them. Default and manual selections still obey hard constraints.</p>
     {management.isPending ? <p>Loading routing permissions…</p> : management.isError || !known ? <div role="alert" className="form-err">Routing management is unavailable on this server.<button className="btn btn-line sm" onClick={()=>void management.refetch()}>Retry routing management</button></div> : <>
+      <RoutingCatalogueSettings surface={surface} manager={manager} byok={!!management.data?.user_byok_enabled} personalPolicies={!!management.data?.personal_policies}/>
       {surface==="personal" && <p className="ed-hint">Personal policies can use visible deployment models even when personal provider keys are disabled. Shared profiles and policies are shown for reference.</p>}
       {manager && surface==="deployment" && <Gates refresh={refresh}/>}
       {manager && surface==="deployment" && <ApiAliasSettings refresh={refresh}/>}
-      <div className="legal-tabs-l routing-tabs">{["models","policies","fixed services","preview"].map(value=><button key={value} className={`legal-tab${tab===value ? " on" : ""}`} onClick={()=>chooseTab(value)}>{human(value)}</button>)}</div>
+      <details className="routing-advanced"><summary>Model capabilities, helper services and legacy policies</summary><div className="legal-tabs-l routing-tabs">{["models","policies","fixed services","preview"].map(value=><button key={value} className={`legal-tab${tab===value ? " on" : ""}`} onClick={()=>chooseTab(value)}>{human(value)}</button>)}</div>
       {notice && <p role="status">{notice}</p>}{reloadError && <p role="alert" className="form-err">{reloadError}</p>}
       {models.isError || policies.isError || fixed.isError ? <div role="alert" className="form-err">Routing catalog could not be loaded. Drafts are preserved.<button className="btn btn-line sm" onClick={()=>void refresh()}>Retry catalogs</button></div>
         : models.isPending || policies.isPending || fixed.isPending ? <p>Loading routing catalog…</p> : <>
@@ -381,7 +346,7 @@ export function RoutingSettings({surface}:{surface:"deployment"|"personal"}) {
         {policy && <PolicyEditor key={`${policy.id}:${policy.revision}:${editorVersion}`} entry={policy} models={models.data ?? []} fixed={fixed.data ?? []} onDone={done} onClose={()=>setPolicy(null)} onReload={()=>void reload()}/>}</>}
       {tab==="fixed services" && <><p className="ed-hint">Embed, rerank, OCR, speech and verification keep their own model assignments and provenance.</p><div className="routing-cards">{fixedEntries.map(f=><div className="routing-card" key={`${f.id}:${f.role}`}><div><strong>{human(f.role)}</strong><p>{f.model || "Model unknown"} · {f.scope} · {f.enabled ? "enabled" : "disabled"}</p><small>{f.profile ? `${f.profile.locality} · ${f.profile.locality_trusted ? "attested" : "unattested"}` : "Locality unknown"}</small></div>{canEdit(f.scope) && <button className="btn btn-line sm" onClick={()=>setFixed(f)}>Edit fixed profile</button>}</div>)}</div>
         {!fixedEntries.length && <p className="ed-hint">No visible fixed services configured.</p>}{fixedEntry && <FixedEditor key={`${fixedEntry.id}:${fixedEntry.role}:${fixedEntry.profile_revision}:${fixedEntry.provider_revision}:${editorVersion}`} entry={fixedEntry} manager={manager} onDone={done} onClose={()=>setFixed(null)} onReload={()=>void reload()}/>}</>}
-      {tab==="preview" && <PreviewPanel policies={policyEntries} models={models.data ?? []} management={management.data!} surface={surface}/>}</>}
+      {tab==="preview" && <PreviewPanel policies={policyEntries} models={models.data ?? []} management={management.data!} surface={surface}/>}</>}</details>
     </>}
   </section>;
 }

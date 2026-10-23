@@ -34,7 +34,7 @@ pub async fn enabled(state:&AppState)->Result<bool> {
 }
 pub async fn settings(State(state):State<AppState>,AuthUser(_):AuthUser)->Result<Json<Value>> {
     Ok(Json(json!({"schema_version":1,"enabled":enabled(&state).await?,"frame":"chat.routed.send",
-        "selection_modes":["default","manual","auto"],"scope":"owner_web_general_v1",
+        "selection_modes":["default","manual","auto"],"selection_versions":[1,2],"profile_versions":[1,2],"v2_frame":"chat.routed.v2.send","scope":"owner_web_general_v1",
         "local_only":true,"effort":true,"attachments":false,"desktop":true,"desktop_scope":"paired_remote_general_v1",
         "workspace":false,"desktop_credential":"original_key_ticket_v1","legacy_fallback":false,
         "output_tokens":1024,"local_only_web":"inference_only; source access still requires tool permission"})))
@@ -85,13 +85,14 @@ impl InferencePolicy for Narrow {
 pub(crate) fn constrain(mut state:AppState,options:&RoutingOptions)->AppState {
     state.inference_policy=Arc::new(Narrow {parent:state.inference_policy.clone(),options:options.clone()});state
 }
-struct Scope {state:AppState,actor:AuthContext,chat:Uuid,surface:Surface,snapshot:Value,intent:ModelSelection,options:RoutingOptions,tx:mpsc::Sender<ServerFrame>,plain_text_retry:bool}
+struct Scope {state:AppState,actor:AuthContext,chat:Uuid,surface:Surface,snapshot:Value,intent:ModelSelection,options:RoutingOptions,tx:mpsc::Sender<ServerFrame>,plain_text_retry:bool,vnext:Option<fosnie_protocol::routing_vnext::RoutingIntentV2>}
 #[async_trait::async_trait]
 impl AccessGuard for Scope {
     fn browser_chat(&self)->Option<Uuid> {Some(self.chat)}
     fn plain_text_retry(&self)->bool {self.plain_text_retry}
     fn desktop_device(&self)->Option<Uuid> {self.surface.device()}
     fn selection_intent(&self)->Option<ModelSelection> {Some(self.intent.clone())}
+    fn routing_intent_vnext(&self)->Option<fosnie_protocol::routing_vnext::RoutingIntentV2>{self.vnext.clone()}
     fn routing_options(&self)->Option<RoutingOptions> {Some(self.options.clone())}
     async fn check(&self)->Result<()> {
         if self.tx.is_closed() {return Err(RoutingError::Cancelled.into());}
@@ -119,10 +120,21 @@ pub fn execute(state:AppState,actor:AuthContext,request:RoutedChatRequest,turn:U
 }
 pub fn execute_surface(state:AppState,actor:AuthContext,request:RoutedChatRequest,turn:Uuid,tx:mpsc::Sender<ServerFrame>,cancel:Arc<Notify>,surface:Surface)
     ->Pin<Box<dyn Future<Output=Result<Uuid>>+Send>> {
+    execute_surface_in(state,actor,request,turn,tx,cancel,surface,1,None,true)
+}
+pub fn execute_vnext(state:AppState,actor:AuthContext,request:fosnie_protocol::routing_vnext::RoutedChatRequestV2,turn:Uuid,tx:mpsc::Sender<ServerFrame>,cancel:Arc<Notify>,surface:Surface)
+    ->Pin<Box<dyn Future<Output=Result<Uuid>>+Send>> {
+    let old=RoutedChatRequest{content:request.content,chat_id:request.chat_id,project_id:request.project_id,agent_id:request.agent_id,model_selection:None,options:request.options};
+    execute_surface_in(state,actor,old,turn,tx,cancel,surface,2,request.routing_intent,request.save_binding)
+}
+fn execute_surface_in(state:AppState,actor:AuthContext,request:RoutedChatRequest,turn:Uuid,tx:mpsc::Sender<ServerFrame>,cancel:Arc<Notify>,surface:Surface,
+    version:u32,mut vnext:Option<fosnie_protocol::routing_vnext::RoutingIntentV2>,save_binding:bool)->Pin<Box<dyn Future<Output=Result<Uuid>>+Send>> {
     Box::pin(async move {
+        if vnext.is_some() && request.options.is_some() {return Err(RoutingError::Invalid("provide options in the explicit intent or in an inherited request, not both").into());}
         principal(&state,&actor).await?;
         surface.check(&state,&actor).await?;
         if request.content.trim().is_empty() || request.content.len()>262144 {return Err(RoutingError::Invalid("empty or oversized routed message").into());}
+        let explicit_vnext=vnext.is_some();
         let created=request.chat_id.is_none();let chat=request.chat_id.unwrap_or_else(Uuid::now_v7);
         // The lease spans planning, output relay and worker cleanup. Row locks
         // below are committed first so title tasks can update the conversation.
@@ -150,10 +162,21 @@ pub fn execute_surface(state:AppState,actor:AuthContext,request:RoutedChatReques
         let unsupported:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM voice_routed_chats WHERE chat_id=$1) OR EXISTS(SELECT 1 FROM api_routed_chats WHERE chat_id=$1) OR EXISTS(SELECT 1 FROM routed_chat_branches WHERE chat_id=$1) OR EXISTS(SELECT 1 FROM chat_workspace WHERE chat_id=$1) OR EXISTS(SELECT 1 FROM chat_attachments WHERE chat_id=$1) OR EXISTS(SELECT 1 FROM routed_jobs WHERE context->>'chat_id'=$1::text) OR EXISTS(SELECT 1 FROM messages WHERE chat_id=$1 AND role='assistant' AND completed_at IS NULL AND interrupted_at IS NULL)")
             .bind(chat).fetch_one(&mut *adopt).await?;
         if unsupported {return Err(RoutingError::Incompatible("conversation provenance or pending turn is not supported by browser routing").into());}
-        let intent=match request.model_selection {Some(intent)=>intent,None=>serde_json::from_value(saved).map_err(|_|RoutingError::Invalid("saved selection"))?};
-        let options=match request.options {Some(options)=>options,None=>serde_json::from_value(options).map_err(|_|RoutingError::Invalid("saved routing options"))?};
+        if version==2 && vnext.is_none() && created {
+            if let Some(id)=project {vnext=crate::model_routing::vnext::bindings::project(&state,&actor,id).await?.routing_intent;}
+        }
+        if version==2 && vnext.is_none() {
+            vnext=Some(if saved.get("schema_version").is_some(){serde_json::from_value(saved.clone()).map_err(|_|RoutingError::Invalid("saved v2 intent"))?}
+                else {fosnie_protocol::routing_vnext::RoutingIntentV2{schema_version:2,required_profile_version:1,
+                    selection:serde_json::from_value(saved.clone()).map_err(|_|RoutingError::Invalid("saved selection"))?,variant:None,options:None}});
+        }
+        if let Some(v)=&vnext {v.require_support(&[1,2],&[1,2]).map_err(RoutingError::Invalid)?;}
+        let intent=if let Some(v)=&vnext {v.selection.clone()} else {match request.model_selection {Some(intent)=>intent,None=>serde_json::from_value(saved).map_err(|_|RoutingError::Invalid("saved selection"))?}};
+        let options=match request.options.or_else(||vnext.as_ref().and_then(|v|v.options.clone())) {Some(options)=>options,None=>serde_json::from_value(options).map_err(|_|RoutingError::Invalid("saved routing options"))?};
         if options.effort.as_ref().is_some_and(|e|e.trim().is_empty() || e.len()>24) {return Err(RoutingError::Invalid("invalid effort").into());}
-        sqlx::query("UPDATE chats SET model_selection=$2,routing_options=$3 WHERE id=$1").bind(chat).bind(json!(intent)).bind(json!(options)).execute(&mut *adopt).await?;
+        if let Some(v)=&mut vnext {v.options=Some(options.clone());}
+        if save_binding || (created && version==2 && !explicit_vnext && vnext.is_some()) {let saved_intent=vnext.as_ref().map(|v|json!(v)).unwrap_or_else(||json!(intent));
+        sqlx::query("UPDATE chats SET model_selection=$2,routing_options=$3 WHERE id=$1").bind(chat).bind(saved_intent).bind(json!(options)).execute(&mut *adopt).await?;}
         sqlx::query("INSERT INTO browser_routed_chats(chat_id) VALUES($1) ON CONFLICT DO NOTHING").bind(chat).execute(&mut *adopt).await?;
         let mut event=crate::audit::AuditEvent::action("chat.routing.admitted",actor.role.as_str());event.actor_user_id=actor.user_id;
         event.resource_type=Some("chat".into());event.resource_id=Some(chat);
@@ -167,11 +190,14 @@ pub fn execute_surface(state:AppState,actor:AuthContext,request:RoutedChatReques
         let agent_id=snapshot["agent_id"].as_str().and_then(|s|s.parse::<Uuid>().ok());
         let plain_text_retry=super::load_agent(&state.pg,agent_id).await?.tools.iter().all(|t|t=="generate_artefact")
             && snapshot["libraries"].as_array().is_some_and(|v|v.is_empty()) && !super::wants_artefact(&request.content);
-        let scope=Arc::new(Scope {state:state.clone(),actor:actor.clone(),chat,surface,snapshot,intent:intent.clone(),options:options.clone(),tx:tx.clone(),plain_text_retry});
+        if let Some(v)=&mut vnext {v.options=Some(options.clone());}
+        let scope=Arc::new(Scope {state:state.clone(),actor:actor.clone(),chat,surface,snapshot,intent:intent.clone(),options:options.clone(),tx:tx.clone(),plain_text_retry,vnext:vnext.clone()});
         scope.guard(&cancel,async {tokio::time::timeout(Duration::from_secs(5),tx.send(ServerFrame::ChatRoutingStarted {turn_id:turn,chat_id:chat})).await
             .map_err(|_|RoutingError::Cancelled)?.map_err(|_|RoutingError::Cancelled.into())}).await?;
         let requirements=WorkloadRequirements {output_tokens:OUTPUT_TOKENS,effort:options.effort.clone(),..Default::default()};
-        let planned=scope.guard(&cancel,Box::pin(super::routing::prepare_selected(&state,&actor,chat,turn,&request.content,intent,requirements,&[],&cancel))).await;
+        let planned=scope.guard(&cancel,async {match vnext {
+            Some(mut v)=>{v.options=Some(options.clone());super::routing::prepare_vnext(&state,&actor,chat,turn,&request.content,v,requirements,&[],&cancel).await},
+            None=>super::routing::prepare_selected(&state,&actor,chat,turn,&request.content,intent,requirements,&[],&cancel).await}}).await;
         let run=match planned {
             Ok(run)=>run.with_access(scope.clone())?,
             Err(error)=>{
@@ -182,7 +208,7 @@ pub fn execute_surface(state:AppState,actor:AuthContext,request:RoutedChatReques
                     let failure=crate::model_routing::failure::public(&error);
                     sqlx::query("INSERT INTO messages(id,chat_id,role,sequence_number,content,turn_id,routing_selection,routing_options,routing_failure,interrupted_at) VALUES($1,$2,'user',$3,$4,$5,$6,$7,NULL,NULL),($8,$2,'assistant',$3+1,'',$5,$6,$7,$9,now())")
                         .bind(Uuid::now_v7()).bind(chat).bind(sequence).bind(&request.content).bind(turn)
-                        .bind(serde_json::to_value(&scope.intent).map_err(|_|RoutingError::Invalid("selection serialization"))?)
+                        .bind(serde_json::to_value(scope.vnext.as_ref().map(|v|json!(v)).unwrap_or_else(||json!(scope.intent))).map_err(|_|RoutingError::Invalid("selection serialization"))?)
                         .bind(serde_json::to_value(&scope.options).map_err(|_|RoutingError::Invalid("options serialization"))?)
                         .bind(Uuid::now_v7()).bind(failure).execute(&state.pg).await?;
                     crate::model_routing::failure::notify_chat(&state,turn,Some(chat),&error,&tx,false).await;
@@ -216,7 +242,7 @@ pub async fn message_metadata(state:&AppState,actor:&AuthContext,ids:&[Uuid])->R
         .bind(ids).bind(actor.user_id).fetch_all(&state.pg).await?;
     let mut metadata=std::collections::HashMap::new();
     for (id,intent,decision,options,completed,interrupted,failure,attempts) in rows {
-        let Some(intent)=intent.and_then(|v|serde_json::from_value::<ModelSelection>(v).ok()) else {continue;};
+        let Some(intent)=intent.and_then(|v|if v.get("schema_version").is_some(){serde_json::from_value::<fosnie_protocol::routing_vnext::RoutingIntentV2>(v).ok().map(|v|v.selection)}else{serde_json::from_value::<ModelSelection>(v).ok()}) else {continue;};
         let decision=decision.and_then(|v|serde_json::from_value::<RoutingDecision>(v).ok());
         let actual=decision.as_ref().and_then(|d|d.actual.as_ref());
         let readable=actual.is_some_and(|a|visible.contains(&a.provider_id));

@@ -148,34 +148,11 @@ def extract(reviewer, value):
 
 
 def validate_assessment(item, value):
-    exact(value, ('ratings',), 'invalid machine assessment')
-    criteria = {c['id'] for c in item['criteria']}
-    if not isinstance(value['ratings'], list) or len(value['ratings']) != len(criteria):
-        raise ValueError('machine assessment must cover every criterion')
-    found, stripped = set(), []
-    for rating in value['ratings']:
-        exact(rating, ('criterion_id', 'outcome', 'rationale', 'evidence'), 'invalid machine rating')
-        criterion = rating['criterion_id']
-        if (criterion not in criteria or criterion in found or rating['outcome'] not in ('pass', 'fail', 'unknown')
-                or not text(rating['rationale'], 10) or not isinstance(rating['evidence'], list)
-                or len(rating['evidence']) > 4 or (rating['outcome'] != 'unknown' and not rating['evidence'])):
-            raise ValueError('invalid, duplicate or unanchored machine rating')
-        found.add(criterion)
-        for anchor in rating['evidence']:
-            exact(anchor, ('source', 'reference_index', 'quote'), 'invalid evidence anchor')
-            source, index = anchor['source'], anchor['reference_index']
-            if source == 'reference':
-                if type(index) is not int or not 0 <= index < len(item['references']):
-                    raise ValueError('invalid reference anchor')
-                original = item['references'][index]['excerpt']
-            elif source in ('question', 'answer') and index is None:
-                original = item['prompt'] if source == 'question' else item['response']
-            else:
-                raise ValueError('invalid evidence source')
-            if not text(anchor['quote'], maximum=512) or anchor['quote'] not in original:
-                raise ValueError('fabricated or oversized evidence quote')
-        stripped.append({key: rating[key] for key in ('criterion_id', 'outcome', 'rationale')})
-    return stripped
+    # One canonical validator is shared with the ML runtime.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "ml"))
+    from app.routing_content_review import validate_assessment as canonical
+    return canonical(item, value)
 
 
 def unknown(item, rationale):

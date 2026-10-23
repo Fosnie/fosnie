@@ -102,11 +102,12 @@ impl PreparedFixedRequest {
 pub async fn prepare(state:&crate::AppState,context:&RoutingContext,plan:&ExecutionPlan,budget:&RunBudget,
     allowances:BTreeMap<FixedRole,FixedAllowance>,timeout:Duration
 ) -> crate::Result<PreparedFixedRequest> {
-    if plan.schema_version!=SCHEMA_VERSION || plan.id!=context.run_id || plan.actor_user_id!=context.actor.user_id {
+    if !matches!(plan.schema_version,1|2) || plan.id!=context.run_id || plan.actor_user_id!=context.actor.user_id {
         return Err(RoutingError::Forbidden.into());
     }
     if !allowances.keys().any(|role|role.purpose()==context.purpose) { return Err(RoutingError::Invalid("missing fixed request purpose").into()); }
-    let policy=store::load_policy(state,&context.actor,Some(plan.decision.policy_id)).await?;
+    vnext::execution::validate_plan(state,context,plan).await?;
+    let policy=store::load_policy_supported(state,&context.actor,Some(plan.decision.policy_id),plan.schema_version).await?;
     if policy.revision!=plan.decision.policy_revision { return Err(RoutingError::NeedsReplan.into()); }
     let mut constraints=plan.constraints.intersect(&policy.constraints).intersect(&store::deployment_constraints(state).await?);
     for &role in allowances.keys() {
@@ -119,7 +120,7 @@ pub async fn prepare(state:&crate::AppState,context:&RoutingContext,plan:&Execut
         let reference=plan.fixed_assignments.get(&role).ok_or(RoutingError::Invalid("unpinned fixed service"))?;
         targets.insert(role,fixed::resolve(state,context,role,Some(reference),&constraints).await?);
     }
-    if store::load_policy(state,&context.actor,Some(policy.id)).await?.revision!=policy.revision { return Err(RoutingError::NeedsReplan.into()); }
+    if store::load_policy_supported(state,&context.actor,Some(policy.id),plan.schema_version).await?.revision!=policy.revision { return Err(RoutingError::NeedsReplan.into()); }
     let grant=FixedGrant::reserve(budget,plan.decision.id,&targets,allowances,timeout)?;
     let envelope=InferenceEnvelope { schema_version:SCHEMA_VERSION,decision_id:plan.decision.id,purpose:context.purpose,
         assignments:Default::default(),budget:None,fixed_assignments:targets,fixed_budget:Some(grant.wire.clone()) };
@@ -129,10 +130,11 @@ pub async fn prepare(state:&crate::AppState,context:&RoutingContext,plan:&Execut
 /// Extend a plan atomically, before execution or persistence. Existing pins are
 /// revalidated, never replaced after provider/index changes. No key is stored.
 pub async fn pin(state:&crate::AppState,context:&RoutingContext,plan:&mut ExecutionPlan,roles:&[FixedRole]) -> crate::Result<()> {
-    if plan.schema_version!=SCHEMA_VERSION || plan.id!=context.run_id || plan.actor_user_id!=context.actor.user_id {
+    if !matches!(plan.schema_version,1|2) || plan.id!=context.run_id || plan.actor_user_id!=context.actor.user_id {
         return Err(RoutingError::Forbidden.into());
     }
-    let policy=store::load_policy(state,&context.actor,Some(plan.decision.policy_id)).await?;
+    vnext::execution::validate_plan(state,context,plan).await?;
+    let policy=store::load_policy_supported(state,&context.actor,Some(plan.decision.policy_id),plan.schema_version).await?;
     if policy.revision!=plan.decision.policy_revision { return Err(RoutingError::NeedsReplan.into()); }
     let constraints=plan.constraints.intersect(&policy.constraints).intersect(&store::deployment_constraints(state).await?);
     let mut references=plan.fixed_assignments.clone();
@@ -140,7 +142,7 @@ pub async fn pin(state:&crate::AppState,context:&RoutingContext,plan:&mut Execut
         let target=fixed::resolve(state,context,role,references.get(&role),&constraints).await?;
         references.insert(role,target.reference);
     }
-    if store::load_policy(state,&context.actor,Some(policy.id)).await?.revision!=policy.revision { return Err(RoutingError::NeedsReplan.into()); }
+    if store::load_policy_supported(state,&context.actor,Some(policy.id),plan.schema_version).await?.revision!=policy.revision { return Err(RoutingError::NeedsReplan.into()); }
     plan.fixed_assignments=references;
     Ok(())
 }

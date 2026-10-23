@@ -6,7 +6,7 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[derive(serde::Serialize,serde::Deserialize)]
 #[serde(rename_all="snake_case")]
-pub enum FailureKind { Connection, RateLimited, Unavailable, Unauthorized, InvalidRequest, Cancelled, Budget, MidStream, Timeout, QuotaExhausted, PaymentRequired }
+pub enum FailureKind { Connection, RateLimited, Unavailable, Unauthorized, InvalidRequest, Cancelled, Budget, MidStream, Timeout, QuotaExhausted, PaymentRequired, AccessDenied, ModelUnavailable }
 
 #[derive(Clone)]
 pub(super) struct RetryRequirements {
@@ -49,7 +49,7 @@ impl AttemptState {
         policy.technical_fallback && policy.rollout == RolloutMode::Active
             && matches!(selection, ModelSelection::Auto { .. })
             && self.retries == 0 && !self.emitted_output && !self.executed_tool
-            && matches!(failure, FailureKind::Connection | FailureKind::RateLimited | FailureKind::Unavailable | FailureKind::Timeout | FailureKind::QuotaExhausted | FailureKind::PaymentRequired)
+            && matches!(failure, FailureKind::Connection | FailureKind::RateLimited | FailureKind::Unavailable | FailureKind::Timeout | FailureKind::QuotaExhausted | FailureKind::PaymentRequired | FailureKind::ModelUnavailable)
     }
     pub fn reserve_retry(&mut self, policy: &RoutingPolicy, selection: &ModelSelection, failure: FailureKind) -> Result<(), RoutingError> {
         if !self.can_retry(policy,selection,failure) { return Err(RoutingError::ProviderUnavailable); }

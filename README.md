@@ -45,12 +45,12 @@ Built for teams that hold other people's confidential data under a duty of care
 - **🔒 Offline by default**: no data, prompt, or document leaves your infrastructure unless you enable a connector; every outbound connector ships dormant and opt-in.
 - **🧠 Agentic RAG**: decompose → hybrid (dense + sparse) search → rerank → grade → answer, with inline citations.
 - **🔌 Model-agnostic + BYOK**: point each capability (LLM, embeddings, rerank, OCR, STT/TTS) at a local engine or any external API, configured in the UI. Native Anthropic adapter (tools + extended thinking).
-- **🧭 Automatic prompt routing**: connect local, cloud or mixed model pools and let
-  Auto select a model using rules, a configurable local or cloud judge, or both.
-  Capability and reasoning-effort checks, locality controls, shared usage limits
-  and recovery from eligible failures before output are built in. Included in
-  **Core and Enterprise**, with explicit activation; see the
-  [routing guide and supported scope](https://docs.fosnie.dev/model-routing).
+- **🧭 Configurable model routing**: build Custom Auto and Full Auto profiles with
+  editable presets, task and complexity rules, and model or reasoning-effort
+  assignments. Personal settings can use shared models without a personal API
+  key. Capability checks, locality controls, shared usage limits and bounded
+  technical fallback are built in. Included in **Core and Enterprise**; see the
+  [routing profiles guide](docs/model-routing-profiles.md).
 - **🤖 Agents & workflows**: action-taking agent runs with human-in-the-loop approval, durable resume, and event-driven automations.
 - **🔎 Deep Research**: multi-step research over your documents, the web, or both, with a fully cited report.
 - **📄 Document work**: generate DOCX/PPTX/PDF/XLSX/HTML, tracked-change accept/reject, tabular review.
@@ -125,7 +125,7 @@ reproducible upgrades).
 | Desktop app with connected folders | ✅ | ✅ |
 | Groundedness / verification | ✅ | ✅ |
 | Model-agnostic providers + per-user BYOK | ✅ | ✅ |
-| [Automatic prompt routing](https://docs.fosnie.dev/model-routing) (rules, configurable judge, hybrid) | ✅ | ✅ |
+| [Routing profiles](docs/model-routing-profiles.md) (Custom Auto, Full Auto, task and complexity rules) | ✅ | ✅ |
 | MCP host + connectors | ✅ | ✅ |
 | Projects / knowledge bases / sharing, roles + groups | ✅ | ✅ |
 | Local auth + basic OIDC | ✅ | ✅ |

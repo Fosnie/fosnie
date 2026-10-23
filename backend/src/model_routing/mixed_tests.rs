@@ -13,7 +13,7 @@ fn fixture_role(budget:&RunBudget,llm_calls:u32,fixed_calls:u32,timeout:Duration
         "adapter":"openai_chat","model":"test","locality":"local","locality_trusted":true,
         "capabilities":{"context_tokens":10000,"max_output_tokens":1000},
         "pricing":{"input_microusd_per_million":1000000,"output_microusd_per_million":1000000}})).unwrap();
-    let llm=InferenceTarget { schema_version:1,provider_id:profile.provider_id,provider_revision:1,profile_revision:1,
+    let llm=InferenceTarget { generation:None,variant:None, schema_version:1,provider_id:profile.provider_id,provider_revision:1,profile_revision:1,
         adapter:AdapterKind::OpenaiChat,base_url:"http://mock.invalid".into(),model:"test".into(),api_key:"llm-secret".into(),effort:None };
     let fixed=FixedTarget { schema_version:1,reference:FixedReference { provider_id:Uuid::from_u128(3),provider_revision:3,
         profile_revision:4,role,model:"fixed".into(),active_index_revision:if role==FixedRole::Embed { Some(5) } else { None },desired_index_revision:None },
@@ -27,7 +27,7 @@ fn fixture_role(budget:&RunBudget,llm_calls:u32,fixed_calls:u32,timeout:Duration
     let grant=MixedGrant::reserve(budget,id,&assignments,&[profile],allowances,&fixed_assignments,fixed_allowances,timeout)?;
     let envelope=InferenceEnvelope { schema_version:1,decision_id:id,purpose:if llm_calls>0 { CallPurpose::RetrievalGrade } else { role.purpose() },
         assignments,fixed_assignments,budget:grant.llm.as_ref().map(|g|g.wire.clone()),fixed_budget:grant.fixed.as_ref().map(|g|g.wire.clone()) };
-    Ok(PreparedMixedRequest { envelope,grant })
+    Ok(PreparedMixedRequest { envelope,grant,probes:vec![] })
 }
 fn prepared(budget:&RunBudget) -> PreparedMixedRequest { fixture(budget,2,2,Duration::from_secs(2)).unwrap() }
 fn response(envelope:&Value) -> Value {

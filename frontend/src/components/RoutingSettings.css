@@ -9,9 +9,24 @@
 .routing-card small, .routing-field small { color: var(--ink-3); font-size: 11px; line-height: 1.5; }
 .routing-editor { border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin-top: 16px; }
 .routing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 14px 0; }
-.routing-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; margin-bottom: 12px; }
+.routing-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; margin-bottom: 12px; min-width: 0; }
 .routing-field input, .routing-field select, .routing-field textarea { width: 100%; min-height: 36px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--bg-2); color: var(--ink); font: inherit; }
 .routing-field textarea { resize: vertical; }
+.routing-field input, .routing-field select, .routing-field textarea { min-width: 0; max-width: 100%; }
+.routing-settings .routing-tabs { flex-wrap: wrap; max-width: 100%; }
+.routing-card > div { min-width: 0; overflow-wrap: anywhere; }
+.routing-builder button:not(.legal-tab) { min-height: 34px; border: 1px solid var(--line-2); border-radius: 7px; padding: 7px 12px; font-size: 12px; cursor: pointer; }
+.routing-builder button:not(.legal-tab):hover { border-color: var(--gold); }
+.routing-builder button:disabled { opacity: .5; cursor: not-allowed; }
+.routing-builder .routing-actions { margin: 12px 0; }
+.routing-builder .routing-actions > label.btn { display: flex; flex-direction: column; align-items: flex-start; width: 100%; max-width: 360px; }
+.routing-builder input[type="file"] { min-width: 0; max-width: 100%; width: 100%; }
+.routing-builder .routing-checks label,
+.routing-builder label:not(.routing-field):has(> input[type="checkbox"]) { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; line-height: 1.5; }
+.routing-builder label:not(.routing-field):has(> input[type="checkbox"]) { margin: 8px 12px 8px 0; }
+.routing-builder fieldset.routing-editor { border: 1px solid var(--line); padding: 16px; margin: 18px 0; border-radius: 8px; }
+.routing-builder legend { font-size: 12px; font-weight: 600; padding-top: 8px; }
+.routing-builder h4 { margin: 18px 0 8px; }
 .routing-field input:focus, .routing-field select:focus, .routing-field textarea:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
 .routing-checks { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 12px 0; }
 .routing-check { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }

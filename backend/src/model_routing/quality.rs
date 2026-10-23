@@ -9,7 +9,7 @@ use serde::{Deserialize,Serialize};
 pub enum QualityContract { Nonempty, JsonObject {required_fields:Vec<String>} }
 #[derive(Debug,Clone,Copy,PartialEq,Eq,Serialize)]
 #[serde(rename_all="snake_case")]
-pub enum QualityFailure { EmptyAnswer, InvalidJson, MissingFields }
+pub enum QualityFailure { EmptyAnswer, InvalidJson, MissingFields, IncompleteAnswer, NonSourceSpan }
 #[derive(Debug,Clone,Serialize)]
 pub(crate) struct QualityAttempt {
     pub failed_target:TargetReference,pub planned_target:TargetReference,pub failure:QualityFailure,

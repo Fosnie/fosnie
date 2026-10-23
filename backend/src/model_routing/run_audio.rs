@@ -36,7 +36,7 @@ impl RoutedRun {
                 }
                 let mut plan=ExecutionPlan {id:context.run_id,schema_version:SCHEMA_VERSION,actor_user_id:context.actor.user_id,
                     selection,decision:service::empty_decision(&context,&policy,"fixed_voice_pending"),
-                    constraints,assignments:Default::default(),fixed_assignments:Default::default()};
+                    constraints,assignments:Default::default(),fixed_assignments:Default::default(), profile_snapshot:None,vnext_context:None };
                 fixed_lease::pin(state,&context,&mut plan,roles).await?;
                 let budget=RunBudget::new(plan.constraints.clone());
                 Self::runtime(context,plan,budget,PipelineClient::from_state(state)?)

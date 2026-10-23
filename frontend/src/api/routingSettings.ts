@@ -41,7 +41,7 @@ export interface Policy {id:string;revision:number;rollout:"off"|"shadow"|"activ
   objective:"economy"|"balanced"|"quality";constraints:Constraints;rules:Rule[];
   default_provider_id:string|null;classifier_provider_id:string|null;utility_assignments:Partial<Record<Purpose,string>>;technical_fallback:boolean;
   quality_escalation?:boolean;learned_ranking?:boolean;classifier?:ClassifierConfig}
-export interface PolicyEntry {id:string;label:string;scope:"deployment"|"user";revision:number;is_default:boolean;policy:Policy}
+export interface PolicyEntry {required_profile_version?:number;id:string;label:string;scope:"deployment"|"user";revision:number;is_default:boolean;policy:Policy}
 export interface Management {schema_version:number;deployment_manage:boolean;user_byok_enabled:boolean;personal_policies:boolean}
 export interface ApiAlias {schema_version:number;name:string;enabled:boolean;revision:number;objective:"economy"|"balanced"|"quality";
   status:"disabled"|"conflict"|"routing_disabled"|"ready";agent_field:string}

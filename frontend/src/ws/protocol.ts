@@ -51,6 +51,7 @@ export interface ReasoningSpec {
 }
 
 export type ClientFrame =
+  | {type:"chat.routed.v2.send";request:{chat_id?:string|null;project_id?:string|null;agent_id?:string|null;content:string;routing_intent?:import("@/api/routingVNext").RoutingIntentV2;save_binding?:boolean;options?:import("@/api/chatRouting").RoutingOptions}}
   | { type: "chat.routed.send"; request: { chat_id?: string | null; project_id?: string | null; agent_id?: string | null; content: string;
       model_selection?: import("@/api/workflowRouting").WorkflowSelection; options?: import("@/api/chatRouting").RoutingOptions } }
   | { type: "chat.send"; chat_id?: string | null; content: string; agent_id?: string | null; project_id?: string | null; attachment_ids?: string[]; thinking?: string | null; reasoning?: ReasoningSpec | null; llm_provider_id?: string | null; workspace_id?: string | null }

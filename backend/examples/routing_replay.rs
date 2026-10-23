@@ -56,7 +56,7 @@ fn replay(input:Input)->anyhow::Result<Value> {
             let p=input.profiles.iter().find(|p|p.provider_id==id).ok_or(RoutingError::ProviderUnavailable)?;
             if let Some(reason)=engine::target_incompatibility(p,&baseline,&constraints) {return Err(RoutingError::Incompatible(reason));}
             RoutingDecision{id:input.decision_id,schema_version:1,policy_id:input.policy.id,policy_revision:input.policy.revision,
-                strategy:input.policy.strategy,proposed:Some(TargetReference{provider_id:id,provider_revision:p.provider_revision,profile_revision:p.revision,model:p.model.clone(),effort:baseline.effort.clone()}),
+                strategy:input.policy.strategy,proposed:Some(TargetReference{provider_id:id,provider_revision:p.provider_revision,profile_revision:p.revision,model:p.model.clone(),effort:baseline.effort.clone(), variant:None }),
                 actual:None,reason_codes:vec!["fixed_baseline".into()],excluded_counts:Default::default(),estimated_cost_microusd:engine::estimate_cost(p,&baseline)}
         } else {engine::select(&input.profiles,&req,&input.policy,&constraints,input.policy.objective,&rule,rule.target.is_none()&&!classified)?};
         decision.id=input.decision_id;

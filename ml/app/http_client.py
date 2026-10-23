@@ -55,6 +55,8 @@ async def post(client, url, **kwargs):
     from .inference_target import strict
     if not strict():
         return await client.post(url, **kwargs)
+    from .variant_generation import request as variant_request
+    kwargs = variant_request(url, kwargs)
     request = _routed_request("POST", url, {"timeout": client.timeout, **kwargs})
     return await client.send(request, auth=None, follow_redirects=False)
 
@@ -66,6 +68,8 @@ async def stream(client, method, url, **kwargs):
         async with client.stream(method, url, **kwargs) as response:
             yield response
         return
+    from .variant_generation import request as variant_request
+    kwargs = variant_request(url, kwargs)
     request = _routed_request(method, url, {"timeout": client.timeout, **kwargs})
     response = await client.send(request, stream=True, auth=None, follow_redirects=False)
     try:

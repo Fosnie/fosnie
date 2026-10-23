@@ -15,6 +15,8 @@ impl fosnie_backend::ext::AuthProvider for Auth {
     async fn authenticate(&self,_:&mut axum::http::request::Parts,_:&AppState)->fosnie_backend::Result<AuthContext> {Ok(self.0.clone())}
 }
 struct Servers(Vec<tokio::task::JoinHandle<()>>);
+#[path="common/model_routing_builder_cases.rs"]
+mod builder_cases;
 impl Drop for Servers {fn drop(&mut self){for server in &self.0 {server.abort();}}}
 
 async fn stack(pool:sqlx::PgPool)->anyhow::Result<()> {
@@ -26,8 +28,9 @@ async fn stack(pool:sqlx::PgPool)->anyhow::Result<()> {
     let upstream=axum::Router::new().route("/v1/chat/completions",axum::routing::post({let trace=trace.clone();move |Json(body):Json<Value>|{
         let trace=trace.clone();async move {
             let model=body["model"].as_str().unwrap();assert!(matches!(model,"routing-e2e-local"|"routing-e2e-cloud"|"routing-e2e-judge"));
-            let content=if model=="routing-e2e-judge" {json!({"task":"general","minimum_tier":"economy","fresh_information":false,
-                "tools":false,"vision":false,"structured_output":false,"confidence":0.95,"uncertain":false}).to_string()}
+            let complex=body["messages"].to_string().contains("honours project");
+            let content=if model=="routing-e2e-judge" {json!({"task":if complex{"research"}else{"general"},"minimum_tier":if complex{"advanced"}else{"economy"},"fresh_information":false,
+                "tools":false,"vision":false,"structured_output":false,"confidence":0.95,"uncertain":false,"difficulty":if complex{"complex"}else{"routine"}}).to_string()}
                 else {"Fosnie routing stack answer.".into()};
             let stream=body["stream"]==true;let model=model.to_string();trace.lock().unwrap().push(body);
             let usage=json!({"prompt_tokens":32,"completion_tokens":32,"total_tokens":64});
@@ -58,6 +61,7 @@ async fn stack(pool:sqlx::PgPool)->anyhow::Result<()> {
     sqlx::query("INSERT INTO agents(id,name,system_prompt,params,created_by,modes) VALUES($1,'Routing stack assistant','Answer the synthetic routing task.','{}'::jsonb,$2,ARRAY['general'])")
         .bind(agent).bind(uid).execute(&pool).await?;
     let mut boot=BootConfig::default();boot.ml.base_url=ml_url.into();boot.ml.shared_secret="routing-e2e-ml".into();
+    boot.providers.user_byok_enabled=false;
     boot.server.static_dir="".into();boot.server.public_url="http://127.0.0.1:5189".into();
     let state=AppStateBuilder::new(pool.clone(),fosnie_backend::cache::create_pool("redis://127.0.0.1:16389")?,Arc::new(boot))
         .with_auth(Arc::new(Auth(actor.clone()))).build();
@@ -67,7 +71,7 @@ async fn stack(pool:sqlx::PgPool)->anyhow::Result<()> {
         sqlx::query("INSERT INTO provider_configs(id,role,scope,model,label,base_url,is_default) VALUES($1,'llm','deployment',$2,$2,$3,$4)")
             .bind(id).bind(model).bind(&upstream_url).bind(id==cloud).execute(&pool).await?;
         let profile:ModelProfile=serde_json::from_value(json!({"provider_id":id,"provider_revision":1,"revision":1,"adapter":"openai_chat","model":model,
-            "locality":locality,"locality_trusted":true,"quality_status":"declared","tier":"economy","auto_enabled":auto,
+            "locality":locality,"locality_trusted":true,"quality_status":"declared","tier":if id==cloud{"advanced"}else{"economy"},"auto_enabled":auto,
             "pricing":{"input_microusd_per_million":cost,"output_microusd_per_million":cost},
             "capabilities":{"context_tokens":128000,"max_output_tokens":8192,"structured_output":"declared","tools":"declared"}}))?;
         store::save_profile(&state,&actor,id,store::SaveProfile{expected_revision:0,profile}).await?;
@@ -77,7 +81,7 @@ async fn stack(pool:sqlx::PgPool)->anyhow::Result<()> {
     store::save_policy(&state,&actor,policy.id,store::SavePolicy{label:"Routing stack policy".into(),scope:"deployment".into(),expected_revision:0,is_default:true,policy}).await?;
     let _=fosnie_backend::chat::browser::set_enabled(axum::extract::State(state.clone()),fosnie_backend::auth::keycloak::AuthUser(actor.clone()),
         Json(fosnie_backend::http::voice_routing::Enabled{enabled:true})).await?;
-    let router=fosnie_backend::http::router(state,None,None,None,None);
+    let router=fosnie_backend::http::router(state.clone(),None,None,None,None);
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;let base=format!("http://{}",listener.local_addr()?);
     servers.0.push(tokio::spawn(async move{axum::serve(listener,router).await.unwrap();}));
     let status=tokio::time::timeout(Duration::from_secs(120),tokio::process::Command::new("node").args(["node_modules/@playwright/test/cli.js","test","-c","playwright.routing-stack.config.ts"])
@@ -93,6 +97,7 @@ async fn stack(pool:sqlx::PgPool)->anyhow::Result<()> {
     let decisions:Vec<Value>=sqlx::query_scalar("SELECT routing_decision FROM messages WHERE role='assistant' AND routing_decision IS NOT NULL ORDER BY created_at")
         .fetch_all(&pool).await?;
     assert_eq!(decisions.len(),3);assert!(decisions.iter().all(|d|d["actual"]["provider_id"]==json!(local)));
+    builder_cases::exercise(&state,&actor,local,cloud,judge,&trace).await?;
     ml.kill().await?;eprintln!("P11 actual Rust + ML + product browser: Auto, reload, Off/local-only, reenable and gate refusal passed");Ok(())
 }
 

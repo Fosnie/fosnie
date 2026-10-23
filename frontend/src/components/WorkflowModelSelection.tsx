@@ -8,6 +8,7 @@ export function WorkflowModelSelection({ value, onChange, routing, changed, disa
   routing: ReturnType<typeof useWorkflowRouting>; changed: boolean; disabled: boolean;
 }) {
   const { selection, capabilities, models, policies, availableModels, availablePolicies, policy, supported, problem } = routing;
+  const selectionChange=(next:typeof selection)=>{if(!next)return;if(routing.intent)onChange({...routing.intent,selection:next,variant:next.mode==="manual" && routing.selection?.mode==="manual" && next.provider_id===routing.selection.provider_id?routing.intent.variant:undefined,required_profile_version:next.mode==="auto"?routing.intent.required_profile_version:1});else onChange(next);};
   const mode = value === undefined ? "legacy" : selection?.mode ?? "saved";
   const judge = policy?.policy.classifier_provider_id;
   const judgeModel = models.isError ? undefined : models.data?.find(m => m.id === judge);
@@ -17,8 +18,8 @@ export function WorkflowModelSelection({ value, onChange, routing, changed, disa
   return <section aria-label="Workflow model routing" className="ed-section" style={{ padding: "16px 0" }}>
     <label className="form-label">Model selection</label>
     <Dropdown ariaLabel="Workflow model selection" fullWidth disabled={disabled} value={mode}
-      onChange={m => onChange(m === "legacy" ? undefined : m === "manual" ? { mode: m, provider_id: "" }
-        : m === "auto" ? { mode: m, objective: "balanced" } : { mode: "default" })}
+      onChange={m => {if(m==="legacy"){onChange(undefined);return;}const selection=m==="manual"?{mode:"manual" as const,provider_id:""}:m==="auto"?{mode:"auto" as const,objective:"balanced" as const}:{mode:"default" as const};
+        onChange(capabilities.data?.selection_versions?.includes(2)?{schema_version:2,selection,required_profile_version:m==="auto"?routing.defaultProfileVersion:1}:selection);}}
       options={[
         { value: "legacy", label: "Legacy — existing workflow behavior" },
         ...["default", "manual", "auto"].map((m, i) => ({ value: m,
@@ -31,26 +32,28 @@ export function WorkflowModelSelection({ value, onChange, routing, changed, disa
     {selection?.mode === "manual" && <>
       <label className="form-label">Model</label>
       <Dropdown ariaLabel="Workflow model" fullWidth disabled={disabled || models.isPending || models.isError}
-        value={selection.provider_id} onChange={provider_id => onChange({ mode: "manual", provider_id })}
+        value={selection.provider_id} onChange={provider_id => {selectionChange({mode:"manual",provider_id});}}
         options={[{ value: "", label: "Choose a model", disabled: true },
           ...availableModels.map(m => ({ value: m.id, label: `${m.label ?? m.model ?? m.id} · ${m.model ?? ""}` })),
           ...(selection.provider_id && !availableModels.some(m => m.id === selection.provider_id)
             ? [{ value: selection.provider_id, label: `Saved model unavailable · ${selection.provider_id}`, disabled: true }] : [])]} />
       <p className="ed-hint">Pins the answer and LLM helpers to this model. An incompatible or unavailable model stops the run; the workflow does not silently switch to Auto.</p>
     </>}
+    {selection?.mode === "manual" && capabilities.data?.selection_versions?.includes(2) && <label className="routing-field">Variant<select value={routing.intent?.variant?.id ?? ""} onChange={e=>{const v=routing.availableVariants.find(v=>v.id===e.target.value);onChange({schema_version:2,selection,required_profile_version:1,...(v?{variant:{id:v.id,expected_revision:v.revision}}:{})});}}><option value="">Model provider default</option>{routing.availableVariants.filter(v=>v.provider_id===selection.provider_id).map(v=><option value={v.id} key={v.id}>{v.label}</option>)}</select></label>}
     {selection?.mode === "auto" && <>
       <label className="form-label">Objective</label>
       <Dropdown ariaLabel="Workflow routing objective" fullWidth disabled={disabled} value={selection.objective ?? "balanced"}
-        onChange={objective => onChange({ ...selection, objective: objective as WorkflowObjective })}
+        onChange={objective => selectionChange({ ...selection, objective: objective as WorkflowObjective })}
         options={[{ value: "economy", label: "Economy — prefer lower cost" }, { value: "balanced", label: "Balanced — quality and cost" }, { value: "quality", label: "Quality — prefer stronger capability" }]} />
       <label className="form-label">Routing policy</label>
       <Dropdown ariaLabel="Workflow routing policy" fullWidth disabled={disabled || policies.isPending || policies.isError} value={selection.policy_id ?? ""}
-        onChange={policy_id => onChange({ mode: "auto", objective: selection.objective ?? "balanced", ...(policy_id ? { policy_id } : {}) })}
+        onChange={policy_id => {const p=availablePolicies.find(p=>p.id===policy_id);const next={mode:"auto" as const,objective:selection.objective ?? "balanced",...(policy_id?{policy_id}:{})};const version=policy_id?(p?.required_profile_version===2?2:1):routing.defaultProfileVersion;onChange(capabilities.data?.selection_versions?.includes(2)?{schema_version:2,selection:next,required_profile_version:version}:next);}}
         options={[{ value: "", label: "Owner's default policy" }, ...availablePolicies.map(p => ({ value: p.id, label: `${p.label} · ${p.scope === "user" ? "Personal" : "Deployment"}` })),
           ...(selection.policy_id && !availablePolicies.some(p => p.id === selection.policy_id)
             ? [{ value: selection.policy_id, label: `Saved policy unavailable · ${selection.policy_id}`, disabled: true }] : [])]} />
       <p className="ed-hint">Auto uses the policy's rules, model profiles and access limits. The objective is a preference within those limits, not a guarantee of the best answer.</p>
-      {policy && <div className="ed-hint" role="status">
+      {policy?.required_profile_version===2 && <p className="ed-hint">Routing profile v2 · uncalibrated reference path until compatible calibration is ready.</p>}
+      {policy && policy.required_profile_version!==2 && <div className="ed-hint" role="status">
         <p>Policy: {policy.label}</p>
         <p>{strategy === "rules" ? "Rules: matches configured conditions; no model judge is called. Without a model match, the checked default is used."
           : strategy === "hybrid" ? "Hybrid: rules run first; a judge assesses the request when no rule selects a model."

@@ -121,7 +121,7 @@ impl ReqMessage {
 
 impl ChatCompletionRequest {
     pub fn validate(&self) -> Result<(), ApiError> {
-        if self.model_selection.is_none() && self.model.trim().is_empty() {
+        if self.model_selection.is_none() && !self.extra.contains_key("routing_intent") && self.model.trim().is_empty() {
             return Err(ApiError::bad_request("'model' is required without model_selection"));
         }
         if self.messages.is_empty() {
@@ -337,6 +337,9 @@ pub async fn completions(
     super::rate_limit(&state, key_id).await?;
     let axum::Json(mut req) = body.map_err(|_| ApiError::bad_request("invalid completion request JSON"))?;
     req.validate()?;
+    if req.extra.contains_key("routing_intent") && (!req.model.trim().is_empty() || req.model_selection.is_some() || req.fosnie_agent_id.is_some()) {
+        return Err(ApiError::bad_request("routing_intent requires stateless text, an empty model and one selection field"));
+    }
     if let Some((alias,objective))=super::alias::resolve(&state,&req.model).await? {
         if req.model_selection.as_ref().is_some_and(|s|!matches!(s,crate::model_routing::ModelSelection::Auto {..})) {
             return Err(ApiError::bad_request("the virtual Auto alias requires Auto selection; Default/Manual cannot be combined with it"));
@@ -351,7 +354,7 @@ pub async fn completions(
         return super::routed::run_alias(&state,&ctx,key_id,req,alias).await;
     }
     if req.fosnie_agent_id.is_some() {return Err(ApiError::bad_request("fosnie_agent_id requires an enabled virtual Auto alias"));}
-    if req.model_selection.is_some() {
+    if req.model_selection.is_some() || req.extra.contains_key("routing_intent") {
         if let Some(rest)=req.model.strip_prefix(AGENT_PREFIX) {
             let agent_id=Uuid::parse_str(rest.trim()).map_err(|_|ApiError::model_not_found(&req.model))?;
             return super::agent_routed::run(&state,&ctx,key_id,req,agent_id,&headers).await;

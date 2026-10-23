@@ -22,10 +22,15 @@ pub(super) async fn selected_plan_in(state:&crate::AppState,context:&RoutingCont
 pub(super) async fn selected_plan_with_retry(state:&crate::AppState,context:&RoutingContext,selection:ModelSelection,
     requirements:WorkloadRequirements,conversation:&str,cancel:&tokio::sync::Notify,ledger:Option<PlanningLedger>)
     ->crate::Result<(ExecutionPlan,budget::RunBudget,Option<super::fallback::RetryRequirements>)> {
+    selected_plan_with_retry_supported(state,context,selection,requirements,conversation,cancel,ledger,1).await
+}
+pub(super) async fn selected_plan_with_retry_supported(state:&crate::AppState,context:&RoutingContext,selection:ModelSelection,
+    requirements:WorkloadRequirements,conversation:&str,cancel:&tokio::sync::Notify,ledger:Option<PlanningLedger>,version:u32)
+    ->crate::Result<(ExecutionPlan,budget::RunBudget,Option<super::fallback::RetryRequirements>)> {
     if let ModelSelection::Auto {objective,policy_id}=&selection {
         return auto_plan_in(state,context,*policy_id,*objective,requirements,conversation,cancel,ledger).await;
     }
-    let policy=store::load_policy(state,&context.actor,None).await?;
+    let policy=store::load_policy_supported(state,&context.actor,None,version).await?;
     engine::validate_policy(&policy)?;
     let constraints=store::deployment_constraints(state).await?.intersect(&policy.constraints)
         .intersect(&state.inference_policy.constraints(&state.pg,context).await?);
@@ -37,7 +42,7 @@ pub(super) async fn selected_plan_with_retry(state:&crate::AppState,context:&Rou
     let profile=profiles.iter().find(|p|p.provider_id==id).ok_or(RoutingError::ProviderUnavailable)?;
     if let Some(reason)=engine::target_incompatibility(profile,&requirements,&constraints) {return Err(RoutingError::Incompatible(reason).into());}
     let reference=TargetReference {provider_id:id,provider_revision:profile.provider_revision,profile_revision:profile.revision,
-        model:profile.model.clone(),effort:requirements.effort};
+        model:profile.model.clone(),effort:requirements.effort, variant:None };
     let mut decision=empty_decision(context,&policy,if matches!(selection,ModelSelection::Manual {..}) {"manual_selection"} else {"default_selection"});
     decision.proposed=Some(reference.clone());
     let mut assignments:std::collections::BTreeMap<_,_>=[CallPurpose::Primary,CallPurpose::ToolLoop,CallPurpose::Final,context.purpose]
@@ -57,8 +62,8 @@ pub(super) async fn selected_plan_with_retry(state:&crate::AppState,context:&Rou
         }
     }
     budget.check_deadline()?;
-    Ok((ExecutionPlan {id:context.run_id,schema_version:SCHEMA_VERSION,actor_user_id:context.actor.user_id,selection,decision,
-        constraints,assignments,fixed_assignments:Default::default()},budget,None))
+    Ok((ExecutionPlan {id:context.run_id,schema_version:version,actor_user_id:context.actor.user_id,selection,decision,
+        constraints,assignments,fixed_assignments:Default::default(), profile_snapshot:None,vnext_context:None },budget,None))
 }
 
 /// Build an Auto plan. The only possible inference here is ONE explicitly
@@ -122,7 +127,7 @@ async fn auto_plan_in(
                 result = classifier::classify_for_plan(state, context, &policy, &profiles, &constraints, &requirements, conversation, &budget, &never_cancel) => result,
             };
             match result {
-                Ok(classifier::ClassificationOutcome::Classified(result)) => { requirements = result; classified = true; }
+                Ok(classifier::ClassificationOutcome::Classified(result,_)) => { requirements = result; classified = true; }
                 Ok(classifier::ClassificationOutcome::Skipped(reason)) => {
                     requirements.uncertain=true;
                     classifier_skip=Some(reason);
@@ -171,7 +176,7 @@ async fn auto_plan_in(
             let locality = if profile.locality_trusted { profile.locality } else { Locality::Unknown };
             if !constraints.permits(*id, locality) { return Err(RoutingError::Forbidden.into()); }
             TargetReference { provider_id:*id,provider_revision:profile.provider_revision,
-                profile_revision:profile.revision,model:profile.model.clone(),effort:profile.auto_effort.clone() }
+                profile_revision:profile.revision,model:profile.model.clone(),effort:profile.auto_effort.clone() , variant:None }
         } else { actual.clone() };
         assignments.insert(purpose, reference);
     }
@@ -184,7 +189,7 @@ async fn auto_plan_in(
         requirements,allowed_providers:rule.allowed_providers,
     });
     Ok((ExecutionPlan { id:context.run_id,schema_version:SCHEMA_VERSION,actor_user_id:context.actor.user_id,
-        selection:ModelSelection::Auto { objective,policy_id:Some(policy.id) },decision,constraints,assignments,fixed_assignments:Default::default() },budget,retry))
+        selection:ModelSelection::Auto { objective,policy_id:Some(policy.id) },decision,constraints,assignments,fixed_assignments:Default::default() , profile_snapshot:None,vnext_context:None },budget,retry))
 }
 
 pub(super) fn empty_decision(context: &RoutingContext, policy: &RoutingPolicy, reason: &str) -> RoutingDecision {

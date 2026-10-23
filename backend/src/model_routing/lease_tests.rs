@@ -10,7 +10,7 @@ fn setup(calls: u32) -> (RunBudget, GrantedLease) {
         "capabilities":{"context_tokens":10000,"max_output_tokens":1000},
         "pricing":{"input_microusd_per_million":1000000,"output_microusd_per_million":1000000}
     })).unwrap();
-    let target = InferenceTarget { schema_version:1,provider_id:profile.provider_id,
+    let target = InferenceTarget { generation:None,variant:None, schema_version:1,provider_id:profile.provider_id,
         provider_revision:1,profile_revision:1,adapter:AdapterKind::OpenaiChat,
         base_url:"http://mock.test".into(),model:"test".into(),api_key:"secret".into(),effort:None };
     let budget = RunBudget::new(RoutingConstraints { max_calls:Some(calls),max_total_tokens:Some(u64::from(calls)*120),..Default::default() });

@@ -58,6 +58,9 @@ def is_anthropic(base_url: str | None) -> bool:
 def _thinking_config() -> tuple[dict[str, Any], bool]:
     """Parse `llm_thinking` into a body fragment + on-flag (Phase 2). Model-dependent
     mode is the operator's responsibility — a wrong choice 400s and is logged."""
+    generation=cfg("routing_generation", None)
+    if strict() and generation and generation.get("max_reasoning_tokens") is not None:
+        return {"thinking":{"type":"enabled","budget_tokens":generation["max_reasoning_tokens"]}}, True
     spec = (cfg("llm_thinking", settings.llm_thinking) or "off").strip().lower()
     if not spec or spec == "off":
         return {}, False

@@ -72,12 +72,13 @@ pub(crate) async fn cited_sources(state:&AppState,actor:&AuthContext,chat:Uuid,s
         }
     }Ok(())
 }
-struct Scope {state:AppState,actor:AuthContext,surface:super::browser::Surface,source:Uuid,branch:Uuid,seq:i32,snapshot:Value,prefix:Value,tx:mpsc::Sender<ServerFrame>,intent:ModelSelection,options:Option<fosnie_protocol::RoutingOptions>}
+struct Scope {state:AppState,actor:AuthContext,surface:super::browser::Surface,source:Uuid,branch:Uuid,seq:i32,snapshot:Value,prefix:Value,tx:mpsc::Sender<ServerFrame>,intent:ModelSelection,options:Option<fosnie_protocol::RoutingOptions>,vnext:Option<fosnie_protocol::routing_vnext::RoutingIntentV2>}
 #[async_trait::async_trait]
 impl AccessGuard for Scope {
     fn regeneration_chat(&self)->Option<Uuid> {Some(self.branch)}
     fn desktop_device(&self)->Option<Uuid> {self.surface.device()}
     fn selection_intent(&self)->Option<ModelSelection> {Some(self.intent.clone())}
+    fn routing_intent_vnext(&self)->Option<fosnie_protocol::routing_vnext::RoutingIntentV2>{self.vnext.clone()}
     fn routing_options(&self)->Option<fosnie_protocol::RoutingOptions> {self.options.clone()}
     async fn check(&self)->Result<()> {
         if self.tx.is_closed() {return Err(RoutingError::Cancelled.into());}
@@ -120,7 +121,9 @@ pub fn execute_surface(state:AppState,actor:AuthContext,source:Uuid,answer:Uuid,
         let row:Option<(i32,Value,Option<Value>)>=sqlx::query_as("SELECT sequence_number,routing_selection,routing_options FROM messages WHERE id=$1 AND chat_id=$2 AND role='assistant' AND routing_selection IS NOT NULL AND routing_decision IS NOT NULL AND completed_at IS NOT NULL AND interrupted_at IS NULL")
             .bind(answer).bind(source).fetch_optional(&state.pg).await?;
         let (seq,intent,options)=row.ok_or(RoutingError::Incompatible("select a completed routed answer with saved intent"))?;
-        let selection:ModelSelection=serde_json::from_value(intent.clone()).map_err(|_|RoutingError::Invalid("saved selection"))?;
+        let vnext:Option<fosnie_protocol::routing_vnext::RoutingIntentV2>=if intent.get("schema_version").is_some(){Some(serde_json::from_value(intent.clone()).map_err(|_|RoutingError::Invalid("saved v2 intent"))?)}else{None};
+        if let Some(v)=&vnext {v.require_support(&[1,2],&[1,2]).map_err(RoutingError::Invalid)?;}
+        let selection:ModelSelection=if let Some(v)=&vnext {v.selection.clone()}else{serde_json::from_value(intent.clone()).map_err(|_|RoutingError::Invalid("saved selection"))?};
         let options:Option<fosnie_protocol::RoutingOptions>=options.map(serde_json::from_value).transpose().map_err(|_|RoutingError::Invalid("saved routing options"))?;
         let state=if let Some(options)=&options {super::browser::constrain(state,options)} else {state};
         supported_history(&state,source,seq).await?;
@@ -154,15 +157,17 @@ pub fn execute_surface(state:AppState,actor:AuthContext,source:Uuid,answer:Uuid,
         event.model_agent_traceability=Some(json!({"turn_id":turn,"source_chat_id":source,"source_message_id":answer,"origin":surface.origin().as_str(),"device_id":surface.device(),"device_key_id":match surface {super::browser::Surface::Desktop(c)=>Some(c.key_id),_=>None}}));
         crate::audit::append_with(&mut create,&event).await?;
         create.commit().await?;
-        let scope=Arc::new(Scope {state:state.clone(),actor:actor.clone(),surface,source,branch,seq,snapshot,prefix,tx:tx.clone(),intent:selection.clone(),options:options.clone()});
+        let scope=Arc::new(Scope {state:state.clone(),actor:actor.clone(),surface,source,branch,seq,snapshot,prefix,tx:tx.clone(),intent:selection.clone(),options:options.clone(),vnext:vnext.clone()});
         scope.check().await?;
         // Announce before planning, so a failed attempt is still discoverable.
         scope.guard(&cancel,async {tokio::time::timeout(Duration::from_secs(5),tx.send(ServerFrame::ChatCreated {chat_id:branch})).await
             .map_err(|_|RoutingError::Cancelled)?.map_err(|_|RoutingError::Cancelled.into())}).await?;
         scope.guard(&cancel,async {tokio::time::timeout(Duration::from_secs(5),tx.send(ServerFrame::ChatRoutingStarted {turn_id:turn,chat_id:branch})).await
             .map_err(|_|RoutingError::Cancelled)?.map_err(|_|RoutingError::Cancelled.into())}).await?;
-        let run=scope.guard(&cancel,Box::pin(super::routing::prepare_selected(&state,&actor,branch,turn,&content,selection,
-            WorkloadRequirements {output_tokens:if options.is_some() {1024} else {4096},effort:options.as_ref().and_then(|o|o.effort.clone()),..Default::default()},&[],&Notify::new()))).await?.with_access(scope.clone())?;
+        let requirements=WorkloadRequirements {output_tokens:if options.is_some(){1024}else{4096},effort:options.as_ref().and_then(|o|o.effort.clone()),..Default::default()};
+        let run=scope.guard(&cancel,async {match vnext {
+            Some(v)=>super::routing::prepare_vnext(&state,&actor,branch,turn,&content,v,requirements,&[],&Notify::new()).await,
+            None=>super::routing::prepare_selected(&state,&actor,branch,turn,&content,selection,requirements,&[],&Notify::new()).await}}).await?.with_access(scope.clone())?;
         let (out,mut rx)=mpsc::channel(64);
         let worker=tokio::spawn({let state=state.clone();let actor=actor.clone();let run=run.clone();let cancel=cancel.clone();async move {
             Box::pin(super::run_turn(&state,super::origin::TurnContext::new(&actor,surface.origin()).with_device(surface.device()).with_routing(&run),turn,Some(branch),None,None,content,

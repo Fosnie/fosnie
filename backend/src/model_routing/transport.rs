@@ -5,7 +5,6 @@
 use serde_json::Value;
 use tokio::sync::Notify;
 use super::{mixed::{PreparedMixedRequest, Reports}, RoutingError};
-use super::fallback::{OpenFailure,FailureKind};
 
 const MAX_BODY: usize = 32 * 1024 * 1024;
 const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -45,7 +44,7 @@ impl PipelineClient {
             let mut value=reqwest::header::HeaderValue::from_str(shared_secret).map_err(|_|invalid("invalid ML credential"))?;
             value.set_sensitive(true); headers.insert("x-fosnie-ml-key",value);
         }
-        let http=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).default_headers(headers)
+        let http=reqwest::Client::builder().retry(reqwest::retry::never()).redirect(reqwest::redirect::Policy::none()).default_headers(headers)
             .build().map_err(|_|unavailable("could not create routed ML client"))?;
         Ok(Self { http,base_url:base_url.trim_end_matches('/').into(),state:None })
     }
@@ -55,6 +54,7 @@ impl PipelineClient {
     }
     pub async fn json(&self, operation:JsonOperation, body:Value, mut prepared:PreparedMixedRequest, cancel:&Notify) -> crate::Result<Value> {
         refresh(&mut prepared)?;
+        for p in &mut prepared.probes {p.arm();}
         let body=body_with_routing(body,&prepared,Some(false))?;
         let wait=prepared.grant.remaining()?;
         guarded(cancel,wait,async {
@@ -64,16 +64,19 @@ impl PipelineClient {
             let failed=provider_failure(&value,&prepared,false)?;
             let target=prepared.envelope.assignments.get(&prepared.envelope.purpose).cloned();
             let purpose=prepared.envelope.purpose;
+            let probes=std::mem::take(&mut prepared.probes);
             reconcile(prepared,&value)?;
             if let Some(failure)=failed {
                 if let (Some(state),Some(target))=(&self.state,target) {super::health::note(state,&target,purpose,&failure).await?;}
                 return Err(failure.app());
             }
+            if completed_llm(&value) {for probe in probes {probe.success().await?;}}
             Ok(value)
         }).await
     }
     pub async fn stream(&self, operation:StreamOperation, body:Value, mut prepared:PreparedMixedRequest, cancel:&Notify) -> crate::Result<PipelineStream> {
         refresh(&mut prepared)?;
+        for p in &mut prepared.probes {p.arm();}
         let body=body_with_routing(body,&prepared,Some(true))?;
         let wait=prepared.grant.remaining()?;
         guarded(cancel,wait,async {
@@ -88,6 +91,7 @@ impl PipelineClient {
     pub async fn transcribe(&self, audio:Vec<u8>, mime:&str, language:Option<&str>, mut prepared:PreparedMixedRequest, cancel:&Notify) -> crate::Result<Value> {
         if audio.is_empty() || audio.len()>MAX_BODY { return Err(invalid("invalid routed audio size")); }
         refresh(&mut prepared)?;
+        for p in &mut prepared.probes {p.arm();}
         let overrides=prepared.envelope.apply(Default::default())?;
         let header=serde_json::to_string(&overrides).map_err(|_|invalid("invalid inference overrides"))?;
         let mut header=reqwest::header::HeaderValue::from_str(&header).map_err(|_|invalid("invalid inference overrides header"))?;
@@ -101,12 +105,15 @@ impl PipelineClient {
             let value=read_json(request.send().await.map_err(|_|unavailable("routed transcription connection failed"))?).await?;
             let text=value.get("text").and_then(Value::as_str).ok_or_else(||invalid("missing transcription text"))?;
             audio_report(&reports(&value)?,super::fixed::FixedRole::Stt,text.len(),false)?;
+            let probes=std::mem::take(&mut prepared.probes);
             reconcile(prepared,&value)?;
+            if completed_llm(&value) {for probe in probes {probe.success().await?;}}
             Ok(value)
         }).await
     }
     pub async fn speech(&self, body:Value, mut prepared:PreparedMixedRequest, cancel:&Notify) -> crate::Result<AudioResponse> {
         refresh(&mut prepared)?;
+        for p in &mut prepared.probes {p.arm();}
         let body=body_with_routing(body,&prepared,None)?;
         let wait=prepared.grant.remaining()?;
         guarded(cancel,wait,async {
@@ -202,7 +209,9 @@ impl PipelineStream {
                         return Err(invalid("generation requires one completed inference call"));
                     }
                 }
+                let mut prepared=prepared;let probes=std::mem::take(&mut prepared.probes);
                 reconcile(prepared,&event)?;
+                if completed_llm(&event) {for probe in probes {probe.success().await?;}}
             }
             self.observed=true;
             return Ok(Some(event));
@@ -210,6 +219,9 @@ impl PipelineStream {
     }
 }
 
+fn completed_llm(value:&Value)->bool {
+    reports(value).is_ok_and(|r|r.routing_report.is_some_and(|r|r.complete && !r.calls.is_empty() && r.calls.iter().all(|c|matches!(c.status,super::lease::CallStatus::Completed))))
+}
 fn refresh(prepared:&mut PreparedMixedRequest) -> crate::Result<()> {
     let wait=prepared.grant.remaining()?;
     let ms=wait.as_millis().min(86_400_000) as u64;

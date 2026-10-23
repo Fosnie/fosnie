@@ -29,8 +29,12 @@ impl RunBudget {
         self.0.limits.read().unwrap_or_else(|e|e.into_inner()).clone()
     }
     pub(super) fn exclusive(&self) -> bool { Arc::strong_count(&self.0)==1 }
-    pub(crate) fn restore(mut limits:RoutingConstraints,usage:Usage,remaining_ms:u64)->Result<Self,RoutingError> {
+    /// Restore a trusted durable ledger with only its remaining original time.
+    /// Callers must load usage and the absolute deadline from their owned store.
+    pub fn restore(mut limits:RoutingConstraints,usage:Usage,remaining_ms:u64)->Result<Self,RoutingError> {
         if remaining_ms==0 || usage.exhausted {return Err(RoutingError::BudgetExhausted);}
+        if limits.max_calls.is_some_and(|n|usage.calls>n) || limits.max_total_tokens.is_some_and(|n|usage.tokens>n)
+            || limits.max_cost_microusd.is_some_and(|n|usage.cost_microusd>n) {return Err(RoutingError::BudgetExhausted);}
         limits.max_duration_ms=Some(limits.max_duration_ms.unwrap_or(remaining_ms).min(remaining_ms));
         let budget=Self::new(limits);
         *budget.0.usage.lock().unwrap_or_else(|e|e.into_inner())=usage;
@@ -155,6 +159,19 @@ impl Reservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restored_ledger_retains_spend_and_rejects_larger_usage_or_expired_time() {
+        let limits=RoutingConstraints{max_calls:Some(2),max_total_tokens:Some(100),max_cost_microusd:Some(20),max_duration_ms:Some(1000),..Default::default()};
+        let usage=Usage{calls:1,tokens:80,cost_microusd:15,..Default::default()};
+        let b=RunBudget::restore(limits.clone(),usage,200).unwrap();
+        assert!(b.remaining(std::time::Duration::MAX)<=std::time::Duration::from_millis(200));
+        assert!(b.reserve(20,1,Some(5)).is_err());assert_eq!(b.snapshot().calls,1);
+        b.reserve(20,0,Some(5)).unwrap();assert_eq!(b.snapshot().calls,2);assert!(b.reserve(0,0,Some(0)).is_err());
+        assert!(RunBudget::restore(limits.clone(),Usage{calls:3,..usage},200).is_err());
+        assert!(RunBudget::restore(limits.clone(),Usage{tokens:101,..usage},200).is_err());
+        assert!(RunBudget::restore(limits.clone(),Usage{cost_microusd:21,..usage},200).is_err());
+        assert!(RunBudget::restore(limits,usage,0).is_err());
+    }
     #[test]
     fn classifier_preserves_last_call_without_charging_a_phantom_reservation() {
         let budget=RunBudget::new(RoutingConstraints {max_calls:Some(1),..Default::default()});

@@ -11,6 +11,8 @@ use super::{*,budget::{RunBudget,Usage},dispatch::StageRequest,fixed::FixedRole,
 mod audio;
 #[path="run_fallback.rs"]
 mod fallback_run;
+#[path="run_recovery.rs"]
+mod recovery_run;
 #[path="run_quality.rs"]
 mod quality_run;
 pub use audio::{MAX_AUDIO_BYTES,MAX_SPEECH_TEXT_BYTES};
@@ -29,6 +31,7 @@ pub(crate) trait AccessGuard: Send + Sync {
     fn browser_chat(&self) -> Option<uuid::Uuid> {None}
     fn desktop_device(&self)->Option<uuid::Uuid> {None}
     fn selection_intent(&self) -> Option<ModelSelection> {None}
+    fn routing_intent_vnext(&self)->Option<fosnie_protocol::routing_vnext::RoutingIntentV2>{None}
     fn routing_options(&self) -> Option<fosnie_protocol::RoutingOptions> {None}
 }
 struct Inner {
@@ -55,6 +58,17 @@ impl RoutedRun {
     pub(crate) fn plain_text_retry_allowed(&self)->bool {self.0.access.as_ref().is_some_and(|a|a.plain_text_retry())}
     pub(crate) fn browser_chat(&self)->Option<uuid::Uuid> {self.0.access.as_ref().and_then(|a|a.browser_chat())}
     pub(crate) fn desktop_device(&self)->Option<uuid::Uuid> {self.0.access.as_ref().and_then(|a|a.desktop_device())}
+    pub(crate) fn selection_value(&self)->serde_json::Value {
+        if let Some(v)=self.0.access.as_ref().and_then(|a|a.routing_intent_vnext()) {return serde_json::json!(v);}
+        if let Some(v)=&self.plan().vnext_context {return serde_json::json!(v.intent);}
+        if self.plan().schema_version==2 {
+            let variant=self.plan().assignments.get(&CallPurpose::Primary).and_then(|r|r.variant.as_ref()).filter(|_|matches!(self.plan().selection,ModelSelection::Manual{..}))
+                .map(|b|fosnie_protocol::routing_vnext::VariantSelection{id:b.variant.id,expected_revision:b.variant.revision});
+            return serde_json::json!(fosnie_protocol::routing_vnext::RoutingIntentV2{schema_version:2,selection:self.plan().selection.clone(),
+                required_profile_version:if self.plan().profile_snapshot.is_some(){2}else{1},variant,options:self.routing_options()});
+        }
+        serde_json::json!(self.selection_intent())
+    }
     pub(crate) fn selection_intent(&self)->ModelSelection {self.0.access.as_ref().and_then(|a|a.selection_intent()).unwrap_or_else(||self.0.plan.selection.clone())}
     pub(crate) fn routing_options(&self)->Option<fosnie_protocol::RoutingOptions> {self.0.access.as_ref().and_then(|a|a.routing_options())}
     pub(crate) fn regeneration_chat(&self)->Option<uuid::Uuid> {self.0.access.as_ref().and_then(|a|a.regeneration_chat())}
@@ -67,6 +81,32 @@ impl RoutedRun {
         objective:RoutingObjective,requirements:WorkloadRequirements,conversation:&str,
         fixed_roles:&[FixedRole],cancel:&Notify) -> crate::Result<Self> {
         Self::selected(state,context,ModelSelection::Auto {objective,policy_id},requirements,conversation,fixed_roles,cancel).await
+    }
+    pub async fn selected_vnext(state:&crate::AppState,context:RoutingContext,intent:fosnie_protocol::routing_vnext::RoutingIntentV2,
+        requirements:WorkloadRequirements,conversation:&str,fixed_roles:&[FixedRole],cancel:&Notify)->crate::Result<Self> {
+        intent.require_support(&[1,2],&[1,2]).map_err(RoutingError::Invalid)?;
+        if intent.variant.is_none() && intent.required_profile_version==1 && matches!(intent.selection,ModelSelection::Auto{..}) {
+            let narrowed=crate::chat::browser::constrain(state.clone(),&intent.options.clone().unwrap_or_default());
+            let mut requirements=requirements;requirements.effort=intent.options.as_ref().and_then(|o|o.effort.clone()).or(requirements.effort);
+            let mut run=Self::selected(&narrowed,context,intent.selection.clone(),requirements.clone(),conversation,fixed_roles,cancel).await?;
+            let inner=Arc::get_mut(&mut run.0).ok_or(RoutingError::NeedsReplan)?;
+            inner.plan.schema_version=2;inner.plan.decision.schema_version=2;inner.plan.vnext_context=Some(vnext::execution::ExecutionContext{intent,workload:requirements,difficulty:vnext::profile::DifficultySignal::Unknown,recovery:None});return Ok(run);
+        }
+        let (mut plan,budget)=vnext::execution::plan(state,&context,intent,requirements,conversation,cancel).await?;
+        fixed_lease::pin(state,&context,&mut plan,fixed_roles).await?;
+        Self::from_planned(context,plan,budget,PipelineClient::from_state(state)?)
+    }
+    /// Several explicitly pinned stages may share an existing run ledger.
+    /// Current actor/policy/deployment restrictions only tighten that ledger.
+    /// This does not restore, replenish or replace a consumed run budget.
+    pub async fn pinned_vnext_shared(state:&crate::AppState,context:RoutingContext,intent:fosnie_protocol::routing_vnext::RoutingIntentV2,
+        requirements:WorkloadRequirements,conversation:&str,expected_policy:(uuid::Uuid,i64),budget:RunBudget,cancel:&Notify)->crate::Result<Self> {
+        if intent.variant.is_none() || !matches!(intent.selection,ModelSelection::Manual{..}) {
+            return Err(RoutingError::Invalid("shared pinned run requires an explicit variant").into());
+        }
+        let ledger=service::PlanningLedger{policy_id:expected_policy.0,policy_revision:expected_policy.1,budget};
+        let (plan,budget)=vnext::execution::plan_with_ledger(state,&context,intent,requirements,conversation,cancel,Some(ledger)).await?;
+        Self::from_planned(context,plan,budget,PipelineClient::from_state(state)?)
     }
     pub async fn selected(state:&crate::AppState,context:RoutingContext,selection:ModelSelection,
         requirements:WorkloadRequirements,conversation:&str,fixed_roles:&[FixedRole],cancel:&Notify)->crate::Result<Self> {
@@ -104,7 +144,7 @@ impl RoutedRun {
         constraints=constraints.intersect(&state.inference_policy.constraints(&state.pg,&context).await?);
         let mut plan=ExecutionPlan {id:context.run_id,schema_version:SCHEMA_VERSION,actor_user_id:context.actor.user_id,
             selection:ModelSelection::Default,decision:service::empty_decision(&context,&policy,"fixed_embedding_rebuild"),
-            constraints,assignments:Default::default(),fixed_assignments:Default::default()};
+            constraints,assignments:Default::default(),fixed_assignments:Default::default(), profile_snapshot:None,vnext_context:None };
         fixed_lease::pin(state,&context,&mut plan,&[FixedRole::Embed,FixedRole::EmbedDesired]).await?;
         let budget=RunBudget::new(plan.constraints.clone());
         Self::runtime(context,plan,budget,PipelineClient::from_state(state)?)
@@ -117,14 +157,15 @@ impl RoutedRun {
     // Only planning code may assemble a runtime. Product callers cannot supply a
     // fresh budget for an existing plan through a public deserialization API.
     pub(crate) fn from_planned(context:RoutingContext,plan:ExecutionPlan,budget:RunBudget,client:PipelineClient) -> crate::Result<Self> {
-        if plan.schema_version!=SCHEMA_VERSION || plan.id!=context.run_id || plan.actor_user_id!=context.actor.user_id {
+        if !matches!(plan.schema_version,1|2) || plan.id!=context.run_id || plan.actor_user_id!=context.actor.user_id {
             return Err(RoutingError::Forbidden.into());
         }
         if context.actor.mfa_enroll_only { return Err(RoutingError::Forbidden.into()); }
+        if plan.schema_version==1 && (plan.profile_snapshot.is_some() || plan.assignments.values().any(|r|r.variant.is_some())) {return Err(RoutingError::Invalid("variant requires v2 plan").into());}
         if Self::is_fixed_rebuild(&context,&plan) {return Self::runtime(context,plan,budget,client);}
         let primary=plan.assignments.get(&CallPurpose::Primary).ok_or(RoutingError::Invalid("missing primary assignment"))?;
         let same=|other:&TargetReference|other.provider_id==primary.provider_id && other.provider_revision==primary.provider_revision
-            && other.profile_revision==primary.profile_revision && other.model==primary.model && other.effort==primary.effort;
+            && other.profile_revision==primary.profile_revision && other.model==primary.model && other.effort==primary.effort && other.variant==primary.variant;
         if [CallPurpose::ToolLoop,CallPurpose::Final].iter().any(|p|!plan.assignments.get(p).is_some_and(same)) {
             return Err(RoutingError::Invalid("primary/tool/final assignments must stay pinned").into());
         }

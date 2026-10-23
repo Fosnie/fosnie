@@ -5,6 +5,7 @@
 //! no edition-specific implementation is required to select a model.
 
 pub mod types;
+pub mod vnext;
 pub mod target;
 pub mod engine;
 pub mod store;
@@ -15,6 +16,7 @@ pub mod service;
 pub mod fallback;
 pub mod failure;
 pub mod health;
+pub(crate) mod health_scopes;
 pub mod learning;
 pub mod quality;
 pub mod lease;

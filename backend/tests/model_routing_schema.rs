@@ -387,6 +387,7 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
     assert!(probe(axum::extract::State(state.clone()),fosnie_backend::auth::keycloak::AuthUser(admin.clone()),axum::extract::Path(provider_id),axum::Json(capped)).await.is_err(),"unknown prices cannot satisfy a hard monetary probe cap");
     assert_eq!(calls.load(Ordering::SeqCst),3,"denied probe makes no inference request");
     policy.strategy=RoutingStrategy::Hybrid; policy.rollout=RolloutMode::Active; policy.rules.clear();
+    sqlx::query("DELETE FROM routing_provider_health WHERE provider_id=$1").bind(provider_id).execute(pool).await?;
     policy.constraints.max_duration_ms=Some(50);
     policy = store::save_policy(&state,admin,policy.id,store::SavePolicy { label:"Bounded classifier".into(),scope:"deployment".into(),expected_revision:policy.revision,is_default:true,policy:policy.clone() }).await?;
     let cancelled = tokio::sync::Notify::new(); cancelled.notify_one();
@@ -394,9 +395,14 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
     assert_eq!(calls.load(Ordering::SeqCst),3,"cancelled classification does not dispatch");
     delay.store(200,Ordering::SeqCst);
     let started=std::time::Instant::now();
-    assert!(service::auto_plan(&state,&context,Some(policy.id),RoutingObjective::Quality,req,"timeout",&notify).await.is_err());
+    // A tiny allowance can expire during metadata checks or skip the classifier
+    // to retain answer time. Neither result authorises a paid classifier call.
+    if let Ok((plan,budget))=service::auto_plan(&state,&context,Some(policy.id),RoutingObjective::Quality,req,"timeout",&notify).await {
+        assert!(plan.decision.reason_codes.iter().any(|code|code.starts_with("classifier_skipped")));
+        assert_eq!(budget.snapshot().calls,0);
+    }
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
-    assert_eq!(calls.load(Ordering::SeqCst),4,"timeout does not trigger a second classifier");
+    assert_eq!(calls.load(Ordering::SeqCst),3,"an unfittable classifier cannot dispatch or reset the allowance");
     delay.store(0,Ordering::SeqCst);
     policy.strategy=RoutingStrategy::Rules;
     policy.constraints.max_duration_ms=Some(10_000);
@@ -411,7 +417,8 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
     assert!(dispatch::chat_step(&state,&foreign,&plan,&budget,&messages,None,&sampling,&notify).await.is_err());
     let tools=[serde_json::json!({"type":"function","function":{"name":"unverified_tool"}})];
     assert!(dispatch::chat_step(&state,&dispatch_context,&plan,&budget,&messages,Some(&tools),&sampling,&notify).await.is_err(),"tools compatibility is checked again at dispatch");
-    assert_eq!(calls.load(Ordering::SeqCst),4,"denied actor and capabilities never reach ML");
+    assert_eq!(calls.load(Ordering::SeqCst),3,"denied actor and capabilities never reach ML");
+    eprintln!("D6 direct dispatch contracts");
     let actual=dispatch::chat_step(&state,&dispatch_context,&plan,&budget,&messages,None,&sampling,&notify).await?;
     assert_eq!(actual.content,"{\"ready\":true}");
     assert_eq!(actual.routing_report.as_ref().unwrap().calls[0].provider_id,provider_id);
@@ -419,12 +426,12 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
     assert_eq!(budget.snapshot().tokens,140);
     assert_eq!(budget.snapshot().unknown_cost_calls,1,"unknown pricing is visible in the ledger");
     assert!(dispatch::chat_step(&state,&dispatch_context,&plan,&budget,&messages,None,&sampling,&notify).await.is_err());
-    assert_eq!(calls.load(Ordering::SeqCst),5,"second call denied by the shared run budget");
+    assert_eq!(calls.load(Ordering::SeqCst),4,"second call denied by the shared run budget");
     policy=store::save_policy(&state,admin,policy.id,store::SavePolicy { label:"Edited policy".into(),scope:"deployment".into(),expected_revision:policy.revision,is_default:true,policy:policy.clone() }).await?;
     assert_ne!(policy.revision,plan.decision.policy_revision);
     let fresh_budget=budget::RunBudget::new(Default::default());
     assert!(dispatch::chat_step(&state,&dispatch_context,&plan,&fresh_budget,&messages,None,&sampling,&notify).await.is_err(),"edited policy requires replanning");
-    assert_eq!(calls.load(Ordering::SeqCst),5);
+    assert_eq!(calls.load(Ordering::SeqCst),4);
     let (stream_plan,_)=service::auto_plan(&state,&context,Some(policy.id),RoutingObjective::Economy,WorkloadRequirements { input_tokens:100,output_tokens:128,..Default::default() },"stream",&notify).await?;
     let mut stream_context=context.clone(); stream_context.purpose=CallPurpose::Final;
     for interrupted in [false,true] {
@@ -443,7 +450,7 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
         assert!(stream.recv(&notify).await?.is_none());
         assert_eq!(stream_budget.snapshot().calls,1);
     }
-    assert_eq!(calls.load(Ordering::SeqCst),7,"partial streams never retry or splice a second answer");
+    assert_eq!(calls.load(Ordering::SeqCst),6,"partial streams never retry or splice a second answer");
     // The owned runtime keeps classifier/utility spend together across a real
     // spawned title task and summary, using the original authorized chat actor.
     policy.constraints.max_calls=Some(4); policy.strategy=RoutingStrategy::Hybrid;
@@ -460,7 +467,8 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
     let mut forbidden=admin.clone(); forbidden.user_id=Some(Uuid::now_v7()); forbidden.role=fosnie_backend::auth::PlatformRole::User;
     let requirements=||WorkloadRequirements { output_tokens:1024,..Default::default() };
     assert!(fosnie_backend::chat::routing::prepare(&state,&forbidden,chat_id,Uuid::now_v7(),"hello",Some(policy.id),RoutingObjective::Balanced,requirements(),&[],&notify).await.is_err());
-    assert_eq!(calls.load(Ordering::SeqCst),7,"unauthorized history never reaches classifier or utility");
+    assert_eq!(calls.load(Ordering::SeqCst),6,"unauthorized history never reaches classifier or utility");
+    eprintln!("D6 helpers and compaction");
     let run=fosnie_backend::chat::routing::prepare(&state,admin,chat_id,Uuid::now_v7(),"hello",Some(policy.id),RoutingObjective::Balanced,requirements(),&[],&notify).await?;
     assert_eq!(run.usage().calls,1,"classifier reservation survives runtime construction");
     assert_eq!(run.context(CallPurpose::UtilityTitle).actor.user_id,admin.user_id);
@@ -483,14 +491,15 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
             .bind(Uuid::now_v7()).bind(chat_id).bind(seq).bind("More conversation. ".repeat(20)).execute(pool).await?;
     }
     assert!(fosnie_backend::chat::routing::history(&state,&run,20,&tx).await.is_err(),"routed budget errors must not degrade to legacy compaction");
-    assert_eq!(calls.load(Ordering::SeqCst),11);
+    assert_eq!(calls.load(Ordering::SeqCst),10);
     run.cancel();
     assert!(fosnie_backend::chat::routing::spawn_title(state.clone(),&run,"late".into()).await?.is_err());
-    assert_eq!(calls.load(Ordering::SeqCst),11,"late spawned task sees sticky cancellation before HTTP");
+    assert_eq!(calls.load(Ordering::SeqCst),10,"late spawned task sees sticky cancellation before HTTP");
     sqlx::query("DELETE FROM chats WHERE id=$1").bind(chat_id).execute(pool).await?;
     // Exercise the actual chat entry point, including its durable assistant row
     // and protocol terminal frames. The mock has no legacy/model-info endpoints.
     use fosnie_backend::{chat::{run_turn,origin::TurnContext},ws::protocol::ServerFrame};
+    eprintln!("D6 chat worker contracts");
     for (interrupted,unnamed) in [(false,false),(true,false),(false,true)] {
         partial.store(interrupted,Ordering::SeqCst);
         let chat=Uuid::now_v7(); let turn=Uuid::now_v7();
@@ -500,7 +509,11 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
         let runtime=fosnie_backend::chat::routing::prepare(&state,admin,chat,turn,"hello",Some(policy.id),RoutingObjective::Balanced,requirements(),&[],&cancel).await?;
         let baseline=calls.load(Ordering::SeqCst);
         let (tx,mut rx)=tokio::sync::mpsc::channel(128);
-        run_turn(&state,TurnContext::web(admin).with_routing(&runtime),turn,Some(chat),None,None,"hello".into(),vec![],vec![],false,None,None,None,None,&tx,cancel).await;
+        // The production entry point runs in its own task. Do not poll a large
+        // worker under this fixture's entire catalog/helper orchestration stack.
+        tokio::spawn({let state=state.clone();let actor=admin.clone();let runtime=runtime.clone();async move {
+            run_turn(&state,TurnContext::web(&actor).with_routing(&runtime),turn,Some(chat),None,None,"hello".into(),vec![],vec![],false,None,None,None,None,&tx,cancel).await;
+        }}).await?;
         if unnamed {
             tokio::time::timeout(std::time::Duration::from_secs(2),async {
                 loop {
@@ -537,15 +550,20 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
     let runtime=fosnie_backend::chat::routing::prepare(&state,admin,chat,turn,"hello",Some(policy.id),RoutingObjective::Balanced,requirements(),&[],&cancel).await?;
     let baseline=calls.load(Ordering::SeqCst); final_delay.store(30_000,Ordering::SeqCst);
     let (tx,mut rx)=tokio::sync::mpsc::channel(128);
+    let worker=tokio::spawn({let state=state.clone();let actor=admin.clone();let runtime=runtime.clone();let cancel=cancel.clone();async move {
+        run_turn(&state,TurnContext::web(&actor).with_routing(&runtime),turn,Some(chat),None,None,"hello".into(),vec![],vec![],false,None,None,None,None,&tx,cancel).await;
+    }});
     tokio::time::timeout(std::time::Duration::from_secs(3),async {
-        tokio::join!(
-            run_turn(&state,TurnContext::web(admin).with_routing(&runtime),turn,Some(chat),None,None,"hello".into(),vec![],vec![],false,None,None,None,None,&tx,cancel.clone()),
+        let (worker_result, _) = tokio::join!(
+            worker,
             async {
                 while calls.load(Ordering::SeqCst)==baseline { tokio::time::sleep(std::time::Duration::from_millis(5)).await; }
                 cancel.notify_waiters();
             }
         );
-    }).await?;
+        worker_result?;
+        Ok::<_,tokio::task::JoinError>(())
+    }).await??;
     final_delay.store(0,Ordering::SeqCst);
     assert!(runtime.is_cancelled()); assert_eq!(runtime.usage().calls,2); assert!(runtime.usage().tokens>280);
     let mut errors=0;
@@ -573,8 +591,12 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
         let mut guarded_state=state.clone();
         if case==3 { guarded_state.moderation=Arc::new(LegacyModeration); }
         let libraries=if case==4 { vec![Uuid::now_v7()] } else { vec![] };
-        run_turn(&guarded_state,TurnContext::web(actor).with_routing(&runtime),turn,Some(chat),None,None,"hello".into(),vec![],libraries,case==2,None,None,(case==0).then_some(provider_id),None,&tx,cancel).await;
-        assert!(matches!(rx.try_recv(),Ok(ServerFrame::ChatError { .. })));
+        tokio::spawn({let actor=actor.clone();let runtime=runtime.clone();async move {
+            run_turn(&guarded_state,TurnContext::web(&actor).with_routing(&runtime),turn,Some(chat),None,None,"hello".into(),vec![],libraries,case==2,None,None,(case==0).then_some(provider_id),None,&tx,cancel).await;
+        }}).await?;
+        let frames:Vec<_>=std::iter::from_fn(||rx.try_recv().ok()).collect();
+        assert!(frames.iter().any(|frame|matches!(frame,ServerFrame::ChatError { .. })));
+        assert!(!frames.iter().any(|frame|matches!(frame,ServerFrame::ChatCompleted { .. })));
         assert_eq!(calls.load(Ordering::SeqCst),before);
         let rows:i64=sqlx::query_scalar("SELECT count(*) FROM messages WHERE chat_id=$1").bind(chat).fetch_one(pool).await?;
         assert_eq!(rows,0);
@@ -583,18 +605,27 @@ fn check_auto_service<'a>(pool: &'a sqlx::PgPool, admin: &'a fosnie_backend::aut
     server.abort();
     // Keep the growing end-to-end chat suite out of the catalog test's stack.
     let policy_id=policy.id;
-    Box::pin(chat_cases::check_rag(pool,admin,policy)).await?;
-    Box::pin(web_cases::check_web(pool,admin,policy_id)).await?;
-    Box::pin(document_cases::check_document(pool,admin,policy_id)).await?;
-    Box::pin(document_chat_cases::check_document_chat(pool,admin,policy_id)).await?;
-    Box::pin(verify_cases::check_verify(pool,admin,policy_id)).await?;
-    Box::pin(draft_cases::check_draft(pool,admin,policy_id)).await?;
-    Box::pin(research_cases::check_research(pool,admin,policy_id)).await?;
-    Box::pin(workflow_cases::check(pool,provider_id,admin)).await?;
-    api_cases::check(pool,provider_id,admin).await?;
-    api_agent_cases::check(pool,provider_id,admin).await?;
-    voice_cases::check(pool,admin,provider_id).await?;
-    admission_cases::check(pool,admin,provider_id).await?;
+    eprintln!("D6 RAG/workflow/API contracts");
+    // Isolated case tasks mirror production worker boundaries. They share the
+    // same owned DB pool and actor, without retaining every earlier poll frame.
+    macro_rules! own_case {
+        ($pool:ident,$admin:ident,$call:expr)=>{{
+            let $pool=(*$pool).clone();let $admin=(*$admin).clone();
+            tokio::spawn(async move {let $pool=&$pool;let $admin=&$admin;Box::pin($call).await}).await??;
+        }};
+    }
+    own_case!(pool,admin,chat_cases::check_rag(pool,admin,policy));
+    own_case!(pool,admin,web_cases::check_web(pool,admin,policy_id));
+    own_case!(pool,admin,document_cases::check_document(pool,admin,policy_id));
+    own_case!(pool,admin,document_chat_cases::check_document_chat(pool,admin,policy_id));
+    own_case!(pool,admin,verify_cases::check_verify(pool,admin,policy_id));
+    own_case!(pool,admin,draft_cases::check_draft(pool,admin,policy_id));
+    own_case!(pool,admin,research_cases::check_research(pool,admin,policy_id));
+    own_case!(pool,admin,workflow_cases::check(pool,provider_id,admin));
+    own_case!(pool,admin,api_cases::check(pool,provider_id,admin));
+    own_case!(pool,admin,api_agent_cases::check(pool,provider_id,admin));
+    own_case!(pool,admin,voice_cases::check(pool,admin,provider_id));
+    own_case!(pool,admin,admission_cases::check(pool,admin,provider_id));
     Ok(())
     })
 }
@@ -649,7 +680,7 @@ async fn check_strict_targets(pool: sqlx::PgPool) -> anyhow::Result<()> {
         .with_providers(Arc::new(Registry(count.clone()))).with_inference_policy(Arc::new(LocalOnly)).build();
     let mut context = RoutingContext { actor: AuthContext { user_id: Some(user), email: None, display_name: None,
         role: PlatformRole::User, break_glass: false, mfa_enroll_only: false }, chat_id: None, project_id: None, run_id: Uuid::now_v7(), purpose: CallPurpose::Primary };
-    let reference = TargetReference { provider_id: id, provider_revision: 1, profile_revision: 1, model: "test".into(), effort: None };
+    let reference = TargetReference { provider_id: id, provider_revision: 1, profile_revision: 1, model: "test".into(), effort: None , variant:None };
     // Every inference purpose must respect the extension BEFORE secret access.
     for purpose in [CallPurpose::Primary, CallPurpose::RouterClassify, CallPurpose::UtilityTitle, CallPurpose::ResearchWrite, CallPurpose::Voice] {
         context.purpose = purpose;
@@ -658,17 +689,22 @@ async fn check_strict_targets(pool: sqlx::PgPool) -> anyhow::Result<()> {
     assert_eq!(count.load(Ordering::SeqCst), 0);
     profile.locality = Locality::Local;
     profile.locality_trusted = true;
-    sqlx::query("UPDATE model_profiles SET profile=$2 WHERE provider_id=$1").bind(id).bind(serde_json::to_value(profile)?).execute(&pool).await?;
+    sqlx::query("UPDATE model_profiles SET profile=$2 WHERE provider_id=$1").bind(id).bind(serde_json::to_value(&profile)?).execute(&pool).await?;
     let target = resolve_target(&state, &context, &reference, &RoutingConstraints::default()).await?;
     assert_eq!(target.api_key, "", "explicit unauthenticated target cannot inherit an environment key");
     assert_eq!(count.load(Ordering::SeqCst), 1);
     let denied = RoutingConstraints { allowed_providers: Some(Default::default()), ..Default::default() };
     assert!(resolve_target(&state, &context, &reference, &denied).await.is_err());
-    sqlx::query("UPDATE provider_configs SET scope='user', scope_id=$2 WHERE id=$1").bind(id).bind(user).execute(&pool).await?;
-    assert!(resolve_target(&state, &context, &reference, &RoutingConstraints::default()).await.is_err(), "BYOK disabled denies even the owner");
+    assert!(sqlx::query("UPDATE provider_configs SET scope='user', scope_id=$2 WHERE id=$1").bind(id).bind(user).execute(&pool).await.is_err(),"scope cannot be changed on an existing provider");
+    let own=Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_configs(id,role,scope,scope_id,model,label,base_url) VALUES($1,'llm','user',$2,'test','Private fixture','http://model.test/v1')").bind(own).bind(user).execute(&pool).await?;
+    profile.provider_id=own;
+    sqlx::query("INSERT INTO model_profiles(provider_id,provider_revision,profile) VALUES($1,1,$2)").bind(own).bind(serde_json::to_value(&profile)?).execute(&pool).await?;
+    let private=TargetReference{provider_id:own,..reference.clone()};
+    assert!(resolve_target(&state, &context, &private, &RoutingConstraints::default()).await.is_err(), "BYOK disabled denies even the owner");
     context.actor.user_id = Some(Uuid::now_v7());
-    assert!(resolve_target(&state, &context, &reference, &RoutingConstraints::default()).await.is_err(), "foreign target");
-    sqlx::query("UPDATE provider_configs SET scope='deployment', scope_id=NULL, model='changed' WHERE id=$1").bind(id).execute(&pool).await?;
+    assert!(resolve_target(&state, &context, &private, &RoutingConstraints::default()).await.is_err(), "foreign target");
+    sqlx::query("UPDATE provider_configs SET model='changed' WHERE id=$1").bind(id).execute(&pool).await?;
     assert!(resolve_target(&state, &context, &reference, &RoutingConstraints::default()).await.is_err(), "stale evaluation");
     assert_eq!(count.load(Ordering::SeqCst), 1, "forbidden and stale targets never reach credential resolution");
     Ok(())

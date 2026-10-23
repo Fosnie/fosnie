@@ -1,5 +1,7 @@
 # Model routing failures and recovery
 
+V2 profiles support [one bounded technical fallback](model-routing-profiles.md#fallback-persistence-and-sharing). A failed answer is not sent to an AI judge or replayed for quality assessment.
+
 Routing now carries safe provider failure data through ML, Core and the chat UI.
 It distinguishes a confirmed quota/spending error from a plain HTTP 429, payment
 requirements, rejected credentials/access, invalid requests, connection failures,

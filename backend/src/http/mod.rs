@@ -76,6 +76,7 @@ pub mod voice_routing;
 pub mod voice_admin;
 pub mod workflows;
 pub mod model_routing;
+pub mod routing_catalogue;
 pub mod routing_evaluation;
 pub mod workspaces;
 
@@ -588,6 +589,22 @@ pub fn router(
             )
             .route("/api/me/llm-providers", get(providers::list_llm_providers))
             .route("/api/routing/catalog", get(model_routing::catalog))
+            .route("/api/routing/v2/catalogue", get(routing_catalogue::catalogue))
+            .route("/api/routing/v2/availability",get(routing_catalogue::availability))
+            .route("/api/routing/v2/profiles", get(routing_catalogue::profiles))
+            .route("/api/projects/{id}/routing/v2", get(routing_catalogue::project_binding).put(routing_catalogue::save_project_binding))
+            .route("/api/routing/v2/profiles/{id}", axum::routing::put(routing_catalogue::save_routing_profile).delete(routing_catalogue::delete_routing_profile))
+            .route("/api/routing/v2/profiles/{id}/export", get(routing_catalogue::export_routing_profile))
+            .route("/api/routing/v2/profiles/{id}/import", post(routing_catalogue::import_routing_profile))
+            .route("/api/routing/v2/connections", get(routing_catalogue::connections))
+            .route("/api/routing/v2/connections/{id}", axum::routing::put(routing_catalogue::save_connection).delete(routing_catalogue::delete_connection))
+            .route("/api/routing/v2/connections/{id}/discovery", post(routing_catalogue::discovery))
+            .route("/api/routing/v2/deployments/{id}", axum::routing::put(routing_catalogue::save_deployment).delete(routing_catalogue::delete_deployment))
+            .route("/api/routing/v2/deployments/{id}/metadata", axum::routing::put(routing_catalogue::save_metadata))
+            .route("/api/routing/v2/deployments/{id}/tariffs", axum::routing::put(routing_catalogue::save_tariffs))
+            .route("/api/routing/v2/variants/{id}", axum::routing::put(routing_catalogue::save_variant).delete(routing_catalogue::delete_variant))
+            .route("/api/routing/v2/variants/{id}/export", get(routing_catalogue::export_variant))
+            .route("/api/routing/v2/variants/{id}/import", post(routing_catalogue::import_variant))
             .route("/api/routing/management", get(model_routing::management))
             .route("/api/routing/ingestion", get(model_routing::ingestion_gate).put(model_routing::set_ingestion_gate))
             .route("/api/routing/connector-ingestion", get(model_routing::connector_ingestion_gate).put(model_routing::set_connector_ingestion_gate))

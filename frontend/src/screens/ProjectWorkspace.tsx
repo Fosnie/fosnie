@@ -41,6 +41,7 @@ import { Icon } from "@/components/icons";
 import { Popover } from "@/components/Popover";
 import { Dropdown } from "@/components/Dropdown";
 import { CreateReviewModal } from "@/components/CreateReviewModal";
+import { ProjectRoutingBinding } from "@/components/ProjectRoutingBinding";
 import { getProjectDocsPanels } from "@/ext/registry";
 
 type ProjTab = "chats" | "documents" | "knowledge" | "reviews" | "sharing";
@@ -229,7 +230,7 @@ export function ProjectWorkspace() {
           </>
         )}
 
-        {tab === "sharing" && projectId && <SharingTab projectId={projectId} />}
+        {tab === "sharing" && projectId && <><ProjectRoutingBinding projectId={projectId}/><SharingTab projectId={projectId} /></>}
       </div>
 
       {creating && projectId && (

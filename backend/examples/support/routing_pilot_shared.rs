@@ -333,6 +333,7 @@ async fn serve(pool: sqlx::PgPool, c: Config, edition:Arc<dyn PilotEdition>) -> 
         .route("/api/routing/management", get(fosnie_backend::http::model_routing::management))
         .route("/api/routing/policies", get(fosnie_backend::http::model_routing::policies))
         .route("/api/routing/policies/{id}", put(fosnie_backend::http::model_routing::save_policy))
+        .route("/api/routing/profiles/{id}", put(fosnie_backend::http::model_routing::save_profile))
         .route("/api/routing/pilot-web/{chat}/receipt", get(web_pilot::receipt));
     let worker=c.documents_dir.as_ref().map(|_|ingestion_pilot::Worker::new());
     let mut extra=Router::new().route("/api/routing/pilot-web/{chat}/receipt", get(web_pilot::receipt)).route("/api/routing/tool-weather-probe",post(tool_pilot::evaluate));
