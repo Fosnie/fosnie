@@ -9,6 +9,7 @@ import { routingSettingsApi as api, current, profileDraft, newPolicy, newRule, e
 import "./RoutingSettings.css";
 import {ConditionsEditor} from "./RoutingConditionsEditor";
 import { RoutingCatalogueSettings } from "./RoutingCatalogueSettings";
+import { Dropdown } from "./Dropdown";
 
 const human = (s:string) => s.replaceAll("_"," ");
 const list = (s:string) => [...new Set(s.split(",").map(v=>v.trim()).filter(Boolean))];
@@ -228,7 +229,9 @@ function PreviewPanel({policies,models,management,surface}:{policies:PolicyEntry
   const priceKnown=judgeModel?.profile?.pricing.input_microusd_per_million!=null && judgeModel.profile.pricing.output_microusd_per_million!=null;
   const patch=(v:Partial<Requirements>)=>{setRequirements(r=>({...r,...v}));setDry(null);};
   return <div><p className="ed-hint">Both previews use saved configuration. Save a draft first. A model proposal is not an executed answer; actual model is always empty here.</p>
-    <Field label="Preview saved policy"><select value={id} onChange={e=>{setId(e.target.value);setDry(null);setJudge(null);}}><option value="">Choose a saved policy</option>{policies.map(p=><option key={p.id} value={p.id}>{p.label} · {p.scope} · revision {p.revision}</option>)}</select></Field>
+    <Field label="Preview saved policy"><Dropdown value={id} fullWidth
+      options={[{value:"",label:"Choose a saved policy"},...policies.map(p=>({value:p.id,label:`${p.label} · ${p.scope} · revision ${p.revision}`}))]}
+      onChange={value=>{setId(value);setDry(null);setJudge(null);}}/></Field>
     <form className="routing-editor" aria-label="Dry routing preview" onSubmit={e=>{e.preventDefault();setDry(null);void op.run(async()=>{if(!policy)throw new Error("Choose a saved policy.");setDry(await api.preview(policy,requirements,purpose));});}}>
       <h3>Dry preview · zero model calls</h3><fieldset disabled={op.busy || !policy}><div className="routing-grid">
         <Choice label="Preview task" value={requirements.task} options={tasks} onChange={v=>patch({task:v})}/><Choice label="Preview minimum tier" value={requirements.minimum_tier} options={tiers} onChange={v=>patch({minimum_tier:v})}/>
@@ -281,7 +284,9 @@ function ApiAliasEditor({saved,refresh,reload}:{saved:ApiAlias;refresh:()=>Promi
     {saved.status==="conflict" && <p className="routing-notice">This name is already used by a provider. Choose a different alias; the existing provider continues to work.</p>}
     {saved.status==="routing_disabled" && <p className="routing-notice">Alias is configured, but API routing is disabled. It is not listed in /v1/models.</p>}
     <fieldset disabled={op.busy}><div className="routing-grid"><Field label="API Auto alias name" hint="1–128 ASCII letters, digits, dot, underscore, slash or hyphen; agent/ is reserved."><input required maxLength={128} value={name} onChange={e=>setName(e.target.value)}/></Field>
-      <Choice label="API alias objective" value={objective} options={["economy","balanced","quality"]} onChange={setObjective}/></div>
+      <Field label="API alias objective"><Dropdown value={objective} fullWidth
+        options={(["economy","balanced","quality"] as const).map(value=>({value,label:human(value)}))}
+        onChange={setObjective}/></Field></div>
       <Toggle label="Enable API Auto alias" value={enabled} onChange={setEnabled}/><div className="routing-actions" style={{marginTop:12}}><button className="btn btn-line sm">Save API alias</button><button type="button" className="btn btn-line sm" onClick={reload}>Reload API alias (discard draft)</button></div></fieldset>
     {op.error && <p role="alert" className="form-err">{op.error}</p>}
     <p className="ed-hint">Clients use this name in model. Add fosnie_agent_id to use a Fosnie agent; raw completions have no web tools. Responses keep the requested alias in model and report the actual model separately.</p>
