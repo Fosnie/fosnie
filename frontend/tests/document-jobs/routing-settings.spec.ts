@@ -1,6 +1,66 @@
 import { test,expect,type Page } from "@playwright/test";
 import type { ModelEntry,Profile,PolicyEntry,FixedEntry } from "../../src/api/routingSettings";
 const url="/tests/document-jobs/routing-settings.html";
+
+async function assertActionSpacing(page:Page) {
+  const touching=await page.locator(".routing-settings button").evaluateAll(nodes=>{
+    const buttons=nodes.filter(node=>node.checkVisibility() && !node.matches(".legal-tab,[role=option]"))
+      .map(node=>({name:node.textContent?.trim(),box:node.getBoundingClientRect()}))
+      .filter(({box})=>box.width>0 && box.height>0);
+    const errors:string[]=[];
+    for(let i=0;i<buttons.length;i++)for(let j=i+1;j<buttons.length;j++) {
+      const a=buttons[i],b=buttons[j];
+      const overlapY=Math.min(a.box.bottom,b.box.bottom)-Math.max(a.box.top,b.box.top);
+      const overlapX=Math.min(a.box.right,b.box.right)-Math.max(a.box.left,b.box.left);
+      const gapX=Math.max(a.box.left,b.box.left)-Math.min(a.box.right,b.box.right);
+      const gapY=Math.max(a.box.top,b.box.top)-Math.min(a.box.bottom,b.box.bottom);
+      if((overlapY>8 && gapX<7.5)||(overlapX>8 && gapY<7.5))errors.push(`${a.name} / ${b.name}`);
+    }
+    return errors;
+  });
+  expect(touching,"Visible action buttons must be separated").toEqual([]);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+}
+
+for (const surface of ["deployment","personal"] as const) for (const width of [1280,390])
+test(`All ${surface} routing editors and card actions are spaced at ${width}px`,async({page})=>{
+  const s=await fixture(page);const scope=surface==="personal"?{kind:"user",owner_id:own}:{kind:"deployment"};
+  const connection={id:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",scope:surface==="personal"?"user":"deployment",scope_id:surface==="personal"?own:null,label:"Sample connection",revision:1,auth_revision:1,adapter:"openai_chat",base_url:"https://example.invalid/v1",enabled:true,api_key_set:false,quota_group_id:null,metadata:{locality:"cloud",locality_trusted:false}};
+  const model={id:cloud,label:"Sample model",scope,revision:1,provider_revision:1,model_config_revision:1,enabled:true,model:"sample-model",connection:{id:connection.id,auth_revision:1},reasoning_mode:null,is_default:false,adapter:"openai_chat",binding_current:true,capabilities:{efforts:["high"]},metadata:{locality:"cloud"},tariffs:{input_microusd_per_million:1000000}};
+  const variant={id:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",revision:1,scope,provider_id:cloud,model_config_revision:1,label:"Sample variant",behaviour_sha256:"sample",behaviour:{adapter:"openai_chat",model_id:"sample-model",effort:{kind:"provider_default"},generation:{}}};
+  await page.route("**/api/routing/v2/**",route=>{
+    const path=new URL(route.request().url()).pathname;
+    return route.fulfill({json:path.endsWith("/catalogue")?{schema_version:2,catalogue_revision:1,selection_versions:[2],profile_versions:[2],max_active_variants:256,deployments:[model],variants:[{variant,configuration_current:true,binding_current:true,calibration_state:"declared"}]}
+      :path.endsWith("/connections")?[connection]:path.endsWith("/availability")?{models:[]}:[]});
+  });
+  await page.setViewportSize({width,height:900});await page.goto(`${url}?surface=${surface}`);
+  const builder=page.getByRole("region",{name:"Profiles and catalogue"});
+  await expect(builder.getByRole("button",{name:"Everyday preset",exact:true})).toBeEnabled();
+  await assertActionSpacing(page);
+  await builder.getByRole("button",{name:"Everyday preset",exact:true}).click();
+  await page.getByRole("button",{name:"Add routing rule",exact:true}).click();
+  await page.getByText("Additional conditions",{exact:true}).click();
+  await page.getByText("Condition groups",{exact:true}).click();
+  await assertActionSpacing(page);await page.getByRole("button",{name:"Close",exact:true}).click();
+
+  await builder.getByRole("button",{name:"Models",exact:true}).click();await assertActionSpacing(page);
+  for(const action of ["New model deployment","Edit model","Metadata","Tariffs"]) {
+    await builder.getByRole("button",{name:action,exact:true}).click();await assertActionSpacing(page);
+    await page.getByRole("button",{name:"Close",exact:true}).click();
+  }
+  await builder.getByRole("button",{name:"Variants",exact:true}).click();await assertActionSpacing(page);
+  for(const action of [`New ${surface==="personal"?"personal":"deployment"} variant`,"Edit"]) {
+    await builder.getByRole("button",{name:action,exact:true}).click();await assertActionSpacing(page);
+    await page.screenshot({path:`test-results/routing-variant-editor-${surface}-${width}.png`,fullPage:true,animations:"disabled"});
+    await page.getByRole("button",{name:"Close",exact:true}).click();
+  }
+  await builder.getByRole("button",{name:"Connections",exact:true}).click();await assertActionSpacing(page);
+  for(const action of ["New connection","Edit"]) {
+    await builder.getByRole("button",{name:action,exact:true}).click();await assertActionSpacing(page);
+    await page.getByRole("button",{name:"Close",exact:true}).click();
+  }
+  expect(s.requests.filter(r=>r.method!=="GET")).toHaveLength(0);
+});
 test("Model roles and legacy policies save without evaluation controls or inference",async({page})=>{
   const s=await fixture(page);await page.goto(url);await page.getByText("Model capabilities, helper services and legacy policies",{exact:true}).click();
   await page.locator(".routing-card").filter({hasText:"Cloud reasoning"}).getByRole("button",{name:"Edit profile",exact:true}).click();
@@ -36,6 +96,7 @@ for (const width of [1280,390]) test(`Catalogue import and model actions stay us
     const choosing=page.waitForEvent("filechooser");await importControl.click();
     await (await choosing).setFiles({name:"routing-profile.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(payload))});
     await expect(page.getByRole("heading",{name:"Import profile · map source IDs",exact:true})).toBeVisible();
+    await assertActionSpacing(page);
     await page.getByRole("button",{name:"Close",exact:true}).click();
   }
   await page.getByRole("button",{name:"Models",exact:true}).click();

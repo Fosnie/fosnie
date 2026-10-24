@@ -37,7 +37,7 @@ export function ConditionsEditor({value:c,onChange,depth=0}:{value:Conditions;on
     <Multiple label="Call purposes" values={c.purposes} options={purposes} onChange={v=>patch({purposes:v})}/>
     <details open={((c.all?.length ?? 0)+(c.any?.length ?? 0))>0}><summary>Condition groups</summary>
       <p className="ed-hint">All local fields must match. ALL requires every child; ANY requires one child when present. Up to four levels and sixteen children per group.</p>
-      {(["all","any"] as const).map(group=><div key={group}><strong>{group.toUpperCase()}</strong>{(c[group] ?? []).map((child,i)=><fieldset key={i}><legend>{group.toUpperCase()} condition {i+1}</legend>
+      {(["all","any"] as const).map(group=><div key={group} className="routing-condition-group"><strong>{group.toUpperCase()}</strong>{(c[group] ?? []).map((child,i)=><fieldset key={i}><legend>{group.toUpperCase()} condition {i+1}</legend>
         <button type="button" className="btn btn-line sm" onClick={()=>patch({[group]:(c[group] ?? []).filter((_,j)=>j!==i)})}>Remove condition</button>
         <ConditionsEditor value={child} depth={depth+1} onChange={next=>patch({[group]:(c[group] ?? []).map((old,j)=>i===j ? next : old)})}/>
       </fieldset>)}<button type="button" className="btn btn-line sm" disabled={depth>=3 || (c.all?.length ?? 0)+(c.any?.length ?? 0)>=16}

@@ -21,7 +21,7 @@ next tag; a plain merge ships nothing to users.
 ### Fixed
 
 - Fixed production and test container build inputs after removing unused routing assets, and included the shared protocol in the test image build.
-- Fixed profile import and model action spacing, and matched saved-policy and API alias menus to the application's dropdown styling.
+- Fixed action spacing across routing profiles, connections, models, variants and editors, and matched saved-policy and API alias menus to the application's dropdown styling.
 
 ## [0.7.0] - 2026-10-10
 

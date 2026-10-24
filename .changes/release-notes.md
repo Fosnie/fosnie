@@ -12,7 +12,7 @@ personal profiles and model variants.
 - Retain access controls, capability and locality checks, shared usage limits,
   chat/project bindings, credential-free import/export and bounded technical fallback.
 - Correct production/test container build inputs for the simplified routing implementation.
-- Use a single profile import button, spaced model actions and themed saved-policy/API alias menus.
+- Use a single profile import button, consistently spaced catalogue/editor actions and themed saved-policy/API alias menus.
 
 Routing follows configured model roles, task requirements and user assignments.
 
@@ -23,6 +23,7 @@ The independently versioned desktop client is unchanged.
 Validation used local providers: routine and complex tasks, both inverse user
 assignments, ordinary-user/BYOK-off settings, desktop/mobile layouts and installed
 Enterprise restrictions passed. The routing settings controls also passed desktop
-and mobile browser checks, including repeated file import and API alias persistence.
+and mobile browser checks across personal and deployment editors, including repeated
+file import, action spacing and API alias persistence.
 
 [Routing profiles guide](https://github.com/Fosnie/fosnie/blob/v0.7.1/docs/model-routing-profiles.md)

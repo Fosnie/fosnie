@@ -34,6 +34,8 @@
 .routing-checks { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 12px 0; }
 .routing-check { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }
 .routing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.routing-condition-group { margin-top: 12px; }
+.routing-condition-group > strong { display: block; margin-bottom: 8px; }
 .routing-settings fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .routing-settings fieldset:disabled { opacity: .65; }
 .routing-settings details { margin: 16px 0; }
