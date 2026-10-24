@@ -35,7 +35,9 @@ export function Dropdown<T extends string>({
   value,
   options,
   onChange,
+  id,
   ariaLabel,
+  "aria-describedby": ariaDescribedBy,
   fullWidth = false,
   disabled = false,
   icon,
@@ -43,7 +45,9 @@ export function Dropdown<T extends string>({
   value: T;
   options: DropdownOption<T>[];
   onChange: (v: T) => void;
+  id?: string;
   ariaLabel?: string;
+  "aria-describedby"?: string;
   /** Stretch the trigger + menu to the container width (was `.dv-select full`). */
   fullWidth?: boolean;
   /** Disable the whole control. */
@@ -59,11 +63,13 @@ export function Dropdown<T extends string>({
     <div className={"dd" + (fullWidth ? " dd-full" : "")}>
       <button
         ref={triggerRef}
+        id={id}
         type="button"
         className="field dd-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
       >

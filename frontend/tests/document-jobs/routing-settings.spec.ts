@@ -17,6 +17,36 @@ test("Model roles and legacy policies save without evaluation controls or infere
   expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
 });
 const cloud="11111111-1111-4111-8111-111111111111",local="22222222-2222-4222-8222-222222222222",own="33333333-3333-4333-8333-333333333333";
+for (const width of [1280,390]) test(`Catalogue import and model actions stay usable at ${width}px`,async({page})=>{
+  const s=await fixture(page);
+  await page.setViewportSize({width,height:900});
+  await page.route("**/api/routing/v2/**",route=>{
+    const path=new URL(route.request().url()).pathname;
+    return route.fulfill({json:path.endsWith("/catalogue")
+      ? {schema_version:2,catalogue_revision:1,selection_versions:[2],profile_versions:[2],max_active_variants:256,deployments:[],variants:[]}
+      : path.endsWith("/availability") ? {models:[]} : []});
+  });
+  await page.goto(url);
+  const importControl=page.locator(".routing-import");
+  await expect(importControl).toHaveText("Import profile");
+  await expect(importControl.locator("input")).toHaveAccessibleName("Import profile");
+  await page.screenshot({path:`test-results/routing-import-${width}.png`,fullPage:true,animations:"disabled"});
+  const payload={schema_version:2,label:"Imported profile",policy:{...s.policies[0].policy,default_provider_id:null,classifier_provider_id:null},config:{schema_version:2,membership:{kind:"all_available"},max_active_variants:256,quality:{assurance:"declared",max_relative_loss_bp:0,minimum_absolute_quality_bp:null},reference:{kind:"automatic",default_variant:null,allow_uncalibrated_default:true},fallback_variant_ids:[],groups:[],selector_sha256:null,verifier_sha256:null}};
+  for(let attempt=0;attempt<2;attempt++) {
+    const choosing=page.waitForEvent("filechooser");await importControl.click();
+    await (await choosing).setFiles({name:"routing-profile.json",mimeType:"application/json",buffer:Buffer.from(JSON.stringify(payload))});
+    await expect(page.getByRole("heading",{name:"Import profile · map source IDs",exact:true})).toBeVisible();
+    await page.getByRole("button",{name:"Close",exact:true}).click();
+  }
+  await page.getByRole("button",{name:"Models",exact:true}).click();
+  const refresh=await page.getByRole("button",{name:"Refresh reported availability",exact:true}).boundingBox();
+  const create=await page.getByRole("button",{name:"New model deployment",exact:true}).boundingBox();
+  expect(refresh).not.toBeNull();expect(create).not.toBeNull();
+  const gap=create!.y>=refresh!.y+refresh!.height-1 ? create!.y-refresh!.y-refresh!.height : create!.x-refresh!.x-refresh!.width;
+  expect(gap).toBeGreaterThanOrEqual(8);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:`test-results/routing-model-actions-${width}.png`,fullPage:true,animations:"disabled"});
+});
 const constraints={allowed_providers:null,local_only:false,max_calls:null,max_output_tokens:null,max_total_tokens:null,max_duration_ms:null,max_cost_microusd:null};
 function profile(id:string,model:string):Profile {
   return {provider_id:id,provider_revision:1,revision:5,model,adapter:"openai_chat",locality:"cloud",locality_trusted:false,auto_enabled:true,
@@ -112,7 +142,10 @@ test("Policy rules, separate embedding stages and explicit bounded previews use 
   await page.getByRole("button",{name:"Save",exact:true}).click();await expect(page.getByRole("status")).toContainText("saved");
   const fixed=s.requests.find(r=>r.path.startsWith("/api/routing/fixed-profiles/"))!.body;
   expect(fixed.profile).toMatchObject({role:"embed_desired",desired_index_revision:8,active_index_revision:null,model:"next-embedding",locality_trusted:true});
-  await page.getByRole("button",{name:"preview",exact:true}).click();await page.getByLabel("Preview saved policy").selectOption(s.policies[0].id);
+  await page.getByRole("button",{name:"preview",exact:true}).click();await page.getByLabel("Preview saved policy").click();
+  await expect(page.getByRole("listbox")).toHaveClass(/dd-menu/);
+  await page.screenshot({path:"test-results/routing-policy-menu.png",fullPage:true,animations:"disabled"});
+  await page.getByRole("option",{name:"Shared hybrid · deployment · revision 10",exact:true}).click();
   await page.getByRole("button",{name:"Preview without inference"}).click();await expect(page.getByRole("status")).toContainText("Inference calls: 0");
   expect(s.requests.filter(r=>r.path==="/api/routing/classifier-probe")).toHaveLength(0);
   await page.getByLabel("Judge test conversation").fill("Weather in Glasgow?");await page.getByLabel("Judge cost cap (USD)").fill("0.001");
@@ -140,11 +173,16 @@ test("Personal policies remain available with BYOK off; shared writes and failed
 test("API alias activation is explicit, collision conflicts preserve the draft and gate stays separate",async({page})=>{
   const s=await fixture(page);await page.goto(url);await page.getByText("Model capabilities, helper services and legacy policies",{exact:true}).click();await page.getByText("API Auto alias",{exact:true}).click();
   expect(s.requests.filter(r=>r.method!=="GET")).toHaveLength(0);
+  await page.getByLabel("API alias objective",{exact:true}).click();
+  await expect(page.getByRole("listbox")).toHaveClass(/dd-menu/);
+  await page.screenshot({path:"test-results/routing-alias-menu.png",fullPage:true,animations:"disabled"});
+  await page.getByRole("option",{name:"quality",exact:true}).click();
   await page.getByLabel("API Auto alias name",{exact:true}).fill("fosnie-route/auto");await page.getByLabel("Enable API Auto alias",{exact:true}).check();
   s.aliasConflict=true;await page.getByRole("button",{name:"Save API alias",exact:true}).click();
   await expect(page.getByRole("alert")).toContainText("draft is preserved");await expect(page.getByLabel("API Auto alias name",{exact:true})).toHaveValue("fosnie-route/auto");
   s.aliasConflict=false;await page.getByRole("button",{name:"Save API alias",exact:true}).click();await expect(page.getByText("Alias is configured, but API routing is disabled.",{exact:false})).toBeVisible();
   expect(s.requests.filter(r=>r.path==="/api/routing/public-api-alias" && r.method==="PUT")[0].body.expected_revision).toBe(7);
+  expect(s.requests.filter(r=>r.path==="/api/routing/public-api-alias" && r.method==="PUT")[0].body.objective).toBe("quality");
   expect(s.requests.filter(r=>r.path==="/api/routing/public-api" && r.method==="PUT")).toHaveLength(0);
   await page.getByRole("button",{name:"Enable API routing",exact:true}).click();await expect(page.getByText("Saved status: ready.",{exact:false})).toBeVisible();
   expect(s.requests.filter(r=>r.method==="POST")).toHaveLength(0);
